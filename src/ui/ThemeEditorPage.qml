@@ -219,6 +219,50 @@ Item {
             contextInspector.syncAll()  // the refusal wins: the fields go back
     }
 
+    // BX.3: placement reset and the Bible borrow are box-menu actions now
+    // that the numeric section is gone. They open on right-click and on
+    // Menu/Shift+F10 over the overlay, and both route through the SAME verbs
+    // the removed rows used (the adapter's reset preserves every sibling
+    // field; the borrow commits the theme's rectangle through the context
+    // merge). Enablement is the presence of an applicable own placement, so
+    // opening the menu can never create one.
+    function openBoxMenuAt(px, py) {
+        if (themeEditor.row === null)
+            return
+        const point = themeEditor.mapFromItem(placementLayer, px, py)
+        boxMenu.popup(point.x, point.y)
+    }
+    function openBoxMenuAtSelection() {
+        if (themeEditor.row === null)
+            return
+        const box = themeEditor.shownBox
+        themeEditor.openBoxMenuAt((box.x + box.width / 2) * placementLayer.zoom,
+                                  (box.y + box.height / 2) * placementLayer.zoom)
+    }
+    Menu {
+        id: boxMenu
+        objectName: "themeEditorBoxMenu"
+        MenuItem {
+            objectName: "themeEditorResetPlacementItem"
+            text: "Reset box placement"
+            enabled: themeEditor.selectedView === ""
+                     ? themeEditor.hasPlacement : themeEditor.contextPlaces
+            onClicked: {
+                if (themeEditor.selectedView === "")
+                    themeAdapter.reset("placement")
+                else
+                    contextAdapter.reset("box")
+            }
+        }
+        MenuItem {
+            objectName: "themeEditorUseThemeBoxItem"
+            text: "Use theme's box"
+            visible: themeEditor.selectedView === "scripture"
+            enabled: themeEditor.selectedId !== ""
+            onClicked: themeEditor.copyThemeBox()
+        }
+    }
+
     /* --- how a view moves (task TR.3, shared in CS.5) -----------------------
      * The Songs section edits the theme's own record and the Bible section
      * the `scripture` context's — the two seats TR.1's resolver walks, in
@@ -746,14 +790,6 @@ Item {
         st.fitInheritObjectName = "themeEditorFitInherit"
         st.minSizeObjectName = "themeEditorMinSize"
         st.minSizeInheritObjectName = "themeEditorMinSizeInherit"
-        const g = songsInspector.geometryControls
-        g.xObjectName = "themeEditorPlaceX"
-        g.yObjectName = "themeEditorPlaceY"
-        g.wObjectName = "themeEditorPlaceW"
-        g.hObjectName = "themeEditorPlaceH"
-        g.centerHObjectName = "themeEditorPlaceCenterH"
-        g.centerVObjectName = "themeEditorPlaceCenterV"
-        g.clearObjectName = "themeEditorNoPlacement"
         const fx = songsInspector.effectsControls
         fx.strokeCheckObjectName = "themeEditorStrokeEnable"
         fx.strokeOffObjectName = "themeEditorStrokeInherit"
@@ -798,20 +834,6 @@ Item {
         cst.sizeObjectName = "themeEditorContextSize"
         cst.alignObjectName = "themeEditorContextAlign"
         cst.spacingObjectName = "themeEditorContextSpacing"
-        const cg = contextInspector.geometryControls
-        cg.label = "Bible box (x, y, w, h in 1920×1080)"
-        cg.xObjectName = "themeEditorContextX"
-        cg.yObjectName = "themeEditorContextY"
-        cg.wObjectName = "themeEditorContextW"
-        cg.hObjectName = "themeEditorContextH"
-        cg.centerHObjectName = "themeEditorContextCenterH"
-        cg.centerVObjectName = "themeEditorContextCenterV"
-        cg.clearLabel = "No box"
-        cg.extraActionLabel = "Theme's lyric box"
-        cg.extraObjectName = "themeEditorContextBoxTheme"
-        cg.clearObjectName = "themeEditorContextBoxClear"
-        cg.showStatus = false
-        cg.extraClicked.connect(themeEditor.copyThemeBox)
         const cmv = contextInspector.transitionControls
         cmv.kindObjectName = "themeEditorContextTransitionKind"
         cmv.inheritObjectName = "themeEditorContextTransitionInherit"
@@ -1193,10 +1215,11 @@ Item {
                 // back by `gestureInset` before hit testing; drag deltas are
                 // differences and cancel it.
                 MouseArea {
+                    id: themeGestureArea
                     objectName: "themeEditorGestureArea"
                     anchors.fill: parent
                     anchors.margins: -themeEditor.gestureInset
-                    acceptedButtons: Qt.LeftButton
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
                     hoverEnabled: true
                     cursorShape: themeEditor.dragMode !== ""
                                  ? boxTransform.cursorFor(themeEditor.dragMode)
@@ -1204,6 +1227,14 @@ Item {
                                        themeEditor.hitTest(mouseX + themeEditor.gestureInset,
                                                            mouseY + themeEditor.gestureInset))
                     onPressed: function (mouse) {
+                        if (mouse.button === Qt.RightButton) {
+                            // Right-click opens the box menu; it never starts
+                            // a gesture and never materialises a placement.
+                            const point = themeEditor.mapFromItem(
+                                themeGestureArea, mouse.x, mouse.y)
+                            boxMenu.popup(point.x, point.y)
+                            return
+                        }
                         const mode = themeEditor.hitTest(
                             mouse.x + themeEditor.gestureInset,
                             mouse.y + themeEditor.gestureInset)
@@ -1221,8 +1252,18 @@ Item {
                                                     (mouse.y - themeEditor.dragOriginY)
                                                     / placementLayer.zoom)
                     }
-                    onReleased: themeEditor.endGesture()
+                    onReleased: {
+                        if (mouse.button === Qt.LeftButton)
+                            themeEditor.endGesture()
+                    }
                     onCanceled: themeEditor.cancelGesture()
+                    Keys.onMenuPressed: themeEditor.openBoxMenuAtSelection()
+                    Keys.onPressed: function (event) {
+                        if (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier)) {
+                            themeEditor.openBoxMenuAtSelection()
+                            event.accepted = true
+                        }
+                    }
                     Keys.onEscapePressed: function (event) {
                         if (themeEditor.dragMode !== "") {
                             themeEditor.cancelGesture()

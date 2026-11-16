@@ -10,7 +10,9 @@ import QtQuick
  * section (the service) are one set of parts wearing different names —
  * not four dialects of the same questions.
  *
- * Section order is the rail's: colours, type, box, effects, movement.
+ * Section order is the rail's: colours, type, effects, movement. The box is
+ * no longer a numeric section (BX.3): placement is edited by dragging the
+ * sample/slide directly, and reset lives on the box's context menu.
  * The host hides what its target does not answer for (a text context has
  * no colours and no effects until TV.3, so the Bible rail shows neither),
  * passes the automation names its tests read, and owns page-specific
@@ -31,7 +33,6 @@ Column {
 
     property bool showBackground: true
     property bool showStyle: true
-    property bool showGeometry: true
     property bool showEffects: true
     property bool showTransition: true
     // The revert-chip badge tradition (CS.6, the Edit rail): forwarded to
@@ -43,14 +44,12 @@ Column {
 
     readonly property alias backgroundControls: backgroundControls
     readonly property alias styleControls: styleControls
-    readonly property alias geometryControls: geometryControls
     readonly property alias effectsControls: effectsControls
     readonly property alias transitionControls: transitionControls
 
     function syncAll() {
         backgroundControls.sync()
         styleControls.sync()
-        geometryControls.sync()
         effectsControls.sync()
         transitionControls.sync()
     }
@@ -77,13 +76,6 @@ Column {
         overlayParent: inspector.overlayParent
         showRevertChips: inspector.showRevertChips
         revertBadgePrefix: inspector.revertBadgePrefix
-    }
-    BoxGeometryControls {
-        id: geometryControls
-        objectName: "boxGeometryControls"
-        visible: inspector.showGeometry
-        width: parent.width
-        adapter: inspector.adapter
     }
     TextEffectsControls {
         id: effectsControls

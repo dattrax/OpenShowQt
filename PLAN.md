@@ -2083,7 +2083,7 @@ not TL's text alignment/caps controls. [Scope, resize bug and acceptance](docs/u
 |---|---|---|---|
 | BX.1 | DONE | Share corner geometry/hit-testing and correct all resize directions | One helper computes both moving edges while fixing the opposite corner; TL/TR/BL/BR resize inward/outward, including the currently inert BR; move preserves size, snap tolerance stays screen-relative, bounds/minimum/no-op cases are covered |
 | BX.2 | DONE | Integrate reliable handles and gesture lifetime across both editors | Songs/Bible/Edit share transform chrome with reachable handle hit areas at every slide edge; overlap honours selected identity, body selects topmost; fitted/zoomed coordinates agree; one commit/undo on release, cancel/navigation/deletion writes nothing and no gesture retargets a new box |
-| BX.3 | TODO | Remove geometry inspectors and retain non-numeric placement actions | No X/Y/W/H, pixel heading, Center H/V, owner sentence or old placement action row in any host; reset/borrow move to keyboard-accessible box menus through existing verbs; preserve TL controls, stack commands, keyboard move/resize and all source geometry/schema |
+| BX.3 | DONE | Remove geometry inspectors and retain non-numeric placement actions | No X/Y/W/H, pixel heading, Center H/V, owner sentence or old placement action row in any host; reset/borrow move to keyboard-accessible box menus through existing verbs; preserve TL controls, stack commands, keyboard move/resize and all source geometry/schema |
 | BX.4 | TODO | Prove actual pointer editing, snapping, reset and worker output | Real-pointer matrix covers all four corners and centre axes at 1000/1380/1680 and scales 1/1.5/2, edge/overlap/cancel/undo; reset/borrow preserves styles and save/reopen; preview-only edit → explicit Go reaches matching pixels; focused suites then desktop/headless/source guards, captures and skip/physical reporting |
 
 Order: BX.1 → BX.2 → BX.3 → BX.4, after delivered TL; split leaves exceeding two
@@ -2127,6 +2127,25 @@ handle halves, a click without motion writes nothing, one completed gesture is
 one undo, navigation/selection/theme/view changes cancel without a write, and
 an overlapping body does not steal the selected corner. Full desktop suite:
 85/85.
+
+BX.3 evidence (2026-11-16): the numeric geometry UI is gone from every host.
+`BoxGeometryControls` is retired (file, QML registration and catalogue entry),
+`AppearanceInspector` no longer composes a geometry section, Theme Editor's
+Songs and Bible rails no longer pin X/Y/W/H, Centre H/V or No-placement/borrow
+rows, and Edit's band keeps only the stack commands and their anchoring. The
+box's non-numeric actions moved to a context menu on each canvas, opened by
+right-click and Menu/Shift+F10: Edit offers **Reset box placement** while the
+slide holds a placement customization (`revertCurrentSlideField("placement")`);
+Themes offers the same reset for the theme's placement on Songs and the view's
+box/inset on Bible (`InspectorAdapter::reset`, which preserves every sibling
+field), plus **Use theme's box** on Bible (`copyThemeBox` through the context
+merge). `workspace_ui_tests` asserts every removed control is absent with no
+blank spacer in its place, TL's vertical/All-caps controls and the stack
+commands remain, both menus open by mouse and keyboard, a reset writes one undo
+and leaves the rest of the record intact, opening a menu with nothing placed
+creates nothing, and the Bible borrow preserves the reading size.
+`inspector_adapter_tests` proves both verbs preserve sibling fields and survive
+save/reopen. Full desktop suite: 85/85.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

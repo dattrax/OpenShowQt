@@ -3274,27 +3274,22 @@ int main(int argc, char** argv) {
         // theme under the operator's cursor.
         const QString placedId = editorPage->property("selectedId").toString();
         check(!placedId.isEmpty(), "the editor has a selected theme to place with");
-        auto* noPlacementButton = findNamed(window->contentItem(), "themeEditorNoPlacement");
-        auto* placeXField = findNamed(window->contentItem(), "themeEditorPlaceX");
-        auto* placeYField = findNamed(window->contentItem(), "themeEditorPlaceY");
-        auto* placeWField = findNamed(window->contentItem(), "themeEditorPlaceW");
-        auto* placeHField = findNamed(window->contentItem(), "themeEditorPlaceH");
-        check(noPlacementButton && placeXField && placeHField
-                  && !noPlacementButton->property("enabled").toBool()
-                  && placementRow(placedId).value(QStringLiteral("placementSet")).toBool() == false,
-              "a theme with no placement shows the fields asleep: No placement is disabled "
-              "and the row says nothing is placed");
+        QObject* themeMenuObject = nullptr;
+        QObject* themeResetObject = nullptr;
         // Drag the box the overlay is OFFERING (the dashed built-in lyric
         // rect 160,100,1600,880): press inside it, move up-left (the wide
         // box clamps against the canvas's right edge before it clamps at
         // zero), release once.
         const qreal zoom = previewFrame->width() / 1920.0;
-        const QPointF hold = previewFrame->mapToScene(QPointF(960 * zoom, 540 * zoom));
-        const QPointF dragged = hold + QPointF(-20, -15);
-        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, hold.toPoint());
-        QTest::mouseMove(window, dragged.toPoint(), 20);
-        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, dragged.toPoint());
-        QTest::qWait(80);
+        const auto dragOfferedBox = [&](double dx, double dy) {
+            const QPointF hold = previewFrame->mapToScene(QPointF(960 * zoom, 540 * zoom));
+            const QPointF dragged = hold + QPointF(dx, dy);
+            QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, hold.toPoint());
+            QTest::mouseMove(window, dragged.toPoint(), 20);
+            QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, dragged.toPoint());
+            QTest::qWait(80);
+        };
+        dragOfferedBox(-20, -15);
         checkPlacementHandles();
         const QVariantMap moved = placementRow(placedId).value(QStringLiteral("placement")).toMap();
         check(placementRow(placedId).value(QStringLiteral("placementSet")).toBool()
@@ -3309,47 +3304,6 @@ int main(int argc, char** argv) {
         QTest::qWait(80);
         check(!placementRow(placedId).value(QStringLiteral("placementSet")).toBool(),
               "one undo removes the whole drag, not one pixel of it");
-        // The typed path: four fields, one write.
-        placeXField->setProperty("text", "200");
-        placeYField->setProperty("text", "150");
-        placeWField->setProperty("text", "1400");
-        placeHField->setProperty("text", "500");
-        QMetaObject::invokeMethod(placeHField, "editingFinished");
-        QTest::qWait(80);
-        checkPlacementHandles();
-        const QVariantMap typed = placementRow(placedId).value(QStringLiteral("placement")).toMap();
-        check(typed.value(QStringLiteral("x")).toDouble() == 200.0
-                  && typed.value(QStringLiteral("y")).toDouble() == 150.0
-                  && typed.value(QStringLiteral("width")).toDouble() == 1400.0
-                  && typed.value(QStringLiteral("height")).toDouble() == 500.0
-                  && noPlacementButton->property("enabled").toBool(),
-              "typing the four numbers writes the placement as one unit and No placement wakes");
-        // The centre helpers (review 2026-11-10): one click per axis keeps
-        // the size and lands the box on the 1920x1080 centre; the guides
-        // rest hidden between gestures.
-        auto* centreH = findNamed(window->contentItem(), "themeEditorPlaceCenterH");
-        auto* centreV = findNamed(window->contentItem(), "themeEditorPlaceCenterV");
-        auto* guideX = findNamed(window->contentItem(), "themeEditorCentreGuideX");
-        auto* guideY = findNamed(window->contentItem(), "themeEditorCentreGuideY");
-        check(centreH && centreV && guideX && guideY
-                  && centreH->property("enabled").toBool()
-                  && centreV->property("enabled").toBool()
-                  && !guideX->isVisible() && !guideY->isVisible(),
-              "the placement row offers centre helpers and rests without centre guides");
-        clickAt(centreH, centreH->width() / 2, centreH->height() / 2);
-        QTest::qWait(80);
-        check(placementRow(placedId).value(QStringLiteral("placement")).toMap()
-                      .value(QStringLiteral("x")).toDouble() == 260.0
-                  && placementRow(placedId).value(QStringLiteral("placement")).toMap()
-                         .value(QStringLiteral("y")).toDouble() == 150.0,
-              "Center H moves only the horizontal axis onto the slide centre");
-        clickAt(centreV, centreV->width() / 2, centreV->height() / 2);
-        QTest::qWait(80);
-        check(placementRow(placedId).value(QStringLiteral("placement")).toMap()
-                      .value(QStringLiteral("y")).toDouble() == 290.0
-                  && placementRow(placedId).value(QStringLiteral("placement")).toMap()
-                         .value(QStringLiteral("width")).toDouble() == 1400.0,
-              "Center V moves only the vertical axis and keeps the box's size");
         // The gesture and its fixture share one snap answer: inside the
         // tolerance the axis lands exactly on the centre, outside it the
         // pointer's travel is kept.
@@ -3371,26 +3325,78 @@ int main(int argc, char** argv) {
                       && qAbs(nearY.y() - 490.0) < 0.001,
                   "the centre snap pulls a near axis exactly onto 960/540 and leaves a far one alone");
         }
-        // A box the page itself will not place (w < 1) never reaches the
-        // model, and every field snaps back to where the record says it is.
-        placeWField->setProperty("text", "0");
-        QMetaObject::invokeMethod(placeWField, "editingFinished");
-        QTest::qWait(80);
-        check(placementRow(placedId).value(QStringLiteral("placement")).toMap()
-                      .value(QStringLiteral("width")).toDouble() == 1400.0
-                  && placeWField->property("text").toString() == QLatin1String("1400"),
-              "a refused rectangle changes nothing and the fields snap back");
-        // "No placement" is the theme's own revert: colours stay, the
-        // rectangle goes, and the overlay falls back to the dashed offer.
-        clickAt(noPlacementButton, noPlacementButton->width() / 2,
-                noPlacementButton->height() / 2);
+        // BX.3: the box menu carries the reset the numeric row used to. A
+        // second drag creates a placement; Menu opens the menu on the
+        // selected box and Reset removes only the rectangle.
+        dragOfferedBox(-20, -15);
+        check(placementRow(placedId).value(QStringLiteral("placementSet")).toBool(),
+              "the second drag creates the placement the menu acts on");
+        const QVariantMap styledBefore = placementRow(placedId);
+        QMetaObject::invokeMethod(editorPage, "openBoxMenuAtSelection");
+        QTest::qWait(60);
+        themeMenuObject = window->findChild<QObject*>("themeEditorBoxMenu");
+        themeResetObject = window->findChild<QObject*>("themeEditorResetPlacementItem");
+        check(themeMenuObject && themeMenuObject->property("visible").toBool(),
+              "Menu opens the box menu on the selected box");
+        check(themeResetObject && themeResetObject->property("enabled").toBool(),
+              "the box menu offers Reset once the theme places");
+        if (themeResetObject != nullptr)
+            QMetaObject::invokeMethod(themeResetObject, "clicked");
         QTest::qWait(80);
         check(!placementRow(placedId).value(QStringLiteral("placementSet")).toBool()
-                  && !noPlacementButton->property("enabled").toBool()
-                  && placeXField->property("text").toString() == QLatin1String("160")
-                  && !placementRow(placedId).value(QStringLiteral("name")).toString().isEmpty(),
-              "No placement takes the theme's opinion away, puts the offered box back in "
-              "the fields, and leaves the theme itself intact");
+                  && placementRow(placedId).value(QStringLiteral("name")).toString()
+                         == styledBefore.value(QStringLiteral("name")).toString()
+                  && placementRow(placedId).value(QStringLiteral("fontSize")).toDouble()
+                         == styledBefore.value(QStringLiteral("fontSize")).toDouble(),
+              "Reset box placement removes only the rectangle and keeps the theme's style");
+        // Opening the menu with nothing placed offers no reset and creates
+        // no record — the same rule the first check stated, now proven
+        // after a reset has left the theme silent again.
+        QMetaObject::invokeMethod(editorPage, "openBoxMenuAtSelection");
+        QTest::qWait(60);
+        themeMenuObject = window->findChild<QObject*>("themeEditorBoxMenu");
+        themeResetObject = window->findChild<QObject*>("themeEditorResetPlacementItem");
+        check(themeMenuObject && themeResetObject
+                  && !themeResetObject->property("enabled").toBool()
+                  && placementRow(placedId).value(QStringLiteral("placementSet")).toBool() == false,
+              "opening the box menu with nothing placed offers no reset and creates nothing");
+        if (themeMenuObject != nullptr)
+            QMetaObject::invokeMethod(themeMenuObject, "close");
+        QTest::qWait(80);
+        // BX.3: the numeric geometry UI is gone and no blank spacer took its
+        // place; TL's layout controls remain.
+        check(findNamed(window->contentItem(), "themeEditorPlaceX") == nullptr
+                  && findNamed(window->contentItem(), "themeEditorPlaceCenterH") == nullptr
+                  && findNamed(window->contentItem(), "themeEditorNoPlacement") == nullptr
+                  && findNamed(window->contentItem(), "themeEditorContextX") == nullptr
+                  && findNamed(window->contentItem(), "themeEditorContextBoxClear") == nullptr
+                  && findNamed(window->contentItem(), "boxGeometryControls") == nullptr,
+              "no numeric geometry field, centre helper or old placement row remains in Themes");
+        {
+            auto* themeStyle = findNamed(window->contentItem(), "textStyleControls");
+            auto* themeEffects = findNamed(window->contentItem(), "textEffectsControls");
+            check(themeStyle && themeEffects
+                      && themeEffects->mapToItem(themeStyle->parentItem(), QPointF()).y()
+                             - (themeStyle->mapToItem(themeStyle->parentItem(), QPointF()).y()
+                                + themeStyle->height()) <= 12.0,
+                  "no blank spacer sits where the geometry section was");
+        }
+        check(findNamed(window->contentItem(), "themeEditorVerticalAlign") != nullptr
+                  && findNamed(window->contentItem(), "themeEditorAllCaps") != nullptr,
+              "TL's vertical alignment and All caps controls remain");
+        // Right-click over the box opens the same menu by mouse.
+        {
+            const QPointF rightClick =
+                previewFrame->mapToScene(QPointF(960 * zoom, 400 * zoom));
+            QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier,
+                              rightClick.toPoint());
+            QTest::qWait(60);
+            check(themeMenuObject && themeMenuObject->property("visible").toBool(),
+                  "right-click over the box opens the box menu");
+            if (themeMenuObject != nullptr)
+                QMetaObject::invokeMethod(themeMenuObject, "close");
+            QTest::qWait(60);
+        }
 
         // --- typography and effects (task TS.4) -------------------------
         // The style block is SHARED, so every control here owns exactly one
@@ -3601,7 +3607,6 @@ int main(int argc, char** argv) {
         // the Bible page paginates against; the e2e leg pins that.
         auto* ctxReset = findNamed(window->contentItem(), "themeEditorContextReset");
         auto* ctxSizeField = findNamed(window->contentItem(), "themeEditorContextSize");
-        auto* ctxHField = findNamed(window->contentItem(), "themeEditorContextH");
         auto* ctxLinesLabel = findNamed(window->contentItem(), "themeEditorContextLines");
         const auto contextRow = [&docs](const QString& id) {
             return docs.themeContext(id, QStringLiteral("scripture"));
@@ -3647,9 +3652,8 @@ int main(int argc, char** argv) {
                   && !contextRow(placedId).value(QStringLiteral("set")).toBool(),
               "Bible font controls are visible before an override exists, with no setup checkbox");
         QMetaObject::invokeMethod(ctxSizeField, "editingFinished");
-        QMetaObject::invokeMethod(ctxHField, "editingFinished");
         check(!contextRow(placedId).value(QStringLiteral("set")).toBool(),
-              "leaving inherited font and box fields unchanged creates no context");
+              "leaving an unchanged inherited font field creates no context");
         if (initialAlign) QMetaObject::invokeMethod(initialAlign, "activated",
             Q_ARG(int, initialAlign->property("currentIndex").toInt()));
         QTest::qWait(80);
@@ -3697,16 +3701,6 @@ int main(int argc, char** argv) {
                   && ctxSizeField->property("text").toString().toDouble()
                         == inheritedReading.value("fontSize").toDouble(),
               "a negative size never reaches the context and the field restores its resolved size");
-        // The height field is the box as one unit: one typed number commits
-        // all four.
-        ctxHField->setProperty("text", "600");
-        QMetaObject::invokeMethod(ctxHField, "editingFinished");
-        QTest::qWait(80);
-        const QVariantMap resized = contextRow(placedId);
-        check(resized.value(QStringLiteral("boxSet")).toBool()
-                  && resized.value(QStringLiteral("height")).toDouble() == 600.0
-                  && resized.value(QStringLiteral("x")).toDouble() == 160.0,
-              "typing the box's height commits the rectangle as one unit");
         check(waitFor([&] {
                   return ctxLinesLabel->property("text").toString().contains(
                           QStringLiteral("not measured"));
@@ -3720,7 +3714,7 @@ int main(int argc, char** argv) {
         docs.undo();
         QTest::qWait(80);
         check(contextRow(placedId).value(QStringLiteral("set")).toBool()
-                  && contextRow(placedId).value(QStringLiteral("height")).toDouble() == 600.0
+                  && contextRow(placedId).value(QStringLiteral("height")).toDouble() == 880.0
                   && ctxReset->isEnabled() && contextFields->isVisible(),
               "one undo restores the complete Bible override");
 
@@ -3755,6 +3749,54 @@ int main(int argc, char** argv) {
         check(contextRow(placedId).value(QStringLiteral("x")).toDouble() == 160.0
                   && !placementRow(placedId).value(QStringLiteral("placementSet")).toBool(),
               "one undo rolls the view drag back to the context's own record — one entry, as the Songs view keeps it");
+        // BX.3: the Bible box's non-numeric actions live on its menu. The
+        // theme gains a placement; Use theme's box copies it through the
+        // existing merge (the reading size survives), and Reset box
+        // placement removes ONLY the box.
+        ctxSizeField->setProperty("text", "32");
+        QMetaObject::invokeMethod(ctxSizeField, "editingFinished");
+        QTest::qWait(80);
+        check(docs.setThemePlacement(viewedId, 200.0, 120.0, 1400.0, 700.0),
+              "the theme gains a placement the Bible view can borrow");
+        QMetaObject::invokeMethod(editorPage, "openBoxMenuAtSelection");
+        QTest::qWait(60);
+        QObject* bibleMenu = window->findChild<QObject*>("themeEditorBoxMenu");
+        QObject* borrowItem = window->findChild<QObject*>("themeEditorUseThemeBoxItem");
+        check(bibleMenu && bibleMenu->property("visible").toBool() && borrowItem
+                  && borrowItem->property("visible").toBool()
+                  && borrowItem->property("enabled").toBool(),
+              "the Bible box menu offers Use theme's box");
+        if (borrowItem != nullptr)
+            QMetaObject::invokeMethod(borrowItem, "clicked");
+        QTest::qWait(80);
+        const QVariantMap borrowed = contextRow(placedId);
+        check(borrowed.value(QStringLiteral("boxSet")).toBool()
+                  && borrowed.value(QStringLiteral("x")).toDouble() == 200.0
+                  && borrowed.value(QStringLiteral("height")).toDouble() == 700.0
+                  && borrowed.value(QStringLiteral("fontSizeSet")).toBool()
+                  && borrowed.value(QStringLiteral("fontSize")).toDouble() == 32.0,
+              "Use theme's box copies the rectangle and keeps the view's reading size");
+        QMetaObject::invokeMethod(editorPage, "openBoxMenuAtSelection");
+        QTest::qWait(60);
+        QObject* bibleReset = window->findChild<QObject*>("themeEditorResetPlacementItem");
+        check(bibleReset && bibleReset->property("enabled").toBool(),
+              "the Bible box menu offers Reset once the view stores a box");
+        if (bibleReset != nullptr)
+            QMetaObject::invokeMethod(bibleReset, "clicked");
+        QTest::qWait(80);
+        const QVariantMap afterBoxReset = contextRow(placedId);
+        check(!afterBoxReset.value(QStringLiteral("boxSet")).toBool()
+                  && !afterBoxReset.value(QStringLiteral("insetSet")).toBool()
+                  && afterBoxReset.value(QStringLiteral("fontSizeSet")).toBool()
+                  && afterBoxReset.value(QStringLiteral("fontSize")).toDouble() == 32.0,
+              "Reset box placement removes only the Bible box and keeps the reading size");
+        docs.undo();
+        QTest::qWait(80);
+        check(contextRow(placedId).value(QStringLiteral("boxSet")).toBool()
+                  && contextRow(placedId).value(QStringLiteral("height")).toDouble() == 700.0,
+              "one undo restores the borrowed box");
+        check(docs.clearThemePlacement(viewedId),
+              "the temporary theme placement goes");
         // Back to Songs: the base fields wake, the context sleeps, and the
         // selection never moved.
         clickAt(viewSongs, viewSongs->width() / 2, viewSongs->height() / 2);
@@ -5049,94 +5091,109 @@ int main(int argc, char** argv) {
         }
 
         // --- the lyric box rides the chain (themes plan amendment) --------
-        // The four geometry fields edit the box WHERE IT DRAWS: on a slide
-        // whose theme places, a typed value records a placement
-        // CUSTOMIZATION — one unit, with its own owner label and revert —
-        // while an extra box keeps editing its authored rectangle exactly
-        // as it always did.
-        check(docs.setThemePlacement(house, 250.0, 150.0, 1300.0, 700.0),
+        // The box is placed by the canvas gesture (and the same controller
+        // verb the gesture commits, used here so the fixture is not a
+        // pointer-maths test): on a slide whose theme places, an edit
+        // records a placement CUSTOMIZATION — one unit, with the box menu's
+        // Reset as its revert — while an extra box keeps editing its
+        // authored rectangle exactly as it always did. BX.3 removed the
+        // numeric X/Y/W/H band; nothing below types a coordinate.
+        check(docs.selectTextBox(0) &&
+                  docs.setThemePlacement(house, 250.0, 150.0, 1300.0, 700.0),
               "House gains a lyric-box placement");
-        auto* owner = findNamed(window->contentItem(), "placementOwner");
-        auto* revert = findNamed(window->contentItem(), "revertPlacementButton");
-        check(owner && revert
-                  && waitFor([&] { return owner->property("visible").toBool()
-                                        && owner->property("text").toString()
-                                               == QLatin1String("THEME PLACES"); })
-                  && !revert->property("enabled").toBool()
-                  && docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("x"))
-                             .toDouble() == 250.0,
-              "the geometry row names the THEME as the box's owner and the canvas shows "
-              "the themed rectangle with nothing to revert");
-        QList<QQuickItem*> geomFields;
-        collectNamed(window->contentItem(), "geometryField", geomFields);
-        check(geomFields.size() == 4
-                  && geomFields.first()->property("text").toString() == QLatin1String("250"),
-              "the X/Y/W/H fields read the placed box, not the authored one underneath");
-        geomFields.first()->setProperty("text", "500");
-        QMetaObject::invokeMethod(geomFields.first(), "editingFinished");
-        check(waitFor([&] { return docs.slideAppearance().value(QStringLiteral("placement"))
-                                       .toMap().value(QStringLiteral("customized")).toBool(); })
-                  && owner->property("text").toString() == QLatin1String("THIS SLIDE")
-                  && waitFor([&] { return revert->property("enabled").toBool(); }),
-              "typing on a placed box customizes the SLIDE's own spot — one unit, "
-              "owner label and revert and all");
-        // The geometry band lives at the bottom of the Edit page's
-        // Flickable, and at this window height its last row sits under the
-        // viewport edge. An operator flicks the page up to reach it, so the
-        // test does exactly that before clicking.
-        {
-            QQuickItem* page = revert->parentItem()->parentItem()->parentItem()->parentItem();
-            page->setProperty("contentY", page->property("contentHeight").toReal()
-                                              - page->property("height").toReal());
-            QTest::qWait(60);
-        }
-        // The Edit page's geometry band carries the same one-click centre
-        // helpers as the theme rail, and the canvas wears the same resting
-        // guides (hidden until a move gesture has snapped an axis).
-        auto* centreH = findNamed(window->contentItem(), "centerBoxH");
-        auto* centreV = findNamed(window->contentItem(), "centerBoxV");
         auto* guideX = findNamed(window->contentItem(), "centreGuideX");
         auto* guideY = findNamed(window->contentItem(), "centreGuideY");
-        check(centreH && centreV && guideX && guideY
-                  && centreH->property("enabled").toBool()
-                  && centreV->property("enabled").toBool()
-                  && !guideX->isVisible() && !guideY->isVisible(),
-              "the edit geometry band offers centre helpers and rests without guides");
-        clickAt(centreH, centreH->width() / 2, centreH->height() / 2);
-        QTest::qWait(80);
-        check(docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("x"))
-                      .toDouble() == 310.0
-                  && docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("width"))
-                         .toDouble() == 1300.0,
-              "Center H puts the slide's box on the horizontal centre and keeps its width");
-        clickAt(centreV, centreV->width() / 2, centreV->height() / 2);
-        QTest::qWait(80);
-        check(docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("y"))
-                      .toDouble() == 190.0
-                  && docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("height"))
-                         .toDouble() == 700.0,
-              "Center V puts it on the vertical centre and keeps its height");
-        clickAt(revert, revert->width() / 2, revert->height() / 2);
-        QTest::qWait(120);
+        check(guideX && guideY && !guideX->isVisible() && !guideY->isVisible()
+                  && docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("x"))
+                             .toDouble() == 250.0,
+              "the canvas shows the themed rectangle with no resting guides");
+        check(docs.setTextBoxGeometry(500.0, 150.0, 1300.0, 700.0),
+              "an edit on the placed box writes the slide's own spot");
+        check(waitFor([&] { return docs.slideAppearance().value(QStringLiteral("placement"))
+                                       .toMap().value(QStringLiteral("customized")).toBool(); }),
+              "the edit customizes the SLIDE's own spot");
+        // Keyboard: Menu opens the box menu on the selected box, and its
+        // Reset hands the rectangle back to the theme in one step.
+        auto* canvas = findNamed(window->contentItem(), "editCanvas");
+        check(canvas != nullptr, "the Edit canvas hosts the box menu");
+        if (canvas != nullptr) {
+            QMetaObject::invokeMethod(canvas, "openBoxMenuAtSelection");
+            QTest::qWait(60);
+            QObject* editMenu = window->findChild<QObject*>("editBoxMenu");
+            QObject* editReset = window->findChild<QObject*>("resetBoxPlacementMenuItem");
+            check(editMenu && editMenu->property("visible").toBool(),
+                  "Menu opens the box menu on the selected box");
+            check(editReset && editReset->property("enabled").toBool(),
+                  "the box menu offers Reset once the slide holds a placement");
+            if (editReset != nullptr)
+                QMetaObject::invokeMethod(editReset, "clicked");
+            QTest::qWait(120);
+        }
         check(waitFor([&] { return !docs.slideAppearance().value(QStringLiteral("placement"))
                                           .toMap().value(QStringLiteral("customized")).toBool(); })
                   && docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("x"))
-                             .toDouble() == 250.0
-                  && owner->property("text").toString() == QLatin1String("THEME PLACES"),
-              "the revert hands the whole rectangle back to the theme in one step");
+                             .toDouble() == 250.0,
+              "Reset box placement hands the whole rectangle back to the theme in one step");
+        check(findNamed(window->contentItem(), "geometryField") == nullptr
+                  && findNamed(window->contentItem(), "centerBoxH") == nullptr
+                  && findNamed(window->contentItem(), "centerBoxV") == nullptr
+                  && findNamed(window->contentItem(), "placementOwner") == nullptr
+                  && findNamed(window->contentItem(), "revertPlacementButton") == nullptr,
+              "the Edit numeric band, centre helpers and owner row are gone");
+        if (canvas != nullptr) {
+            // Right-click over the box opens the same menu by mouse.
+            const QVariantMap placedBox = docs.currentSlideBoxes().at(0).toMap();
+            const double z = canvas->property("zoom").toDouble();
+            const double stageX =
+                (canvas->width() - canvas->property("stageWidth").toDouble()) / 2.0;
+            const double stageY =
+                (canvas->height() - canvas->property("stageHeight").toDouble()) / 2.0;
+            const QPointF boxPoint = canvas->mapToScene(QPointF(
+                stageX + (placedBox.value(QStringLiteral("x")).toDouble()
+                          + placedBox.value(QStringLiteral("width")).toDouble() / 2.0) * z,
+                stageY + (placedBox.value(QStringLiteral("y")).toDouble()
+                          + placedBox.value(QStringLiteral("height")).toDouble() / 2.0) * z));
+            QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, boxPoint.toPoint());
+            QTest::qWait(60);
+            QObject* editMenu = window->findChild<QObject*>("editBoxMenu");
+            check(editMenu && editMenu->property("visible").toBool(),
+                  "right-click over the Edit box opens the box menu");
+            if (editMenu != nullptr)
+                QMetaObject::invokeMethod(editMenu, "close");
+            QTest::qWait(60);
+        }
         // An extra box is geometry, never a placement: the theme drives
         // exactly one box, and everything else keeps authored behaviour.
         // The stack already carries whatever earlier fixtures left, so
         // everything here is relative to the box COUNT and the NEW id —
         // never an assumed index.
         auto* newBox = findNamed(window->contentItem(), "newBoxButton");
+        // The stack row sits at the bottom of the Edit page's Flickable; at
+        // this window height it can be under the viewport edge, so an
+        // operator flicks the page up to reach it. The numeric band's
+        // removal (BX.3) changed how much room the row has.
+        if (newBox != nullptr) {
+            QQuickItem* page = newBox->parentItem();
+            while (page != nullptr && !page->property("contentY").isValid())
+                page = page->parentItem();
+            if (page != nullptr) {
+                page->setProperty("contentY", page->property("contentHeight").toReal()
+                                                  - page->property("height").toReal());
+                QTest::qWait(80);
+            }
+        }
         const QStringList before = [&docs]() {
             QStringList ids;
             for (const QVariant& box : docs.currentSlideBoxes())
                 ids.append(box.toMap().value(QStringLiteral("id")).toString());
             return ids;
         }();
-        clickAt(newBox, newBox->width() / 2, newBox->height() / 2);
+        // Activate the button itself: the stack row can sit under the
+        // viewport edge at this window height, and the claim here is the
+        // command's effect and continued reachability, not pointer maths
+        // (BX.4 drives the real-pointer matrix).
+        if (newBox != nullptr)
+            QMetaObject::invokeMethod(newBox, "clicked");
         QTest::qWait(80);
         QString newId;
         int newIndex = -1;
@@ -5155,19 +5212,23 @@ int main(int argc, char** argv) {
                              .value(QStringLiteral("placed")).toBool() == false,
                "the new box was added and the chain does not place it");
         check(docs.currentBox() == newIndex, "the new box is the selection");
-        geomFields.first()->setProperty("text", "90");
-        QMetaObject::invokeMethod(geomFields.first(), "editingFinished");
-        QTest::qWait(80);
-        check(docs.currentSlideBoxes().at(newIndex).toMap().value(QStringLiteral("x"))
-                      .toDouble()
-                  == 90.0
-                  && !docs.slideAppearance().value(QStringLiteral("placement")).toMap()
-                            .value(QStringLiteral("customized")).toBool(),
-              "typing on an unplaced box edits its AUTHORED rectangle and customizes "
+        check(docs.setTextBoxGeometry(90.0, 100.0, 400.0, 300.0)
+                  && docs.currentSlideBoxes().at(newIndex).toMap()
+                             .value(QStringLiteral("x")).toDouble() == 90.0
+                  && !docs.slideAppearance().value(QStringLiteral("placement"))
+                            .toMap().value(QStringLiteral("customized")).toBool(),
+              "an edit on an unplaced box changes its AUTHORED rectangle and customizes "
               "no placement");
+        // The stack tools survive the numeric band's removal.
+        auto* backButton = findNamed(window->contentItem(), "boxBackButton");
+        auto* forwardButton = findNamed(window->contentItem(), "boxForwardButton");
+        check(newBox && backButton && forwardButton
+                  && backButton->property("enabled").toBool(),
+              "the stack commands stay reachable beside the canvas");
         // Leave the fixture exactly the story it told before this block.
         auto* deleteBox = findNamed(window->contentItem(), "deleteBoxButton");
-        clickAt(deleteBox, deleteBox->width() / 2, deleteBox->height() / 2);
+        if (deleteBox != nullptr)
+            QMetaObject::invokeMethod(deleteBox, "clicked");
         QTest::qWait(80);
         check(docs.currentSlideBoxes().size() == before.size() && docs.clearThemePlacement(house),
               "the extra box goes and House stops placing — nothing leaks to the captures");

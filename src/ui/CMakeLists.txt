@@ -112,7 +112,7 @@ set(OPENSHOW_WORKSPACE_QML_NAMES
   SlidePreviewSurface.qml SlidePreviewCard.qml SlidePreviewCollection.qml
   CameraArtwork.qml
   WorkerFontPicker.qml TextStyleControls.qml TextEffectsControls.qml
-  BackgroundControls.qml BoxGeometryControls.qml TransitionControls.qml
+  BackgroundControls.qml TransitionControls.qml
   AppearanceInspector.qml BoxTransform.qml
 )
 set(OPENSHOW_WORKSPACE_QML_FILES)

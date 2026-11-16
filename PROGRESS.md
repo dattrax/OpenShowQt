@@ -11,7 +11,7 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Box manipulation (2026-11-16): BX.1–BX.2 are DONE; BX.3–BX.4 are TODO.** The
+**Box manipulation (2026-11-16): BX.1–BX.3 are DONE; BX.4 is TODO.** The
 [box-manipulation brief](docs/ui/box-manipulation-plan.md) fixes all four corner
 handles across Theme Songs/Bible/Edit and removes numeric geometry/Center H/V
 sections. Body drag retains centre snapping; placement reset/borrow moves to
@@ -38,8 +38,19 @@ identity still holds and the rounded rectangle changed. Navigation, a
 selection/theme change, a view switch, deletion and Escape cancel and restore
 the model geometry; a held drag never retargets a new box. Selected handles beat
 an overlapping body; body presses still select the topmost item. Desktop suite
-85/85. Next action: BX.3 (remove the numeric geometry inspectors, move
-reset/borrow to the box menu).
+85/85.
+
+BX.3 removed the numeric geometry UI: `BoxGeometryControls` is retired, the
+Songs/Bible/Edit rails carry no X/Y/W/H, Centre H/V or owner/placement rows,
+and Edit keeps only its stack commands and keyboard tools. Placement reset and
+the Bible borrow moved to each canvas's box context menu (right-click or
+Menu/Shift+F10), routed through the existing adapter/domain verbs so siblings
+survive and a reset is one undo; opening a menu creates nothing. The Edit band
+and Theme rails were re-laid out with no blank spacer where the section sat.
+`workspace_ui_tests` pins the absences, the menu paths, reset/borrow effects and
+the surviving TL/stack controls; `inspector_adapter_tests` pins field
+preservation and save/reopen. Desktop suite 85/85. Next action: BX.4 (the
+real-pointer matrix, captures, headless/guards, and the worker-output journey).
 
 **Text layout and editor consistency (2026-11-16): TL.1–TL.6 are DONE.** The
 agreed

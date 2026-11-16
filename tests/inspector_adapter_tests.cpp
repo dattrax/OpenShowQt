@@ -681,6 +681,81 @@ void exerciseInheritedTheme(const std::filesystem::path& root) {
           "reading and overriding an inheriting theme leaves Default unchanged");
 }
 
+// BX.3: the box menu's actions. Reset removes ONLY the rectangle — a
+// theme's placement or a view's box/inset — and leaves every sibling style
+// field; the Bible borrow writes the view's box through the same merge and
+// keeps the reading size. The result survives save/reopen, and opening no
+// menu is involved: these are the very verbs the menu items call.
+void exerciseBoxMenuActions(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong(QStringLiteral("Boxes"));
+    docs.addSlide();
+    check(docs.createBlankTheme(QStringLiteral("Menu")), "a blank theme exists");
+    const QString id = themeRowNamed(docs, QStringLiteral("Menu"))
+                           .value(QStringLiteral("id")).toString();
+    check(!id.isEmpty(), "the theme row has an id");
+    InspectorAdapter adapter;
+    adapter.setDocument(&docs);
+    adapter.setTarget(fieldTarget(QStringLiteral("theme"), id));
+
+    check(docs.editTheme(id, QStringLiteral("Menu"), QStringLiteral("#ffd23f"),
+                         QStringLiteral("#101828"), QString(), QStringLiteral("Serif"),
+                         48.0, QStringLiteral("left"), 1.25),
+          "the theme takes a style");
+    check(docs.setThemePlacement(id, 200.0, 120.0, 1400.0, 700.0),
+          "the theme places a box");
+    check(adapter.reset(QStringLiteral("placement")) &&
+              !themeRowNamed(docs, QStringLiteral("Menu"))
+                   .value(QStringLiteral("placementSet")).toBool()
+              && themeRowNamed(docs, QStringLiteral("Menu"))
+                     .value(QStringLiteral("fontSize")).toInt() == 48
+              && themeRowNamed(docs, QStringLiteral("Menu"))
+                     .value(QStringLiteral("textColor")).toString()
+                     == QStringLiteral("#ffd23f"),
+          "reset removes only the theme's placement and keeps its style");
+
+    adapter.setTarget(fieldTarget(QStringLiteral("context"), id,
+                                  QStringLiteral("scripture")));
+    QVariantMap seed;
+    seed.insert(QStringLiteral("fontSize"), 32.0);
+    seed.insert(QStringLiteral("box"), rect(240.0, 130.0, 1440.0, 700.0));
+    check(docs.applyThemeContext(id, QStringLiteral("scripture"), seed),
+          "the view stores a reading size and a box");
+    check(adapter.reset(QStringLiteral("box")), "the adapter removes the view's box");
+    {
+        const QVariantMap row = docs.themeContext(id, QStringLiteral("scripture"));
+        check(row.value(QStringLiteral("set")).toBool() &&
+                  !row.value(QStringLiteral("boxSet")).toBool() &&
+                  !row.value(QStringLiteral("insetSet")).toBool() &&
+                  row.value(QStringLiteral("fontSizeSet")).toBool() &&
+                  row.value(QStringLiteral("fontSize")).toDouble() == 32.0,
+              "reset removes only the box and keeps the reading size");
+    }
+    check(adapter.commit(QStringLiteral("box"), rect(200.0, 120.0, 1400.0, 700.0)),
+          "Use theme's box commits the rectangle");
+    {
+        const QVariantMap row = docs.themeContext(id, QStringLiteral("scripture"));
+        check(row.value(QStringLiteral("boxSet")).toBool() &&
+                  row.value(QStringLiteral("width")).toDouble() == 1400.0 &&
+                  row.value(QStringLiteral("fontSizeSet")).toBool() &&
+                  row.value(QStringLiteral("fontSize")).toDouble() == 32.0,
+              "borrow keeps the reading size and the rest of the view");
+    }
+
+    check(docs.save(), "the box actions save");
+    DocumentController reopened(nullptr, root);
+    const QVariantMap theme = themeRowNamed(reopened, QStringLiteral("Menu"));
+    check(!theme.value(QStringLiteral("placementSet")).toBool() &&
+              theme.value(QStringLiteral("fontSize")).toInt() == 48,
+          "save/reopen keeps the theme reset and its style");
+    const QVariantMap row = reopened.themeContext(id, QStringLiteral("scripture"));
+    check(row.value(QStringLiteral("boxSet")).toBool() &&
+              row.value(QStringLiteral("width")).toDouble() == 1400.0 &&
+              row.value(QStringLiteral("fontSizeSet")).toBool() &&
+              row.value(QStringLiteral("fontSize")).toDouble() == 32.0,
+          "save/reopen keeps the borrowed box and the reading size");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -695,6 +770,7 @@ int main(int argc, char* argv[]) {
     exerciseContextTarget(tempRoot / "context");
     exerciseSlideTarget(tempRoot / "slide");
     exerciseTextLayoutFields(tempRoot / "textlayout");
+    exerciseBoxMenuActions(tempRoot / "boxmenu");
     exerciseInheritedTheme(tempRoot / "inheritance");
     std::filesystem::remove_all(tempRoot);
 

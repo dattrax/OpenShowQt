@@ -268,17 +268,21 @@ geometry write on the slide's PRIMARY box records a placement CUSTOMIZATION
 that row the authored rectangle is read-only legacy, compiled only while the
 whole chain stays silent, so a nudged slide never half-writes a themed look.
 Any other box — an additional text item, every image — keeps editing authored
-geometry exactly as before. The Edit page's owner column answers for the
-primary row in three states (THIS SLIDE / THEME PLACES / AUTHORED) and
-`slideBoxes()` carries the APPLIED rectangle, so canvas chrome is drawn
-where the audience sees the words even when no theme is in play. The
-restore-customizations controls already remove placement with the rest of a
-slide's custom edits — one restore, one undo step, as the operator ruled.
-The Theme Editor's sample
-overlay speaks the slide editor's own gesture language — 8 px handle
-tolerance, 20 authored-px floor, one commit on release — with X/Y/W/H fields
-and a "No placement" clear beside them, and while the theme has no opinion
-the overlay shows the built-in lyric box dashed: an offer, not a record.
+geometry exactly as before. Since BX.1–BX.3 the box is placed directly:
+drag its body to move and any of the four corners to resize, on the Edit
+canvas and the Theme Editor's sample with one shared `BoxTransform`
+implementation. The numeric X/Y/W/H band, the Centre H/V helpers, the owner
+sentence and the old placement action row are gone; `slideBoxes()` still
+carries the APPLIED rectangle, so canvas chrome is drawn where the audience
+sees the words even when no theme is in play. The restore-customizations
+controls still remove placement with the rest of a slide's custom edits — one
+restore, one undo step, as the operator ruled.
+While the theme has no opinion the overlay shows the built-in lyric box
+dashed: an offer, not a record. Placement reset — the theme's own placement on
+Songs, the view's box/inset on Bible — and the Bible's Use-theme's-box borrow
+live on the box's context menu, opened by right-click or Menu/Shift+F10 and
+routed through the same adapter/domain verbs, so a reset is at most one undo
+and preserving a sibling field is the adapter merge's existing rule.
 Two Qt 6.12 shapes mark this surface too: `Rectangle` has no dashed border,
 so the offer outline is a small `Canvas` stroke, and the inspector fields are
 re-read through `rowFor` on every write-driven sync because a handler running
@@ -301,6 +305,11 @@ floor's seeding, refusal and chain tail in `domain_tests`, the primary-box
 write-to-customization routing and applied-rect rows in
 `document_controller_tests`, and the Default-aware list/editor/floor checks
 in `workspace_ui_tests` — the captures now lead the theme list with Default.
+BX adds its own rows there: the four-corner gesture matrix on both canvases,
+handle reach at a slide edge, identity-owned cancellation, the box menus by
+mouse and keyboard, and the absence of every numeric geometry control (with no
+blank spacer left behind); `inspector_adapter_tests` proves the reset/borrow
+verbs preserve sibling fields and survive save/reopen.
 [themes-plan.md](ui/themes-plan.md)
 carries the model and the acceptance rows; the PLAN ledger closes TH.1–TH.9.
 

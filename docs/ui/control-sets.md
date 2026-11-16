@@ -365,25 +365,26 @@ one-field edit, and the domain's sparse set — not a QML name list — decides
 whether the slide's Remove customizations button is live.
 A first transition edit uses the same atomic path. ThemeEditor keeps its
 Bible controls visible and provides Reset Bible to remove the own record;
-placement outlines carry no instructional caption. BoxGeometryControls treats
-focus-out on unchanged displayed coordinates as a no-op, including inherited
-and fractional resolved boxes.
+placement outlines carry no instructional caption. Since BX.3 the box is
+edited only by the canvas gesture; its reset lives on the box context menu,
+so there is no numeric field to treat a focus-out as a no-op.
 
 ### AppearanceInspector
 
-`src/ui/AppearanceInspector.qml` (CS.5). Composition of the five style
-sections for ONE adapter target — the part takes `adapter` only; the target
-lives on the adapter, so browsing a selection moves `target` and every
-section re-reads itself. Section order: Background → TextStyle → BoxGeometry
-→ TextEffects → Transition (the context rail's box now sits after the type
-rows, which is where the reading look is reasoned about).
+`src/ui/AppearanceInspector.qml` (CS.5). Composition of the style sections
+for ONE adapter target — the part takes `adapter` only; the target lives on
+the adapter, so browsing a selection moves `target` and every section
+re-reads itself. Section order: Background → TextStyle → TextEffects →
+Transition. The numeric BoxGeometry section is gone (BX.3): the box is placed
+by dragging the sample/slide directly, and placement reset is on the box
+context menu.
 
 | | |
 |---|---|
-| Inputs | `adapter` (InspectorAdapter, required); `worker` (required, threaded to the family picker); `overlayParent` (Item holding the picker's popup); section flags `showBackground`/`showStyle`/`showGeometry`/`showEffects`/`showTransition` (default true — the Bible rail passes `showBackground: false, showEffects: false` because a text context cannot store colours until TV.3: the section is ABSENT, not a rail of disabled rows); `showRevertChips` (default false) + `revertBadgePrefix` (default `"customizeBadge"`) forwarded to the colour rows, the family row and the size/align/spacing rows — the Edit rail's chip tradition (CS.6); effects and the style block carry their own always-present, dim-until-resettable ↺ chips, so the forwarded prefix does not name those |
+| Inputs | `adapter` (InspectorAdapter, required); `worker` (required, threaded to the family picker); `overlayParent` (Item holding the picker's popup); section flags `showBackground`/`showStyle`/`showEffects`/`showTransition` (default true — the Bible rail passes `showBackground: false, showEffects: false` because a text context cannot store colours until TV.3: the section is ABSENT, not a rail of disabled rows); `showRevertChips` (default false) + `revertBadgePrefix` (default `"customizeBadge"`) forwarded to the colour rows, the family row and the size/align/spacing rows — the Edit rail's chip tradition (CS.6); effects and the style block carry their own always-present, dim-until-resettable ↺ chips, so the forwarded prefix does not name those |
 | Outputs | readonly aliases `backgroundControls`, `styleControls`, `geometryControls`, `effectsControls`, `transitionControls` for the host to pin labels and automation names; `syncAll()` re-reads every section (call it after pinning, since the pins change what a sync draws) |
 | Events | none of its own — commits and refusals run through the adapter, and each section re-syncs itself on the adapter's `changed()`/`targetChanged()` |
-| Consumers | ThemeEditorPage Songs rail (all five sections over `{kind:"theme"}`) and Bible rail (sparse type + one box + movement over `{kind:"context", view:"scripture"}`); EditPage slide rail (CS.6 — `{kind:"slide"}` with `showGeometry: false` (the page keeps its own `geometryField`/drag story) and `showTransition: false` (a slide has no per-slide movement), `showRevertChips: true`) || Automation | every inner control's `objectName` is a string property of the owning section (defaults generic); pages pin the names their tests read (ThemeEditor re-pins its full `themeEditor*` set in `pinRailNames()`) |
+| Consumers | ThemeEditorPage Songs rail (colours, type, effects, movement over `{kind:"theme"}`) and Bible rail (sparse type + movement over `{kind:"context", view:"scripture"}`); EditPage slide rail (CS.6 — `{kind:"slide"}` with `showTransition: false` (a slide has no per-slide movement) and `showRevertChips: true`). The box is not an inspector section: it is the canvas gesture, and its reset is on the box context menu (BX.3) || Automation | every inner control's `objectName` is a string property of the owning section (defaults generic); pages pin the names their tests read (ThemeEditor re-pins its full `themeEditor*` set in `pinRailNames()`) |
 
 ### TextStyleControls
 
@@ -486,18 +487,19 @@ an invisible child by each page; it holds no document or history state.
 | Rules | a corner drag can never flip the item or change its stack order; the tolerance is received in authored units the CALLER derives from the screen-relative 6 px, so aiming feels the same at every zoom; off-canvas legacy geometry is left alone until a corrective drag; `resize` is the correction the reviewed arithmetic lacked (bottom-right was inert, top-right/bottom-left moved one axis) |
 | Gesture areas | both hosts extend their pointer surface one `handleRadius` past the fitted content and map coordinates back by the same inset, so the outer half of a corner at a slide edge is live; the target is captured by identity at press and the release writes only while that identity holds and the rounded rectangle changed (BX.2) |
 
-### BoxGeometryControls
+### Box context menu
 
-`src/ui/BoxGeometryControls.qml` (CS.5). The shared X/Y/W/H rows: four
-fields that commit as ONE unit, two one-click centre helpers, a removal
-button, and an optional extra action (the Bible rail's "Theme's lyric box"
-borrow).
+The box's non-numeric placement actions (BX.3), now that the numeric geometry
+section is gone. Both menus open on right-click over the box and on
+Menu/Shift+F10, and neither creates a record or a history entry merely by
+opening.
 
 | | |
 |---|---|
-| Inputs | `adapter` (required); `label` (the rail names its rectangle); `clearLabel` ("No placement" / "No box"); `extraActionLabel` ("" hides the button); `showStatus` (Songs states whether the target places at all); `statusOwnedText`/`statusSilentText`; `canvasWidth`/`canvasHeight` (the authored canvas the helpers centre on — 1920×1080 by contract); `xObjectName`/`yObjectName`/`wObjectName`/`hObjectName`/`centerHObjectName`/`centerVObjectName`/`clearObjectName`/`extraObjectName`/`statusObjectName` |
-| Events | the fields commit `"box"` through the adapter (routes to `setThemePlacement`/`clearThemePlacement`, the merged context box retiring a stored `inset` in the same edit, or the slide's `setTextBoxGeometry` in CS.6); `centre(horizontal)` keeps the rectangle's size and moves one axis to the canvas centre (a click while already centred writes nothing); `extraClicked()` forwards the borrow to the host; `sync()` |
-| Rules | validation is SHAPE only — four finite numbers with w/h ≥ 1 (this replaces the context rail's earlier `w > 0` spelling: a box thinner than a pixel cannot be placed either way, and the domain still has the last word); any refusal or invalid typing puts every field back where the record says; the page's drag gesture commits the same `"box"` verb, so drag and typed path are one and the same undo; a move gesture snaps a box centre to the canvas centre when it comes within a few screen pixels (the guide line in EditCanvas/ThemeEditorPage says so), and the centre helpers are the typed form of that same rule |
+| Edit (`editBoxMenu`) | **Reset box placement** — enabled only while `slideAppearance.placement.customized` is true; calls `revertCurrentSlideField("placement")`, the same verb the removed Follow-theme button used |
+| Theme Editor (`themeEditorBoxMenu`) | **Reset box placement** — the Songs view clears the theme's own placement (`themeAdapter.reset("placement")`); the Bible view removes the context's box/inset while the adapter merge preserves every sibling field (`contextAdapter.reset("box")`). Enabled only when that view states an own box |
+| Theme Editor, Bible only | **Use theme's box** — commits the theme's resolved rectangle into the context through the existing merge (`copyThemeBox`), preserving typography, layout pair, movement and every other view field |
+| Rules | keyboard-reachable (Menu/Shift+F10, arrow/Enter in the menu); a reset is at most one undo step; a secondary authored item keeps its normal undo path and offers no reset |
 
 ### TransitionControls
 

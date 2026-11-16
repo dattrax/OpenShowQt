@@ -153,6 +153,14 @@ Flickable {
         }
     }
 
+    // The stack's commands (task 6.17a2; BX.3 removed the numeric geometry
+    // band that used to sit beside them). One undo step each, and their
+    // enabled state reads the SELECTION: Delete takes the selected box away,
+    // Back/Forward re-order it in the stack the worker paints — what moves
+    // forward lands on top of the audience's picture, exactly where the
+    // outlines say it will. "New" stays live at the ceiling and lets the
+    // status line name the limit; the refusal adds no undo step. Geometry
+    // itself is the canvas gesture and the box context menu alone.
     Flow {
         id: boxFields
         anchors.right: themeScroll.left
@@ -161,212 +169,6 @@ Flickable {
         anchors.left: parent.left
         spacing: 8
 
-        // The fields show the live box; the one that loses focus
-        // commits all four. A value the domain refuses (or that is
-        // not a number at all) snaps every field back.
-        function commit() {
-            const x = parseFloat(fieldX.text)
-            const y = parseFloat(fieldY.text)
-            const w = parseFloat(fieldW.text)
-            const h = parseFloat(fieldH.text)
-            // The exact-number path onto the SELECTED box — the same
-            // op the drag commits, so one entry lands either way.
-            if (!Number.isFinite(x) || !Number.isFinite(y)
-                    || !(w >= 1) || !(h >= 1)
-                    || !docs.setTextBoxGeometry(x, y, w, h)) {
-                boxFields.sync()
-            }
-        }
-        // Centre helpers: keep the box's size, move one axis onto the
-        // 1920x1080 centre (the same rule the canvas drag snaps to).
-        function centre(horizontal) {
-            const x = horizontal ? Math.round((1920 - editCanvas.boxW) / 2)
-                                 : editCanvas.boxX
-            const y = horizontal ? editCanvas.boxY
-                                 : Math.round((1080 - editCanvas.boxH) / 2)
-            if (!docs.setTextBoxGeometry(x, y, editCanvas.boxW, editCanvas.boxH))
-                boxFields.sync()
-        }
-        function sync() {
-            fieldX.text = Qt.binding(function () { return editCanvas.boxX.toFixed(0) })
-            fieldY.text = Qt.binding(function () { return editCanvas.boxY.toFixed(0) })
-            fieldW.text = Qt.binding(function () { return editCanvas.boxW.toFixed(0) })
-            fieldH.text = Qt.binding(function () { return editCanvas.boxH.toFixed(0) })
-        }
-        Component.onCompleted: sync()
-        Connections {
-            target: docs
-            function onDocumentsChanged() { boxFields.sync() }
-            function onNavigationChanged() { boxFields.sync() }
-        }
-        Connections {
-            target: editPage
-            function onVisibleChanged() { if (editPage.visible) boxFields.sync() }
-        }
-
-        Column {
-            spacing: 2
-            Text {
-                color: "#b0b0b0"
-                font.pixelSize: 10
-                text: "X"
-            }
-            TextField {
-                id: fieldX
-                objectName: "geometryField"
-                width: 60
-                color: "#eeeeee"
-                font.pixelSize: 13
-                onEditingFinished: boxFields.commit()
-                background: Rectangle {
-                    color: "#242424"
-                    border.color: "#4a4a4a"
-                }
-            }
-        }
-
-        Column {
-            spacing: 2
-            Text {
-                color: "#b0b0b0"
-                font.pixelSize: 10
-                text: "Y"
-            }
-            TextField {
-                id: fieldY
-                objectName: "geometryField"
-                width: 60
-                color: "#eeeeee"
-                font.pixelSize: 13
-                onEditingFinished: boxFields.commit()
-                background: Rectangle {
-                    color: "#242424"
-                    border.color: "#4a4a4a"
-                }
-            }
-        }
-
-        Column {
-            spacing: 2
-            Text {
-                color: "#b0b0b0"
-                font.pixelSize: 10
-                text: "W"
-            }
-            TextField {
-                id: fieldW
-                objectName: "geometryField"
-                width: 60
-                color: "#eeeeee"
-                font.pixelSize: 13
-                onEditingFinished: boxFields.commit()
-                background: Rectangle {
-                    color: "#242424"
-                    border.color: "#4a4a4a"
-                }
-            }
-        }
-
-        // Where the SELECTED box comes from (amendments 2026-11-01 and
-        // 2026-11-02): every geometry write on the slide's PRIMARY lyric
-        // box records a placement CUSTOMIZATION — whether a theme places or
-        // not — so the owner row and its revert belong to that box always,
-        // not only to the ones a theme currently drives.
-        readonly property bool primaryBox: {
-            const box = editCanvas.boxes[docs.currentBox]
-            return box !== undefined && box.primary === true
-        }
-        readonly property bool placedByTheme: {
-            const box = editCanvas.boxes[docs.currentBox]
-            return box !== undefined && box.placed === true
-        }
-        readonly property bool placementCustomized: {
-            const entry = docs.slideAppearance["placement"]
-            return entry !== undefined && entry.customized === true
-        }
-
-        Column {
-            spacing: 2
-            Text {
-                color: "#b0b0b0"
-                font.pixelSize: 10
-                text: "H"
-            }
-            TextField {
-                id: fieldH
-                objectName: "geometryField"
-                width: 60
-                color: "#eeeeee"
-                font.pixelSize: 13
-                onEditingFinished: boxFields.commit()
-                background: Rectangle {
-                    color: "#242424"
-                    border.color: "#4a4a4a"
-                }
-            }
-        }
-
-        // Centre helpers: one click per axis, the same rule the canvas
-        // drag snaps to. They live beside the fields because a typed
-        // coordinate and a snapped one must be the same kind of edit.
-        Column {
-            spacing: 2
-            Text {
-                color: "#b0b0b0"
-                font.pixelSize: 10
-                text: "Centre"
-            }
-            Row {
-                spacing: 4
-                PanelButton {
-                    objectName: "centerBoxH"
-                    text: "Center H"
-                    Accessible.name: "Centre the box horizontally on the slide"
-                    enabled: editCanvas.hasSlide && docs.currentBox >= 0
-                    onClicked: boxFields.centre(true)
-                }
-                PanelButton {
-                    objectName: "centerBoxV"
-                    text: "Center V"
-                    Accessible.name: "Centre the box vertically on the slide"
-                    enabled: editCanvas.hasSlide && docs.currentBox >= 0
-                    onClicked: boxFields.centre(false)
-                }
-            }
-        }
-
-        // The owner row belongs to the PRIMARY box whatever the chain is
-        // doing (amendment 2026-11-02): every write here customizes, so the
-        // label says who is drawing the box right now — THIS SLIDE, THEME
-        // PLACES, or AUTHORED while nothing speaks.
-        Column {
-            spacing: 2
-            visible: boxFields.primaryBox
-            Text {
-                objectName: "placementOwner"
-                color: boxFields.placementCustomized ? "#ffd666" : "#8ec9f5"
-                font.pixelSize: 10
-                text: boxFields.placementCustomized ? "THIS SLIDE"
-                        : boxFields.placedByTheme ? "THEME PLACES" : "AUTHORED"
-            }
-            PanelButton {
-                objectName: "revertPlacementButton"
-                text: "\u21ba Follow theme"
-                // Only live while the slide actually holds a placement of
-                // its own; the revert refuses out loud either way, so a
-                // wrong click costs nothing but says something.
-                enabled: boxFields.placementCustomized
-                onClicked: docs.revertCurrentSlideField("placement")
-            }
-        }
-
-        // The stack's commands (task 6.17a2). One undo step each, and
-        // their enabled state reads the SELECTION: Delete takes the
-        // selected box away, Back/Forward re-order it in the stack the
-        // worker paints — what moves forward lands on top of the
-        // audience's picture, exactly where the outlines here say it
-        // will. "New" stays live at the ceiling and lets the status
-        // line name the limit; the refusal adds no undo step.
         Column {
             spacing: 2
             Text {
@@ -402,8 +204,6 @@ Flickable {
                 }
             }
         }
-
-
     }
 
     // The Edit rail's adapter (CS.4): one read model over the slide the
@@ -429,11 +229,12 @@ Flickable {
      * chip (the parts' badge tradition, same customizeBadge* names as
      * ever), effects inherit whole through their Off button, and "Remove
      * customizations" sends the whole slide back to its themes in one undo
-     * step. Refusals land on the status line and the field snaps back,
-     * like the box fields beside them. The theme admin row, the background
-     * image asset combo and the fit combo stay this page's own — they are
-     * slide properties, not appearance fields — and the authored box band
-     * at the bottom of the page is where the slide's rectangle lives.
+     * step. Refusals land on the status line and the control snaps back.
+     * The theme admin row, the background image asset combo and the fit
+     * combo stay this page's own — they are slide properties, not appearance
+     * fields — and the slide's rectangle is now placed directly on the
+     * canvas (drag the body, a corner to resize), with "Reset box placement"
+     * on its context menu.
      */
     ScrollView {
         id: themeScroll
@@ -648,7 +449,6 @@ Flickable {
             adapter: slideAdapter
             worker: editPage.workerApi
             overlayParent: editPage
-            showGeometry: false
             showTransition: false
             showRevertChips: true
         }

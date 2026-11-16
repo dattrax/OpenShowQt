@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 
 /*
  * The edit page stage (task 4.3, docs/reference.md §7): the slide's text
@@ -241,6 +242,39 @@ Item {
         canvas.syncFromDocuments()
     }
 
+    // BX.3: the box menu is where placement reset lives now that the numeric
+    // geometry band is gone. It opens on right-click and on Menu/Shift+F10,
+    // and its one action uses the same domain verb the old Follow-theme
+    // button did. It is enabled only while the slide holds an own placement,
+    // so merely opening it can never materialise one.
+    function openBoxMenuAt(px, py) {
+        if (!canvas.hasSlide || canvas.currentBox < 0)
+            return
+        const point = canvas.mapFromItem(stage, px, py)
+        boxMenu.popup(point.x, point.y)
+    }
+    function openBoxMenuAtSelection() {
+        const box = canvas.selectedBox()
+        if (box === undefined)
+            return
+        canvas.openBoxMenuAt((canvas.boxX + canvas.boxW / 2) * canvas.zoom,
+                             (canvas.boxY + canvas.boxH / 2) * canvas.zoom)
+    }
+
+    Menu {
+        id: boxMenu
+        objectName: "editBoxMenu"
+        MenuItem {
+            objectName: "resetBoxPlacementMenuItem"
+            text: "Reset box placement"
+            enabled: {
+                const entry = docs.slideAppearance["placement"]
+                return entry !== undefined && entry.customized === true
+            }
+            onClicked: docs.revertCurrentSlideField("placement")
+        }
+    }
+
     // The stage (task CS.2): a SlidePreviewSurface on the Selection target —
     // the worker's off-air render of THIS slide, letterboxed honestly — with
     // the box chrome riding the fitted content rectangle the pixels occupy.
@@ -344,10 +378,11 @@ Item {
         // that half dead. Coordinates are mapped back by `gestureInset`
         // before hit testing; drag deltas are differences and cancel it.
         MouseArea {
+            id: gestureArea
             objectName: "editGestureArea"
             anchors.fill: parent
             anchors.margins: -canvas.gestureInset
-            acceptedButtons: Qt.LeftButton
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
             hoverEnabled: true
             cursorShape: canvas.dragMode !== ""
                          ? transform.cursorFor(canvas.dragMode)
@@ -361,6 +396,22 @@ Item {
             onPressed: function (mouse) {
                 const px = mouse.x + canvas.gestureInset
                 const py = mouse.y + canvas.gestureInset
+                if (mouse.button === Qt.RightButton) {
+                    // A right-click selects the box under the pointer (the
+                    // topmost body rule) and opens the box menu; it never
+                    // starts a drag.
+                    if (canvas.hasSlide) {
+                        const hit = docs.boxAt(px / canvas.zoom, py / canvas.zoom)
+                        if (hit >= 0) {
+                            docs.selectTextBox(hit)
+                            canvas.syncFromDocuments()
+                            canvas.selected = true
+                        }
+                    }
+                    const point = canvas.mapFromItem(gestureArea, mouse.x, mouse.y)
+                    boxMenu.popup(point.x, point.y)
+                    return
+                }
                 const mode = canvas.hitTest(px, py)
                 if (mode === "") {
                     canvas.selected = false
@@ -401,8 +452,18 @@ Item {
                 canvas.applyDrag((mouse.x - canvas.dragOrigin.x) / canvas.zoom,
                                  (mouse.y - canvas.dragOrigin.y) / canvas.zoom)
             }
-            onReleased: canvas.endDrag()
+            onReleased: {
+                if (mouse.button === Qt.LeftButton)
+                    canvas.endDrag()
+            }
             onCanceled: canvas.cancelDrag()
+            Keys.onMenuPressed: canvas.openBoxMenuAtSelection()
+            Keys.onPressed: function (event) {
+                if (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier)) {
+                    canvas.openBoxMenuAtSelection()
+                    event.accepted = true
+                }
+            }
         }
     }
 }
