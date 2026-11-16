@@ -38,8 +38,12 @@ ServiceCatalogBridge::ServiceCatalogBridge(CatalogController* catalog,
                     }
                     fDocuments->renameLinkedCatalogShow(
                         id, QString::fromStdString(item->title));
+                    // Review D6: an edit that lands while the planner is
+                    // busy is REMEMBERED, not dropped — including an edit to
+                    // the song being prepared right now, whose plan is now
+                    // stale and must run again before it can be published.
                     if (fPlanner.measuring()) {
-                        fDeferredRefresh = id;
+                        markDirty(id);
                         return;
                     }
                     refreshFromLibrary(id);
@@ -50,7 +54,8 @@ ServiceCatalogBridge::ServiceCatalogBridge(CatalogController* catalog,
                         fPlanner.cancel();
                         setStatus(QStringLiteral("Preparation cancelled: the Library song was deleted"));
                     }
-                    if (fDeferredRefresh == id) fDeferredRefresh.clear();
+                    fDirty.remove(id);
+                    fAddIntents.remove(id);
                     if (fDocuments != nullptr) {
                         fDocuments->detachLinkedCatalogShow(id);
                     }
@@ -89,9 +94,11 @@ bool ServiceCatalogBridge::refreshFromLibrary(const QString& catalogItemId) {
         return false;
     }
     if (fPlanner.measuring()) {
-        fDeferredRefresh = catalogItemId;
+        markDirty(catalogItemId);
         return false;
     }
+    fDirty.remove(catalogItemId);  // this run captures its current contents
+    fAddIntents.remove(catalogItemId);
     start(catalogItemId, Mode::Refresh, -1);
     return true;
 }
@@ -100,13 +107,16 @@ void ServiceCatalogBridge::refreshAllLinked() {
     if (fCatalog == nullptr || fDocuments == nullptr) {
         return;
     }
+    // Review D6: EVERY linked show is owed a rebuild, not just the first.
+    // The set remembers them all; the drain runs one preparation at a time
+    // and the next is taken when this one publishes.
     for (const QVariant& row : fCatalog->items()) {
         const QString id = row.toMap().value(QStringLiteral("id")).toString();
         if (!fDocuments->showForCatalogItem(id).isEmpty()) {
-            refreshFromLibrary(id);
-            return;  // one at a time; the deferred slot would be overwritten
+            markDirty(id);
         }
     }
+    drainDirty();
 }
 
 bool ServiceCatalogBridge::renameInService(const QString& catalogItemId,
@@ -132,6 +142,12 @@ void ServiceCatalogBridge::start(const QString& catalogItemId, Mode mode, int in
     fPendingStanzas = item->stanzas;
     fMode = mode;
     fPendingIndex = index;
+    // The plan this run will publish must belong to the catalog and the
+    // service it was CAPTURED from (review D6).
+    fPendingRecordRevision = item->recordRevision;
+    fPendingContentRevision = item->contentRevision;
+    fPendingShowId = fDocuments != nullptr ? fDocuments->showForCatalogItem(catalogItemId)
+                                           : QString();
     setStatus(mode == Mode::Add
                   ? QStringLiteral("Preparing \u201c%1\u201d\u2026").arg(fPendingTitle)
                   : QStringLiteral("Updating \u201c%1\u201d\u2026").arg(fPendingTitle));
@@ -141,6 +157,34 @@ void ServiceCatalogBridge::start(const QString& catalogItemId, Mode mode, int in
 void ServiceCatalogBridge::publishPlan() {
     if (fDocuments == nullptr) {
         setStatus(QStringLiteral("the service is not available"));
+        return;
+    }
+    // Review D6: the plan is only as current as the catalog it was CAPTURED
+    // from. Publishing rechecks the record and content revisions, and the
+    // destination show; a plan that no longer describes them is dropped and
+    // the id is owed another run instead. This is what makes an edit to the
+    // song being prepared converge on its newest contents rather than being
+    // lost when the completion compares ids.
+    const openshow::catalog::CatalogItem* current = fCatalog->findItem(fPendingId);
+    if (current == nullptr) {
+        setStatus(QStringLiteral("Preparation cancelled: the Library song was deleted"));
+        drainDirty();
+        return;
+    }
+    const bool catalogMoved = current->recordRevision != fPendingRecordRevision ||
+                              current->contentRevision != fPendingContentRevision;
+    const bool destinationMoved =
+        fMode == Mode::Refresh &&
+        fDocuments->showForCatalogItem(fPendingId) != fPendingShowId;
+    if (catalogMoved || destinationMoved) {
+        // The measurement described something that has since changed (or a
+        // destination that is no longer the linked show). Prepare again —
+        // the drain picks the right mode for what is linked NOW.
+        markDirty(fPendingId, /*asAdd=*/fMode == Mode::Add);
+        setStatus(QStringLiteral("\u201c%1\u201d changed while it was being prepared; "
+                                 "preparing it again")
+                      .arg(fPendingTitle));
+        drainDirty();
         return;
     }
     QVariantList slides;
@@ -166,6 +210,10 @@ void ServiceCatalogBridge::publishPlan() {
     if (showId.isEmpty()) {
         setStatus(QStringLiteral("the song could not be added: %1")
                       .arg(fDocuments->status()));
+        // A refused write leaves the id owed: the next event retries it, and
+        // an edit is not lost because a save failed once.
+        markDirty(fPendingId, /*asAdd=*/fMode == Mode::Add);
+        drainDirty();
         return;
     }
     setStatus(fMode == Mode::Add
@@ -173,13 +221,42 @@ void ServiceCatalogBridge::publishPlan() {
                         .arg(fPendingTitle)
                   : QStringLiteral("\u201c%1\u201d updated from the Library")
                         .arg(fPendingTitle));
-    if (!fDeferredRefresh.isEmpty() && fDeferredRefresh != fPendingId) {
-        const QString next = fDeferredRefresh;
-        fDeferredRefresh.clear();
-        refreshFromLibrary(next);
-    } else {
-        fDeferredRefresh.clear();
+    // The next owed id, one per published plan: an edit that arrived while
+    // this one was being measured is prepared now, against the catalog as it
+    // is — never merged into the plan that just went out.
+    drainDirty();
+}
+
+void ServiceCatalogBridge::markDirty(const QString& catalogItemId, bool asAdd) {
+    if (catalogItemId.isEmpty()) {
+        return;
     }
+    fDirty.insert(catalogItemId);
+    if (asAdd) {
+        fAddIntents.insert(catalogItemId);
+    }
+}
+
+void ServiceCatalogBridge::drainDirty() {
+    if (fCatalog == nullptr || fDocuments == nullptr || fPlanner.measuring() ||
+        fDirty.isEmpty()) {
+        return;
+    }
+    const QString id = *fDirty.begin();
+    fDirty.remove(id);
+    const bool owedAdd = fAddIntents.remove(id);
+    if (fCatalog->findItem(id) == nullptr) {
+        return;  // deleted while it waited: nothing to prepare
+    }
+    // A linked show is refreshed; an Add whose plan was never published
+    // (nothing linked yet) is prepared as the Add it was. Anything else
+    // whose destination disappeared was a Refresh against a cue the operator
+    // removed — dropped, never re-added.
+    const bool linked = !fDocuments->showForCatalogItem(id).isEmpty();
+    if (!linked && !owedAdd) {
+        return;
+    }
+    start(id, linked ? Mode::Refresh : Mode::Add, linked ? -1 : fPendingIndex);
 }
 
 void ServiceCatalogBridge::setStatus(const QString& status) {

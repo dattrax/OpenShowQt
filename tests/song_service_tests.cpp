@@ -37,6 +37,8 @@
 #include <sstream>
 #include <string>
 
+#include "openshow/domain/storage.h"
+
 #include "CatalogController.h"
 #include "DocumentController.h"
 #include "ServiceCatalogBridge.h"
@@ -307,6 +309,89 @@ int main(int argc, char* argv[]) {
         CatalogController reopened(nullptr, root);
         check(reopened.songCount() == 0, "a restart sees the deletion");
     }
+
+    // --- review D6: every linked refresh survives a delayed preparation ---
+    // The catalog is the source of truth while a link stands, so an edit that
+    // lands DURING a measurement must converge: the completion rechecks the
+    // catalog's revisions, drops the stale plan and runs the id again. The
+    // same-id case is the one the old deferred slot lost outright (it only
+    // refreshed when the deferred id DIFFERED from the id just prepared), and
+    // several ids used to overwrite one another in that single slot.
+    auto waitForText = [&docs](const QString& showId, const QString& needle, int ms = 30000) {
+        QElapsedTimer clock;
+        clock.start();
+        while (clock.elapsed() < ms) {
+            QString text;
+            for (const QVariant& slide : docs.slidesOf(showId)) {
+                text += slide.toMap().value(QStringLiteral("preview")).toString() + "\n";
+            }
+            if (text.contains(needle)) {
+                return true;
+            }
+            QTest::qWait(20);
+        }
+        return false;
+    };
+    const QVariantList oldStanzas{QVariantMap{{"label", "Verse"},
+        {"lines", QVariantList{"Old words that should not survive"}}}};
+    const QVariantList newStanzas{QVariantMap{{"label", "Verse"},
+        {"lines", QVariantList{"Brand new words from the Library"}}}};
+
+    // (a) an edit to the song being ADDED, while it is being prepared.
+    const QString convergeId = catalog.addSong("Converge", oldStanzas, "", "", "");
+    check(!convergeId.isEmpty(), "D6: the converging song exists");
+    check(bridge.addToService(convergeId), "D6: the initial add starts");
+    check(catalog.updateSong(convergeId, newStanzas, "7001001", "New Writer", ""),
+          "D6: the Library is edited while the add is preparing");
+    check(waitForBridge(bridge), "D6: the add settles");
+    const QString convergeShow = docs.showForCatalogItem(convergeId);
+    check(!convergeShow.isEmpty() && waitForText(convergeShow, "Brand new words"),
+          "D6: the same-song edit during the initial add reaches the service");
+    check(!waitForText(convergeShow, "Old words", 200),
+          "D6: and the stale plan was not published over it");
+    // The metadata captured with the newer contents rode along: the saved
+    // service carries the CCLI the re-run captured, not the one the stale
+    // plan was built from.
+    {
+        check(docs.save(), "D6: the service saves");
+        openshow::domain::Documents reopened;
+        std::string loadError;
+        check(openshow::domain::loadService(&reopened, root / "service" / "service", &loadError),
+              "D6: the saved service reads back");
+        const openshow::domain::Show* saved =
+            reopened.findShow(convergeShow.toStdString());
+        check(saved != nullptr && saved->song.has_value() &&
+                  saved->song->ccli == "7001001",
+              "D6: the metadata captured with the newer contents rode along");
+    }
+
+    // (b) two linked songs edited while one is being re-prepared: every
+    // affected id is owed its own run, not just the newest.
+    const QString secondId = catalog.addSong("Second Song", oldStanzas, "", "", "");
+    check(bridge.addToService(secondId) && waitForBridge(bridge),
+          "D6: the second song is linked");
+    const QString secondShow = docs.showForCatalogItem(secondId);
+    check(bridge.refreshFromLibrary(convergeId) && bridge.busy(),
+          "D6: the first song is re-preparing");
+    check(catalog.updateSong(secondId, newStanzas, "", "", ""),
+          "D6: the second song is edited during that preparation");
+    check(waitForBridge(bridge), "D6: the queue settles");
+    check(waitForText(secondShow, "Brand new words"),
+          "D6: the other linked song converged too - the deferred set holds every id");
+    check(waitForText(convergeShow, "Brand new words"),
+          "D6: and the song that was re-prepared kept its current contents");
+
+    // (c) the destination disappears while its plan is in flight: the plan is
+    // dropped and the cue is NOT put back (the operator removed it).
+    const auto cuesBeforeDetach = docs.playlistEntries().size();
+    check(bridge.refreshFromLibrary(secondId) && bridge.busy(),
+          "D6: a re-preparation starts for a cue about to be removed");
+    check(docs.detachLinkedCatalogShow(secondId), "D6: the destination service link is removed");
+    check(waitForBridge(bridge), "D6: the in-flight plan settles");
+    QTest::qWait(150);
+    check(docs.showForCatalogItem(secondId).isEmpty() &&
+              docs.playlistEntries().size() == cuesBeforeDetach,
+          "D6: a replaced destination is not published into and the removed cue is not re-added");
 
     check(!worker.wordsOnAir() && worker.sceneActive() == 0,
           "the whole journey presented nothing");

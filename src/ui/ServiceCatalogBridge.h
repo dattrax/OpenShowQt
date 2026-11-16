@@ -21,6 +21,7 @@
 #pragma once
 
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -69,6 +70,15 @@ private:
     enum class Mode { Add, Refresh };
     void start(const QString& catalogItemId, Mode mode, int index);
     void publishPlan();
+    // Review D6: the ids whose linked service copy is owed a re-preparation.
+    // A SET, deduplicated and bounded by the catalog's own size, so an edit
+    // arriving while the planner is busy is remembered rather than
+    // overwriting the previous one, and the same id twice is one entry.
+    void markDirty(const QString& catalogItemId, bool asAdd = false);
+    // Takes one owed id and starts its preparation (Add when nothing is
+    // linked yet, Refresh when a show exists). Called after a plan is
+    // published or refused, and by the explicit entry points.
+    void drainDirty();
     void setStatus(const QString& status);
 
     class CatalogController* fCatalog = nullptr;
@@ -83,8 +93,20 @@ private:
     std::vector<openshow::catalog::Stanza> fPendingStanzas;
     Mode fMode = Mode::Add;
     int fPendingIndex = -1;
-    // One deferred refresh while a plan is in flight (the newest ask wins).
-    QString fDeferredRefresh;
+    // Review D6: the catalog revisions this plan was CAPTURED at, and the
+    // service show it was captured for. Publishing rechecks both — a stale
+    // plan is not written over newer catalog content, and a plan for a
+    // replaced destination is dropped rather than published into the
+    // successor.
+    openshow::catalog::Revision fPendingRecordRevision = 0;
+    openshow::catalog::Revision fPendingContentRevision = 0;
+    QString fPendingShowId;
+    // The ids still owed a re-preparation (deduplicated, catalog-bounded),
+    // and the subset that is owed an ADD (an initial add whose plan was never
+    // published). A Refresh whose destination disappears is dropped: the
+    // operator removed that cue, and a bridge must not put it back.
+    QSet<QString> fDirty;
+    QSet<QString> fAddIntents;
     QString fStatus;
 };
 
