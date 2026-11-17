@@ -2193,12 +2193,12 @@ explicit Go. [Workflow, persistence, source preservation and acceptance](docs/ui
 | PT.3 | DONE | Add explicit whole-item theme assignment and scoped override replacement | Service 15 over 14, legacy pixels unchanged; explicit item choice wins over the current service theme, while deliberate later Edit overrides remain possible; appearance/transition agree; Apply only preserves IDs/breaks/words/media/background overrides and updates all occurrences of that show |
 | PT.4 | DONE | Preserve bounded song/selected-scripture reflow sources with projection provenance | Capture structured source at preparation/Add; save/reopen offline, detect text edits, never overwrite from a changed Library/provider; conservative current-word fallback for legacy/edited text, honest passage labels and preserved notes/sections |
 | PT.5 | DONE | Prepare bounded optional reflow against the chosen item's future appearance | Use captured worker-measured style, source and generation; preserve section/verse policy and eligible common media/audio/leading blank; explain unsupported multi-box/mixed-media cases; cancellation/failure/stale replies leave everything unchanged |
-| PT.6 | TODO | Commit prepared item changes and remembered preferences with honest history/persistence | Prevalidate before durable catalog write, then publish one compound service edit; service undo restores theme/slides/media/IDs once, Library preference uses Library history; fault/refusal/reconnect tests prove no partial UI mutation or surprise Apply-only repagination; do not claim cross-store crash atomicity |
+| PT.6 | DONE | Commit prepared item changes and remembered preferences with honest history/persistence | Prevalidate before durable catalog write, then publish one compound service edit; service undo restores theme/slides/media/IDs once, Library preference uses Library history; fault/refusal/reconnect tests prove no partial UI mutation or surprise Apply-only repagination; do not claim cross-store crash atomicity |
 | PT.7 | TODO | Move apply actions to left-hand item rows and add the keep/reflow dialog | Library/Service rows target explicit identities; show title/occurrence count, Apply only/Apply and reflow/Cancel and eligibility reasons; unprepared Library songs remember without entering the running order; remove central tile theme menu/header apply bypass; keyboard and no-worker paths work |
 | PT.8 | TODO | Close Library→service→reflow→Go→undo/save journeys and reconcile docs | Whole-item uniformity, current-word conservation, future-service saved looks, legacy scripture, override/media preservation, stale/failure paths and separate undo scopes verified; focused then desktop/headless/source guards pass, with skips/physical gates recorded separately |
 
 Order: PT.1 → PT.2/PT.3/PT.4 → PT.5 → PT.6 → PT.7 → PT.8; split any leaf
-exceeding two engineer-days. PT.1–PT.5 DONE; PT.6–PT.8 TODO. No global live
+exceeding two engineer-days. PT.1–PT.6 DONE; PT.7–PT.8 TODO. No global live
 theme library, automatic audience presentation, provider cache or arbitrary
 multi-object slide reflow is introduced. Recheck catalog/service allocations before implementing; existing
 scene 8/protocol 0.20 suffice. Prior TL/BX/DR/PV completion remains historical.
@@ -2346,6 +2346,37 @@ every eligibility rule and the stored-versus-fallback choice.
 different slide counts with identical words, the leading-cue/background/audio
 payload, cancel, a words-changed refusal, an ineligible item and the
 no-worker path.
+
+PT.6 evidence (2026-11-17): `DocumentController::reflowPlanProblem` is the
+pre-publication check — plan target, the item's current words fingerprint, the
+leading cue's presence, the word-slide count, the background asset's existence,
+the fit band and every planned row's words. `commitReflowPlan` publishes one
+service edit: it materialises the chosen snapshot as a local theme, applies the
+whole-item assignment, removes the old text run from the end (the optional
+leading cue and its ID stay), appends the planned slides with their words,
+song group, notes label, text context and common background/fit, and never
+touches show audio or another presentation. One service undo restores the old
+theme, old slide IDs, words and media; redo republishes the measured result
+without re-measuring. `showWordsFingerprint` exposes the value a plan carries.
+
+`ui::ThemeApplySession` orders the two stores: validate the look (codec plus a
+usable box), the item and (for reflow) the plan; write the Library preference
+durably; then publish the single service edit. A refused Library write or a
+stale plan publishes neither; a synchronous service refusal after the Library
+write rolls the preference back when it actually changed. The stores remain
+independent — one Library undo forgets the look without rebuilding the
+service, and one service undo leaves the preference alone — and no crash-
+atomicity across the two files is claimed.
+
+`theme_apply_tests` (headless) covers Apply only as one service edit with every
+slide ID preserved, the Library preference and both undo scopes, Apply-and-
+reflow keeping the cue's identity, sections, common background and the chosen
+look, one-undo restoration of old IDs/words/media, stale-plan refusal with no
+slide or preference change, an unknown Library item refusing the whole apply,
+and Apply only for an unlinked item with no worker. `reflow_planner_tests` adds
+the real-worker prepare-then-commit-and-undo leg. Worker loss mid-measurement
+uses the planner's existing stateChanged failure path shared with SongPlanner;
+no new reconnect test is claimed.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

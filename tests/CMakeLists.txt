@@ -354,6 +354,14 @@ if(OPENSHOW_BUILD_UI)
   endif()
   add_test(NAME document_controller_tests COMMAND document_controller_tests)
 
+  # Task PT.6: the apply transaction across the two stores — one service
+  # history entry for the look/slides, one Library entry for the remembered
+  # preference, prevalidation before the durable write and no partial
+  # publication on a stale plan or refused Library write. Qt Core only.
+  add_executable(theme_apply_tests theme_apply_tests.cpp)
+  target_link_libraries(theme_apply_tests PRIVATE openshow::ui-core)
+  add_test(NAME theme_apply_tests COMMAND theme_apply_tests)
+
   # Task CS.4: the inspector read model and the one verb pair every shared
   # style control speaks, pinned headless against the real controller — the
   # per-field shape for all four targets and every commit/reset route (Qt

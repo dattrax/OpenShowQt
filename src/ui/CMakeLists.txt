@@ -61,6 +61,8 @@ add_library(openshow-ui-core STATIC
   SongImport.h
   ReflowPlanner.cpp
   ReflowPlanner.h
+  ThemeApplySession.cpp
+  ThemeApplySession.h
   SongPlanner.cpp
   SongPlanner.h
   WorkerController.cpp

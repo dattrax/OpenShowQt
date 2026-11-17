@@ -11,7 +11,7 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Whole-item themes and reflow (2026-11-17): PT.1–PT.5 are DONE; PT.6–PT.8 are
+**Whole-item themes and reflow (2026-11-17): PT.1–PT.6 are DONE; PT.7–PT.8 are
 TODO.** The
 [whole-item theme/reflow brief](docs/ui/presentation-theme-reflow-plan.md) moves
 theme application to left-hand song/passage rows and offers keep breaks or
@@ -64,8 +64,14 @@ fallback) in the chosen look's box through the worker, using the song or passage
 policy, and is refused if the words moved while it was measured. Cancelling,
 failure and supersession never touch the document, and Apply only remains
 available without a measuring worker.
-Next action: PT.6 (commit prepared item changes and preferences with honest
-history/persistence).
+PT.6 added the apply transaction. A prepared plan is revalidated against the
+item's current words, cue, slide count and media before anything durable
+happens; the Library preference is written through Library history; then one
+compound service edit publishes the look and the replacement slides. One
+service undo restores the old theme, slide IDs, words and common media; one
+Library undo forgets the look without touching the service. Refusals and stale
+plans publish neither side, and cross-store crash atomicity is not claimed.
+Next action: PT.7 (left-hand row actions and the keep/reflow dialog).
 
 **Edit canvas follow-up (BX.5, 2026-11-16): fixed and verified.** Sustained
 box drags could be stolen by Edit's parent Flickable; the earlier pointer matrix

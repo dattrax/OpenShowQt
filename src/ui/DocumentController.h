@@ -488,6 +488,23 @@ public:
     Q_INVOKABLE bool clearWholeItemTheme(const QString& showId);
     Q_INVOKABLE QString applyRememberedTheme(const QString& showId,
                                              const QString& snapshotJson);
+    // Task PT.6: prevalidate a prepared reflow plan against the CURRENT
+    // item. "" means it may be committed; otherwise the operator's sentence
+    // says what moved. Called before any durable catalog write.
+    Q_INVOKABLE QString reflowPlanProblem(const QString& showId,
+                                          const QVariantMap& plan) const;
+    // The canonical fingerprint of the item's current text projection. A
+    // prepared plan carries the value it measured; comparing them is how a
+    // stale plan is refused without guessing.
+    Q_INVOKABLE QString showWordsFingerprint(const QString& showId) const;
+    // Task PT.6: publish a prepared plan as ONE service edit — the chosen
+    // look, the replacement slides (words, sections, notes, text context and
+    // common background/fit), the untouched leading cue, show audio and
+    // every other presentation. One undo restores the old theme, old slide
+    // IDs and old words; redo republishes the plan without re-measuring.
+    Q_INVOKABLE bool commitReflowPlan(const QString& showId,
+                                      const QString& snapshotJson,
+                                      const QVariantMap& plan);
     // Task PT.2: capture a service theme's effective look as the portable
     // codec's JSON, so the Library can remember it. "" on an unknown theme
     // (status says why).

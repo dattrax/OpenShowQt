@@ -223,6 +223,12 @@ QVariantMap ReflowPlanner::plan() const {
                static_cast<int>(fEligibility.backgroundFit));
     out.insert(QStringLiteral("textContext"),
                QString::fromStdString(fEligibility.textContext));
+    out.insert(QStringLiteral("sourceFingerprint"),
+               QString::fromStdString(fExpectedFingerprint));
+    out.insert(QStringLiteral("contentSlideCount"),
+               static_cast<int>(fEligibility.contentSlideCount));
+    out.insert(QStringLiteral("sectionStartsNewSlide"),
+               fEligibility.sectionStartsNewSlide);
     out.insert(QStringLiteral("generation"),
                static_cast<qulonglong>(fGeneration));
     out.insert(QStringLiteral("documentGeneration"),
@@ -246,6 +252,14 @@ QVariantMap ReflowPlanner::plan() const {
         row.insert(QStringLiteral("lines"), lines);
         row.insert(QStringLiteral("label"),
                    QString::fromStdString(slide.label));
+        // Songs keep their section identity on the slide's GROUP; a passage
+        // has no song sections, so its verse labels stay in notes only.
+        std::string group;
+        if (fEligibility.sectionStartsNewSlide &&
+            slide.blockIndex < fInput.blocks.size()) {
+            group = fInput.blocks[slide.blockIndex].label;
+        }
+        row.insert(QStringLiteral("group"), QString::fromStdString(group));
         slides.push_back(row);
     }
     out.insert(QStringLiteral("slides"), slides);

@@ -28,6 +28,7 @@
 
 #include "DocumentController.h"
 #include "ReflowPlanner.h"
+#include "ThemeApplySession.h"
 #include "WorkerController.h"
 
 namespace {
@@ -76,6 +77,14 @@ void waitForReply(openshow::ui::ReflowPlanner&, Reply* reply, int ms = 30000) {
     while (!reply->fired && clock.elapsed() < ms) {
         QTest::qWait(20);
     }
+}
+
+QStringList slideListIds(const QVariantList& rows) {
+    QStringList ids;
+    for (const QVariant& row : rows) {
+        ids.append(row.toMap().value(QStringLiteral("id")).toString());
+    }
+    return ids;
 }
 
 QStringList wordsOf(const QVariantList& slides) {
@@ -215,6 +224,47 @@ int main(int argc, char** argv) {
               wordsOf(roomyPlan.value(QStringLiteral("slides")).toList()),
           "the tighter packing keeps exactly the same words");
 
+    int committedSlideCount = 0;
+    // The prepared plan publishes as ONE service edit, keeping the leading
+    // cue and restoring everything with one undo (PT.6's contract, proven
+    // here against the real worker's numbers).
+    {
+        const QVariantList before = docs.slidesOf(show);
+        const QString cueId =
+            before.at(0).toMap().value(QStringLiteral("id")).toString();
+        const QString firstPlannedLine =
+            tightPlan.value(QStringLiteral("slides"))
+                .toList()
+                .at(0)
+                .toMap()
+                .value(QStringLiteral("lines"))
+                .toList()
+                .at(0)
+                .toString();
+        openshow::ui::ThemeApplySession session(&docs, nullptr);
+        check(session.applyReflow(show, tightJson, tightPlan),
+              "the prepared plan publishes as one service edit");
+        const QVariantList after = docs.slidesOf(show);
+        check(after.size() ==
+                      1 + tightPlan.value(QStringLiteral("slideCount")).toInt() &&
+                  after.at(0).toMap().value(QStringLiteral("id")).toString() == cueId,
+              "the plan replaces the text run and keeps the leading cue's identity");
+        check(after.at(1).toMap().value(QStringLiteral("preview")).toString() ==
+                  firstPlannedLine,
+              "the committed words are the measured plan's words");
+        docs.undo();
+        check(slideListIds(docs.slidesOf(show)) == slideListIds(before),
+              "one service undo restores the old slide identities and words");
+        docs.redo();
+        check(docs.slidesOf(show)
+                  .at(1)
+                  .toMap()
+                  .value(QStringLiteral("preview"))
+                  .toString() == firstPlannedLine,
+              "redo republishes the plan without measuring again");
+        committedSlideCount = docs.slidesOf(show).size();
+    }
+
     // Cancel clears the plan and retires the ask.
     planner.cancel();
     check(!planner.hasPlan() && planner.plan().isEmpty(),
@@ -288,9 +338,9 @@ int main(int argc, char** argv) {
     // The document itself was never mutated by any of the above: the only
     // edit was the test's own stale-words change, and the item still has its
     // three slides and its captured source.
-    check(docs.slidesOf(show).size() == 3 &&
+    check(docs.slidesOf(show).size() == committedSlideCount &&
               docs.reflowSourceInfo(show).value(QStringLiteral("hasSource")).toBool(),
-          "preparing and cancelling never re-paginated or replaced the item");
+          "preparing, cancelling and a refused stale plan never re-paginate the item");
 
     worker.shutdownNow();
     if (gFailed > 0) {

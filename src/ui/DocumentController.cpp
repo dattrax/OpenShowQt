@@ -3225,6 +3225,237 @@ QString DocumentController::applyRememberedTheme(const QString& showId,
     return themeId;
 }
 
+namespace {
+
+bool linesHaveWords(const QVariantList& lines) {
+    for (const QVariant& line : lines) {
+        const QString text = line.toString();
+        if (!text.trimmed().isEmpty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int countWordSlides(const openshow::domain::Show& show) {
+    int count = 0;
+    for (const openshow::domain::Slide& slide : show.slides) {
+        const openshow::domain::SlideItem* primary = nullptr;
+        for (const openshow::domain::SlideItem& item : slide.items) {
+            if (item.kind != openshow::domain::ItemKind::Image) {
+                primary = &item;
+                break;
+            }
+        }
+        if (primary == nullptr) {
+            continue;
+        }
+        bool words = false;
+        for (const std::string& line : primary->lines) {
+            if (!line.empty() &&
+                line.find_first_not_of(" \t\r\n\f\v") != std::string::npos) {
+                words = true;
+                break;
+            }
+        }
+        if (words) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+}  // namespace
+
+QString DocumentController::showWordsFingerprint(const QString& showId) const {
+    return QString::fromStdString(openshow::domain::reflowFingerprint(
+        openshow::domain::showTextProjection(fDocuments, showId.toStdString())));
+}
+
+QString DocumentController::reflowPlanProblem(const QString& showId,
+                                              const QVariantMap& plan) const {
+    if (plan.isEmpty()) {
+        return QStringLiteral("there is no prepared reflow plan");
+    }
+    if (plan.value(QStringLiteral("showId")).toString() != showId) {
+        return QStringLiteral("the prepared plan belongs to another item");
+    }
+    const openshow::domain::Show* show =
+        fDocuments.findShow(showId.toStdString());
+    if (show == nullptr) {
+        return QStringLiteral("that item no longer exists");
+    }
+    const std::string expected =
+        plan.value(QStringLiteral("sourceFingerprint")).toString().toStdString();
+    if (expected.empty()) {
+        return QStringLiteral("the prepared plan names no words to reflow");
+    }
+    if (openshow::domain::reflowFingerprint(
+            openshow::domain::showTextProjection(fDocuments, showId.toStdString())) !=
+        expected) {
+        return QStringLiteral(
+            "the item's words changed since the plan was prepared — nothing was "
+            "changed");
+    }
+    const bool leadingBlank = plan.value(QStringLiteral("leadingBlank")).toBool();
+    bool actualLeadingBlank = false;
+    if (!show->slides.empty()) {
+        const openshow::domain::SlideItem* first = nullptr;
+        for (const openshow::domain::SlideItem& item : show->slides.front().items) {
+            if (item.kind != openshow::domain::ItemKind::Image) {
+                first = &item;
+                break;
+            }
+        }
+        if (first == nullptr) {
+            actualLeadingBlank = true;
+        } else {
+            bool words = false;
+            for (const std::string& line : first->lines) {
+                if (line.find_first_not_of(" \t\r\n\f\v") != std::string::npos) {
+                    words = true;
+                    break;
+                }
+            }
+            actualLeadingBlank = !words;
+        }
+    }
+    if (leadingBlank != actualLeadingBlank) {
+        return QStringLiteral(
+            "the item's leading cue changed since the plan was prepared — nothing "
+            "was changed");
+    }
+    if (plan.value(QStringLiteral("contentSlideCount")).toInt() !=
+        countWordSlides(*show)) {
+        return QStringLiteral(
+            "the item's slides changed since the plan was prepared — nothing was "
+            "changed");
+    }
+    const QString background =
+        plan.value(QStringLiteral("backgroundAssetId")).toString();
+    if (!background.isEmpty() && fDocuments.findAsset(background.toStdString()) == nullptr) {
+        return QStringLiteral("the plan's background no longer exists");
+    }
+    const int fit = plan.value(QStringLiteral("backgroundFit")).toInt();
+    if (fit < 0 || fit > 2) {
+        return QStringLiteral("the plan's background fitting is not one this build knows");
+    }
+    const QVariantList slides = plan.value(QStringLiteral("slides")).toList();
+    if (slides.isEmpty()) {
+        return QStringLiteral("the plan has no slides to publish");
+    }
+    for (const QVariant& rowValue : slides) {
+        const QVariantMap row = rowValue.toMap();
+        const QVariantList lines = row.value(QStringLiteral("lines")).toList();
+        if (!linesHaveWords(lines)) {
+            return QStringLiteral("a planned slide carries no words");
+        }
+    }
+    return QString();
+}
+
+bool DocumentController::commitReflowPlan(const QString& showId,
+                                          const QString& snapshotJson,
+                                          const QVariantMap& plan) {
+    flushText();
+    const QString problem = reflowPlanProblem(showId, plan);
+    if (!problem.isEmpty()) {
+        setStatus(QStringLiteral("reflow: %1").arg(problem));
+        return false;
+    }
+    openshow::domain::ThemeSnapshot snapshot;
+    {
+        boost::system::error_code parseError;
+        const boost::json::value parsed =
+            boost::json::parse(snapshotJson.toStdString(), parseError);
+        std::string why;
+        if (parseError ||
+            !openshow::domain::themeSnapshotFromJson(parsed, &snapshot, &why)) {
+            setStatus(QStringLiteral("reflow: the chosen look is not usable: %1")
+                          .arg(QString::fromStdString(why)));
+            return false;
+        }
+    }
+    const QVariantList rows = plan.value(QStringLiteral("slides")).toList();
+    const bool leadingBlank = plan.value(QStringLiteral("leadingBlank")).toBool();
+    const QString background =
+        plan.value(QStringLiteral("backgroundAssetId")).toString();
+    const int fit = plan.value(QStringLiteral("backgroundFit")).toInt();
+    const QString context = plan.value(QStringLiteral("textContext")).toString();
+    std::string error;
+    const std::string target = showId.toStdString();
+    const bool ok = edit([&] {
+        // The look first: the new slides and the item assignment are one
+        // transaction, so the words never land without the appearance the
+        // plan was measured against.
+        const openshow::domain::Id theme =
+            fDocuments.ensureThemeFromSnapshot(snapshot, &error);
+        if (theme.empty()) {
+            return false;
+        }
+        // Remove the old text run from the END, leaving the optional leading
+        // cue (and its identity) exactly where it was.
+        const std::size_t keep = leadingBlank ? 1 : 0;
+        for (;;) {
+            const openshow::domain::Show* show = fDocuments.findShow(target);
+            if (show == nullptr || show->slides.size() <= keep) {
+                break;
+            }
+            if (!fDocuments.removeSlide(target, show->slides.back().id, &error)) {
+                return false;
+            }
+        }
+        for (const QVariant& rowValue : rows) {
+            const QVariantMap row = rowValue.toMap();
+            const openshow::domain::Id slide = fDocuments.appendSlide(target, &error);
+            if (slide.empty()) {
+                return false;
+            }
+            std::vector<std::string> lines;
+            for (const QVariant& line :
+                 row.value(QStringLiteral("lines")).toList()) {
+                lines.push_back(line.toString().toStdString());
+            }
+            if (!fDocuments.setSlideLines(target, slide, lines, &error)) {
+                return false;
+            }
+            const QString group = row.value(QStringLiteral("group")).toString();
+            if (!group.isEmpty() &&
+                !fDocuments.setSlideGroup(target, slide, group.toStdString(),
+                                          &error)) {
+                return false;
+            }
+            const QString label = row.value(QStringLiteral("label")).toString();
+            if (!label.isEmpty() &&
+                !fDocuments.setSlideNotes(target, slide, label.toStdString(),
+                                          &error)) {
+                return false;
+            }
+            if (!context.isEmpty() &&
+                !fDocuments.setSlideTextContext(target, slide,
+                                                context.toStdString(), &error)) {
+                return false;
+            }
+            if (!background.isEmpty() &&
+                !fDocuments.setSlideBackground(target, slide,
+                                               background.toStdString(), &error)) {
+                return false;
+            }
+            if (!fDocuments.setSlideBackgroundFit(
+                    target, slide,
+                    static_cast<openshow::domain::BackgroundFit>(fit), &error)) {
+                return false;
+            }
+        }
+        // The item wears the look the plan was measured against.
+        return fDocuments.applyWholeItemTheme(target, theme, &error);
+    });
+    if (!ok) {
+        setStatus(QStringLiteral("reflow: %1").arg(QString::fromStdString(error)));
+    }
+    return ok;
+}
+
 QString DocumentController::themeSnapshotJson(const QString& themeId) {
     openshow::domain::ThemeSnapshot snapshot;
     std::string error;
