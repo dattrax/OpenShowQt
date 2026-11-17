@@ -109,6 +109,16 @@ public:
     Q_INVOKABLE bool renameItem(const QString& id, const QString& title);
     Q_INVOKABLE bool setItemMetadata(const QString& id, const QString& ccli,
                                      const QString& authors, const QString& copyright);
+    // Task PT.2: the look this song remembers for future services, as the
+    // codec's JSON ("" when it remembers nothing), and the durable verbs
+    // that set or clear it. The JSON is produced/consumed by the domain
+    // codec; QML never sees a partial record. A change advances both
+    // revisions, leaves canonical words untouched, is durable before it is
+    // published, and is one Library history entry.
+    Q_INVOKABLE QString itemThemeSnapshot(const QString& id) const;
+    Q_INVOKABLE bool rememberItemTheme(const QString& id,
+                                       const QString& snapshotJson);
+    Q_INVOKABLE bool forgetItemTheme(const QString& id);
     // Category moves preserve content; the drag/drop leaf and the keyboard
     // alternative both land here.
     Q_INVOKABLE bool moveItemToCategory(const QString& id, const QString& category);
@@ -125,6 +135,11 @@ signals:
     // any linked running-order show, which is how an edit in the Library
     // reaches the service (operator amendment: rows are references).
     void itemChanged(const QString& id);
+    // Task PT.2: the remembered future-service look changed. This is NOT a
+    // lyric/content change: the bridge must not re-prepare a linked show and
+    // quietly reflow an Apply-only result. Rows still repaint through
+    // itemsChanged.
+    void itemThemeChanged(const QString& id);
     // One item was deleted. Linked service shows detach (keep playing with
     // their copied attribution) rather than pointing at a dead record.
     void itemRemoved(const QString& id);

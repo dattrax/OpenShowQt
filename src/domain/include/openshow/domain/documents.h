@@ -1124,6 +1124,14 @@ public:
     // the snapshot codec, the catalog loader and the service application
     // path, so the three cannot drift into different ideas of a look.
     static bool validThemeSnapshot(const ThemeSnapshot& snapshot, std::string* error);
+    // Task PT.2: materialise a remembered look as a service-local theme.
+    // An existing theme whose full appearance matches (name and id aside) is
+    // reused, whatever it is called; otherwise a fresh local id is minted
+    // with the snapshot's display name. A same-name theme with a different
+    // look is never overwritten or reused. Returns the theme id, or "" on a
+    // refused snapshot or a service edit failure.
+    Id ensureThemeFromSnapshot(const ThemeSnapshot& snapshot,
+                               std::string* error = nullptr);
     // Resolved appearance of one slide: its override when set, else the
     // show default, else nullptr.
     const Theme* themeForSlide(const Id& showId, const Id& slideId) const;

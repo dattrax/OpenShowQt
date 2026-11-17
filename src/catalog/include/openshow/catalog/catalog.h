@@ -47,6 +47,8 @@
 #include <string>
 #include <vector>
 
+#include "openshow/domain/themesnapshot.h"
+
 namespace openshow::catalog {
 
 // Identifies one catalog item globally. Opaque beyond uniqueness; the
@@ -131,6 +133,10 @@ struct CatalogItem {
     // Lyrics content: canonical stanzas in authored order.
     std::vector<Stanza> stanzas;
     SongMetadata metadata;
+    // Task PT.2: the look this Library song remembers for future services.
+    // A portable value, not a theme id or name — see themesnapshot.h. Absent
+    // is "no preference", which is what every format-1 record means.
+    std::optional<openshow::domain::ThemeSnapshot> themeSnapshot;
 
     bool operator==(const CatalogItem&) const = default;
 };
@@ -211,6 +217,16 @@ public:
     // Renames without touching content. A rename advances recordRevision
     // only; a service's prepared snapshot is still valid.
     bool rename(const Id& id, const std::string& title, std::string* error = nullptr);
+
+    // Task PT.2: remember (or, with nullopt, forget) the portable look this
+    // song should wear in future services. The snapshot is validated with
+    // the domain's one sentence. An unchanged snapshot is a no-op that
+    // succeeds (no undo step, no disk write); a real change advances BOTH
+    // revisions because it is content a prepared service must notice, and
+    // canonical lyrics are never touched.
+    bool setThemeSnapshot(const Id& id,
+                          std::optional<openshow::domain::ThemeSnapshot> snapshot,
+                          std::string* error = nullptr);
 
     // Moves only the classification. Preserves id, revisions' CONTENT half,
     // title, stanzas, metadata and layout; bumps recordRevision. Repeating

@@ -13,5 +13,5 @@ add_library(openshow::catalog ALIAS openshow_catalog)
 target_include_directories(openshow_catalog PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(openshow_catalog PUBLIC Boost::json)
+target_link_libraries(openshow_catalog PUBLIC Boost::json openshow::domain)
 target_compile_features(openshow_catalog PUBLIC cxx_std_20)

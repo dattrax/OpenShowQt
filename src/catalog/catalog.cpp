@@ -251,6 +251,31 @@ bool Catalog::rename(const Id& id, const std::string& title, std::string* error)
     return true;
 }
 
+bool Catalog::setThemeSnapshot(const Id& id,
+                               std::optional<openshow::domain::ThemeSnapshot> snapshot,
+                               std::string* error) {
+    CatalogItem* item = findMutable(fItems, id);
+    if (item == nullptr) {
+        fail("no catalog item named " + id, error);
+        return false;
+    }
+    if (snapshot.has_value()) {
+        std::string why;
+        if (!openshow::domain::Documents::validThemeSnapshot(*snapshot, &why)) {
+            fail(why, error);
+            return false;
+        }
+    }
+    if (item->themeSnapshot == snapshot) {
+        return true;  // an unchanged preference costs nothing
+    }
+    // A remembered look is content a prepared service must notice, and it
+    // never touches the canonical words, stanzas or attribution.
+    item->themeSnapshot = std::move(snapshot);
+    bumpContent(*item);
+    return true;
+}
+
 bool Catalog::moveToCategory(const Id& id, Category category, std::string* error) {
     CatalogItem* item = findMutable(fItems, id);
     if (item == nullptr) {

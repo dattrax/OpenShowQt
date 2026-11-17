@@ -5175,6 +5175,28 @@ void exerciseThemeSnapshot() {
         refuses(bad, "both", "a context cannot carry a box and an inset together");
     }
 
+    // Task PT.2: materialising a remembered look. The same look is one
+    // service theme (full-definition reuse, not a name match), and a
+    // different same-named look is never touched.
+    const Id materialised = docs.ensureThemeFromSnapshot(snapshot, &error);
+    check(!materialised.empty(), "a remembered look materialises as a local theme");
+    ThemeSnapshot reread;
+    check(!materialised.empty() && docs.themeSnapshotFor(materialised, &reread, &error) &&
+              reread == snapshot,
+          "the materialised theme reproduces the snapshot exactly");
+    check(docs.ensureThemeFromSnapshot(snapshot, &error) == materialised,
+          "the same look is reused rather than duplicated");
+    const Id impostor = docs.createTheme(
+        snapshot.name, "#00ff00", "#000000", "", "Other", 20.0, "center", 1.0, &error);
+    check(!impostor.empty(), "a same-named theme with another look exists");
+    const Id again = docs.ensureThemeFromSnapshot(snapshot, &error);
+    check(again == materialised && again != impostor,
+          "a same-name different look is neither reused nor overwritten");
+    check(docs.renameTheme(materialised, "Renamed by the operator", &error),
+          "the operator renames the materialised theme");
+    check(docs.ensureThemeFromSnapshot(snapshot, &error) == materialised,
+          "reuse follows the full definition, not the current name");
+
     ThemeSnapshot missing;
     error.clear();
     check(!docs.themeSnapshotFor("theme-does-not-exist", &missing, &error),

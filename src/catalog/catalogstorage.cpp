@@ -21,7 +21,12 @@ namespace openshow::catalog {
 namespace {
 
 constexpr const char* kManifestName = "catalog.json";
-constexpr unsigned long long kCatalogFormat = 1;
+// Format 2 (task PT.2) adds the optional remembered look on a song. A
+// format-1 file loads with no preference; a format-2 item omits the key when
+// it remembers nothing, so a catalog that never uses the feature keeps the
+// payload it always had apart from the format number.
+constexpr unsigned long long kCatalogFormat = 2;
+constexpr unsigned long long kCatalogFormatLegacy = 1;
 
 void fail(std::string* error, const std::string& message) {
     if (error != nullptr) {
@@ -189,6 +194,12 @@ public:
             stanzas.push_back(std::move(stanzaJson));
         }
         entry.emplace("stanzas", std::move(stanzas));
+        // Written only when it exists: absence is the pre-PT history of this
+        // key, and an item that remembers nothing keeps its byte shape.
+        if (item.themeSnapshot.has_value()) {
+            entry.emplace("themeSnapshot",
+                          themeSnapshotToJson(*item.themeSnapshot));
+        }
         items.push_back(std::move(entry));
     }
     root.emplace("items", std::move(items));
@@ -208,12 +219,14 @@ static bool fromJson(const boost::json::value& value, Catalog* out, std::string*
     if (!wantInteger(root, "format", &format, "catalog.json", error)) {
         return false;
     }
-    if (format != kCatalogFormat) {
+    if (format != kCatalogFormat && format != kCatalogFormatLegacy) {
         fail(error, "catalog.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " +
-                        std::to_string(kCatalogFormat) + ")");
+                        std::to_string(kCatalogFormat) + " and legacy format " +
+                        std::to_string(kCatalogFormatLegacy) + ")");
         return false;
     }
+    const bool hasRememberedLook = format >= kCatalogFormat;
     unsigned long long nextOrdinal = 1;
     if (!wantInteger(root, "nextOrdinal", &nextOrdinal, "catalog.json", error)) {
         return false;
@@ -237,11 +250,21 @@ static bool fromJson(const boost::json::value& value, Catalog* out, std::string*
             return false;
         }
         const boost::json::object& entry = (*items)[i].as_object();
-        if (!onlyKeys(
-                entry,
-                {"id", "category", "title", "recordRevision", "contentRevision",
-                 "kind", "metadata", "stanzas"},
-                owner, error)) {
+        if (hasRememberedLook) {
+            if (!onlyKeys(
+                    entry,
+                    {"id", "category", "title", "recordRevision", "contentRevision",
+                     "kind", "metadata", "stanzas", "themeSnapshot"},
+                    owner, error)) {
+                return false;
+            }
+        } else if (!onlyKeys(
+                       entry,
+                       {"id", "category", "title", "recordRevision", "contentRevision",
+                        "kind", "metadata", "stanzas"},
+                       owner, error)) {
+            // A format-1 file that names the newer key is refused by name:
+            // it carries a meaning that format did not have.
             return false;
         }
         CatalogItem item;
@@ -339,6 +362,21 @@ static bool fromJson(const boost::json::value& value, Catalog* out, std::string*
             std::string reason = error != nullptr ? *error : "invalid song";
             fail(error, owner + ": " + reason);
             return false;
+        }
+        if (const boost::json::value* remembered = entry.if_contains("themeSnapshot");
+            remembered != nullptr) {
+            if (!hasRememberedLook) {
+                fail(error, owner + ": 'themeSnapshot' needs catalog format 2");
+                return false;
+            }
+            openshow::domain::ThemeSnapshot snapshot;
+            std::string why;
+            if (!openshow::domain::themeSnapshotFromJson(*remembered, &snapshot,
+                                                         &why)) {
+                fail(error, owner + " themeSnapshot: " + why);
+                return false;
+            }
+            item.themeSnapshot = std::move(snapshot);
         }
         loaded.fItems.push_back(std::move(item));
     }

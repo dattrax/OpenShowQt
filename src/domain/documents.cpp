@@ -1566,6 +1566,98 @@ bool Documents::validThemeSnapshot(const ThemeSnapshot& snapshot, std::string* e
     return true;
 }
 
+Id Documents::ensureThemeFromSnapshot(const ThemeSnapshot& snapshot,
+                                      std::string* error) {
+    if (!validThemeSnapshot(snapshot, error)) {
+        return {};
+    }
+    // Full-definition match, never a name match: the same remembered look
+    // reused twice in one service is one theme, even if an operator renamed
+    // it; a different look that happens to share the display name is not.
+    const auto sameContext = [](const TextContext& context, const TextContext& wanted,
+                                const Theme& theme) {
+        if (context.name != wanted.name) {
+            return false;
+        }
+        const auto sameString = [](const std::optional<std::string>& own,
+                                   const std::optional<std::string>& want) {
+            return own.value_or("") == want.value_or("");
+        };
+        return sameString(context.fontFamily, wanted.fontFamily) &&
+               context.fontSize.value_or(0.0) == wanted.fontSize.value_or(0.0) &&
+               context.lineSpacing.value_or(theme.lineSpacing) ==
+                   wanted.lineSpacing.value_or(theme.lineSpacing) &&
+               sameString(context.align, wanted.align) &&
+               context.box == wanted.box && context.inset == wanted.inset &&
+               sameString(context.verticalAlign, wanted.verticalAlign) &&
+               context.allCaps.value_or(false) == wanted.allCaps.value_or(false) &&
+               context.transition.value_or(TransitionOptions::defaults()) ==
+                   wanted.transition.value_or(TransitionOptions::defaults());
+    };
+    const auto sameLook = [&](const Theme& theme) {
+        return theme.textColor == snapshot.textColor &&
+               theme.fontFamily == snapshot.fontFamily &&
+               theme.fontSize == snapshot.fontSize && theme.align == snapshot.align &&
+               theme.lineSpacing == snapshot.lineSpacing &&
+               theme.fontWeight.value_or(kDefaultFontWeight) == snapshot.fontWeight &&
+               theme.fontStyle.value_or("normal") == snapshot.fontStyle &&
+               theme.fontUnderline.value_or(false) == snapshot.fontUnderline &&
+               theme.fitMode.value_or("shrink") == snapshot.fitMode &&
+               theme.minFontSize.value_or(kDefaultMinFontSize) ==
+                   snapshot.minFontSize &&
+               theme.verticalAlign.value_or(kDefaultVerticalAlign) ==
+                   snapshot.verticalAlign &&
+               theme.allCaps.value_or(false) == snapshot.allCaps &&
+               theme.stroke.value_or(TextStroke{}) == snapshot.stroke &&
+               theme.shadow.value_or(TextShadow{}) == snapshot.shadow &&
+               theme.placement == snapshot.placement &&
+               theme.transition.value_or(TransitionOptions::defaults()) ==
+                   snapshot.transition &&
+               theme.contexts.size() == snapshot.contexts.size() &&
+               std::equal(snapshot.contexts.begin(), snapshot.contexts.end(),
+                          theme.contexts.begin(),
+                          [&](const TextContext& wanted, const TextContext& own) {
+                              return sameContext(own, wanted, theme);
+                          });
+    };
+    for (const Theme& theme : fThemes) {
+        if (sameLook(theme)) {
+            return theme.id;
+        }
+    }
+    const Id id = createTheme(snapshot.name, snapshot.textColor, "", "",
+                              snapshot.fontFamily, snapshot.fontSize, snapshot.align,
+                              snapshot.lineSpacing, error);
+    if (id.empty()) {
+        return {};
+    }
+    ThemeTextStyle style;
+    style.fontWeight = snapshot.fontWeight;
+    style.fontStyle = snapshot.fontStyle;
+    style.fontUnderline = snapshot.fontUnderline;
+    style.fitMode = snapshot.fitMode;
+    style.minFontSize = snapshot.minFontSize;
+    style.verticalAlign = snapshot.verticalAlign;
+    style.allCaps = snapshot.allCaps;
+    style.stroke = snapshot.stroke;
+    style.shadow = snapshot.shadow;
+    if (!setThemeTextStyle(id, style, error)) {
+        return {};
+    }
+    if (snapshot.placement.has_value() &&
+        !setThemePlacement(id, *snapshot.placement, error)) {
+        return {};
+    }
+    if (!setThemeTransition(id, snapshot.transition, error)) {
+        return {};
+    }
+    if (!snapshot.contexts.empty() &&
+        !setThemeContexts(id, snapshot.contexts, error)) {
+        return {};
+    }
+    return id;
+}
+
 bool Documents::themeSnapshotFor(const Id& themeId, ThemeSnapshot* out,
                                  std::string* error) const {
     if (out == nullptr) {

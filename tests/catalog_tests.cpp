@@ -40,6 +40,10 @@ using openshow::catalog::History;
 using openshow::catalog::Id;
 using openshow::catalog::SongMetadata;
 using openshow::catalog::Stanza;
+using openshow::domain::BoxRect;
+using openshow::domain::TextContext;
+using openshow::domain::ThemeSnapshot;
+using openshow::domain::TransitionKind;
 
 Stanza stanza(const std::string& label, const std::vector<std::string>& lines) {
     Stanza result;
@@ -412,6 +416,158 @@ void testFaultedSavesKeepThePreviousCatalog() {
     std::filesystem::remove_all(dir, ignored);
 }
 
+// --- PT.2: the remembered Library look ------------------------------------
+
+void testRememberedLook() {
+    const std::filesystem::path dir = scratchDirectory();
+    Catalog catalog;
+    std::string error;
+    const Id id = catalog.createSong("Remembered", sampleStanzas(), sampleMetadata(),
+                                     &error);
+    check(!id.empty(), "a song exists to remember a look for");
+    const CatalogItem before = *catalog.find(id);
+
+    ThemeSnapshot look;
+    look.name = "Brun";
+    look.textColor = "#f0e0d0";
+    look.fontFamily = "Noto Serif";
+    look.fontSize = 48.0;
+    look.align = "left";
+    look.lineSpacing = 1.4;
+    look.fontWeight = 700;
+    look.fontStyle = "italic";
+    look.fontUnderline = true;
+    look.fitMode = "fixed";
+    look.minFontSize = 18.0;
+    look.verticalAlign = "bottom";
+    look.allCaps = true;
+    look.stroke = openshow::domain::TextStroke{true, "#ff0000", 3.5};
+    look.shadow = openshow::domain::TextShadow{true, "#00ff00", 0.4, -4.0, 6.0, 2.5};
+    look.placement = BoxRect{120.0, 80.0, 1680.0, 900.0};
+    look.transition.kind = TransitionKind::kCut;
+    look.transition.textDurationMs = 0;
+    look.transition.mediaDurationMs = 10000;
+    // A captured snapshot carries RESOLVED contexts, so every field is an
+    // explicit answer; the codec canonicalises exactly that shape.
+    TextContext scripture;
+    scripture.name = "scripture";
+    scripture.fontFamily = look.fontFamily;
+    scripture.fontSize = 32.0;
+    scripture.lineSpacing = look.lineSpacing;
+    scripture.align = look.align;
+    scripture.verticalAlign = "top";
+    scripture.allCaps = false;
+    scripture.transition = look.transition;
+    TextContext future;
+    future.name = "future view";
+    future.fontFamily = look.fontFamily;
+    future.fontSize = look.fontSize;
+    future.lineSpacing = look.lineSpacing;
+    future.align = "right";
+    future.verticalAlign = look.verticalAlign;
+    future.allCaps = look.allCaps;
+    future.transition = look.transition;
+    look.contexts = {scripture, future};
+
+    check(catalog.setThemeSnapshot(id, look, &error),
+          "the Library remembers the chosen look");
+    const CatalogItem after = *catalog.find(id);
+    check(after.recordRevision == before.recordRevision + 1 &&
+              after.contentRevision == before.contentRevision + 1,
+          "remembering a look advances both revisions");
+    check(after.title == before.title && after.stanzas == before.stanzas &&
+              after.metadata == before.metadata,
+          "the canonical words and attribution are untouched");
+    check(after.themeSnapshot.has_value() && *after.themeSnapshot == look,
+          "the remembered value is exactly the one set");
+
+    check(catalog.setThemeSnapshot(id, look, &error) &&
+              catalog.find(id)->recordRevision == after.recordRevision,
+          "setting the same look again costs no revision");
+
+    ThemeSnapshot invalid = look;
+    invalid.align = "middle";
+    check(!catalog.setThemeSnapshot(id, invalid, &error),
+          "an invalid remembered look is refused");
+    check(catalog.find(id)->themeSnapshot == look,
+          "the refusal leaves the previous preference in place");
+    check(!catalog.setThemeSnapshot("item-does-not-exist", look, &error),
+          "remembering a look on an unknown item is refused");
+
+    // The durable package round-trips the value; the words stay canonical.
+    check(openshow::catalog::saveCatalog(catalog, dir, &error),
+          "a catalog with a remembered look saves");
+    Catalog loaded;
+    check(openshow::catalog::loadCatalog(&loaded, dir, &error),
+          "the catalog reloads");
+    const CatalogItem* reloaded = loaded.find(id);
+    check(reloaded != nullptr && reloaded->themeSnapshot.has_value() &&
+              *reloaded->themeSnapshot == look,
+          "the remembered look round-trips through disk");
+    check(reloaded != nullptr && reloaded->stanzas == before.stanzas &&
+              reloaded->metadata == before.metadata,
+          "the reloaded words and metadata are unchanged");
+
+    // Format 1 loads with no preference; naming the newer key there is
+    // refused by name.
+    const std::string legacy =
+        R"({"format":1,"nextOrdinal":2,"items":[{"id":"item1","category":"songs","title":"Legacy","recordRevision":1,"contentRevision":1,"kind":"lyrics","metadata":{"ccli":"","authors":"","copyright":""},"stanzas":[{"label":"Verse 1","lines":["Old words"]}]}]})";
+    writeWholeFile(dir / "catalog.json", legacy);
+    Catalog legacyLoaded;
+    check(openshow::catalog::loadCatalog(&legacyLoaded, dir, &error),
+          "a format-1 catalog still loads");
+    check(legacyLoaded.find("item1") != nullptr &&
+              !legacyLoaded.find("item1")->themeSnapshot.has_value(),
+          "a format-1 record means no remembered look");
+    std::string legacyWithKey = legacy;
+    legacyWithKey.replace(legacyWithKey.find("\"stanzas\""), 9,
+                          "\"themeSnapshot\":{},\"stanzas\"");
+    writeWholeFile(dir / "catalog.json", legacyWithKey);
+    Catalog refused;
+    check(!openshow::catalog::loadCatalog(&refused, dir, &error) &&
+              error.find("themeSnapshot") != std::string::npos,
+          "a format-1 record naming the newer key is refused by name");
+
+    // A malformed snapshot in a format-2 file refuses, naming the rule.
+    const std::string good = readWholeFile(dir / "catalog.json");
+    check(openshow::catalog::saveCatalog(catalog, dir, &error),
+          "the current catalog is written for the malformed case");
+    std::string malformed = readWholeFile(dir / "catalog.json");
+    const std::size_t colour = malformed.find("\"textColor\":\"#f0e0d0\"");
+    check(colour != std::string::npos, "the snapshot colour is in the file");
+    if (colour != std::string::npos) {
+        malformed.replace(colour, std::string("\"textColor\":\"#f0e0d0\"").size(),
+                          "\"textColor\":\"red\"");
+        writeWholeFile(dir / "catalog.json", malformed);
+        check(!openshow::catalog::loadCatalog(&refused, dir, &error) &&
+                  error.find("#rgb") != std::string::npos,
+              "a malformed remembered look refuses naming its rule");
+    }
+    writeWholeFile(dir / "catalog.json", good);
+
+    // Library history owns the preference: one undo forgets it, redo
+    // restores it, and the song's words never move.
+    Catalog remembered;
+    const Id rememberedId =
+        remembered.createSong("History", sampleStanzas(), {}, &error);
+    History history(&remembered);
+    check(history.apply([&] {
+              return remembered.setThemeSnapshot(rememberedId, look, &error);
+          }),
+          "remembering through Library history succeeds");
+    check(history.undo(&error) &&
+              !remembered.find(rememberedId)->themeSnapshot.has_value(),
+          "one Library undo forgets the remembered look");
+    check(history.redo(&error) &&
+              remembered.find(rememberedId)->themeSnapshot == look,
+          "Library redo restores it");
+    check(remembered.find(rememberedId)->stanzas == sampleStanzas(),
+          "the remembered-look history never touches the words");
+
+    std::error_code ignored;
+    std::filesystem::remove_all(dir, ignored);
+}
+
 }  // namespace
 
 int main() {
@@ -420,6 +576,7 @@ int main() {
     testValidationLimits();
     testHistoryAndIdentityWatermark();
     testRoundTripAndLoadStrictness();
+    testRememberedLook();
     testFaultedSavesKeepThePreviousCatalog();
     if (gFailed) {
         std::fprintf(stderr, "catalog_tests: FAILED\n");

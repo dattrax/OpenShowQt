@@ -64,6 +64,9 @@ QVariantMap itemRow(const openshow::catalog::CatalogItem& item) {
         lines += static_cast<int>(stanza.lines.size());
     }
     row.insert(QStringLiteral("lineCount"), lines);
+    // Task PT.2: a row can remember a future-service look. The UI shows it
+    // as a state, never as raw snapshot JSON.
+    row.insert(QStringLiteral("hasThemeSnapshot"), item.themeSnapshot.has_value());
     return row;
 }
 
@@ -225,6 +228,55 @@ bool CatalogController::setItemMetadata(const QString& id, const QString& ccli,
         QStringLiteral("Could not update the song's attribution"));
     if (ok) {
         emit itemChanged(id);
+    }
+    return ok;
+}
+
+QString CatalogController::itemThemeSnapshot(const QString& id) const {
+    const openshow::catalog::CatalogItem* item = findItem(id);
+    if (item == nullptr || !item->themeSnapshot.has_value()) {
+        return QString();
+    }
+    return fromStd(boost::json::serialize(
+        openshow::domain::themeSnapshotToJson(*item->themeSnapshot)));
+}
+
+bool CatalogController::rememberItemTheme(const QString& id,
+                                          const QString& snapshotJson) {
+    boost::system::error_code parseError;
+    const boost::json::value parsed =
+        boost::json::parse(toStd(snapshotJson), parseError);
+    if (parseError) {
+        setStatus(QStringLiteral("Could not remember the look: the snapshot is "
+                                 "not valid JSON"));
+        return false;
+    }
+    openshow::domain::ThemeSnapshot snapshot;
+    std::string error;
+    if (!openshow::domain::themeSnapshotFromJson(parsed, &snapshot, &error)) {
+        setStatus(QStringLiteral("Could not remember the look: ") + fromStd(error));
+        return false;
+    }
+    const bool ok = commit(
+        [&](openshow::catalog::Catalog& catalog, std::string& editError) {
+            return catalog.setThemeSnapshot(toStd(id), std::move(snapshot),
+                                            &editError);
+        },
+        QStringLiteral("Could not remember the Library look"));
+    if (ok) {
+        emit itemThemeChanged(id);
+    }
+    return ok;
+}
+
+bool CatalogController::forgetItemTheme(const QString& id) {
+    const bool ok = commit(
+        [&](openshow::catalog::Catalog& catalog, std::string& error) {
+            return catalog.setThemeSnapshot(toStd(id), std::nullopt, &error);
+        },
+        QStringLiteral("Could not forget the Library look"));
+    if (ok) {
+        emit itemThemeChanged(id);
     }
     return ok;
 }
