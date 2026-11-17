@@ -3276,6 +3276,20 @@ QString DocumentController::showWordsFingerprint(const QString& showId) const {
         openshow::domain::showTextProjection(fDocuments, showId.toStdString())));
 }
 
+bool DocumentController::forgetReflowSource(const QString& showId) {
+    flushText();
+    std::string error;
+    const bool ok = edit([&] {
+        return fDocuments.setShowReflowSource(showId.toStdString(), std::nullopt,
+                                              &error);
+    });
+    if (!ok) {
+        setStatus(QStringLiteral("reflow source: %1")
+                      .arg(QString::fromStdString(error)));
+    }
+    return ok;
+}
+
 QString DocumentController::reflowPlanProblem(const QString& showId,
                                               const QVariantMap& plan) const {
     if (plan.isEmpty()) {

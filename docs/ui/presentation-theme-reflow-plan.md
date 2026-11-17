@@ -1,7 +1,10 @@
 # Whole-item theme application and optional reflow
 
-Implementation brief for **PT** in `PLAN.md`. Planning only: the existing
-slide-tile menu is still present and no reflow feature is implemented yet.
+Implementation brief for **PT** in `PLAN.md`. IMPLEMENTED 2026-11-17:
+PT.1–PT.8 are closed in the ledger, and the "current boundaries" section
+below is kept as the starting-point record rather than as a live description.
+The slide-tile theme menu and header default picker have been removed; the
+left-hand rows and the keep/reflow dialog are the apply entry point.
 
 ## Agreed workflow
 

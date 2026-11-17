@@ -238,11 +238,10 @@ Rename, Delete with references cleared as one undo step) beside a live sample
 preview rendered through the selected-scene lane — the sample is a fixture,
 never a document, so browsing themes touches no output. The Edit page's
 inspector shows the RESOLVED appearance and its fields write per-slide
-customizations only, each customized field carrying a revert badge; the Show
-header names the VIEWED show's default, the cue tile's right-click themes one
-slide or restores its customizations, and the library row's right-click
-applies a theme to a whole presentation or restores it — every bulk landing
-as one history entry through the single owner. Refusals (a bad colour, a
+customizations only, each customized field carrying a revert badge. (PT.7
+later removed the Show header's separate default picker and the cue tile's
+theme/customization menu: whole-item application moved to the left-hand rows,
+and per-slide styling stays in Edit.) Refusals (a bad colour, a
 restore with nothing under it, a dead id) edit nothing and land on the status
 line. Two Qt 6.12 shapes are deliberate: the context menus are flat because a
 nested submenu's Repeater delegates never instantiate (the plan's "Apply
@@ -1044,6 +1043,79 @@ catalog links are removed from older history snapshots so undo cannot resurrect
 them, while unrelated history and playable service copies remain. In-flight
 song preparation is cancelled if its Library source is deleted.
 
+
+## Whole-item themes and optional reflow (milestone PT)
+
+A theme can be applied to a WHOLE song or passage from its left-hand row, not
+to one tile: the target is the clicked record, and the dialog names its title,
+its occurrence count (a show listed twice is one presentation) and the
+eligibility answer. **Apply only** is the default and keeps every current
+break; **Apply and reflow** re-paginates the words the item already holds; an
+unprepared Library song offers only **Remember theme** and never adds a hidden
+presentation or cue. The Show header's default picker and the cue tile's theme
+menu are gone, so every item-level apply goes through the same prevalidated
+transaction; per-slide overrides remain an Edit-page choice.
+
+The remembered look is a VALUE, `domain::ThemeSnapshot` (`themesnapshot.h`):
+the complete resolved appearance, both alignments, All caps, spacing, weight/
+slant/underline, fit/minimum, stroke/shadow, primary placement, resolved
+movement and named contexts, captured concrete through the Theme Editor's
+fixture with the service current theme excluded. No service id, asset path or
+backdrop media travels. Catalog format 2 stores it optionally on a song; a
+malformed value refuses through `Documents::validThemeSnapshot` before any
+durable write, canonical words are untouched, and re-setting the same value is
+a no-op. Applying materialises it as a service-local theme by full-definition
+fingerprint (name and id aside), never overwriting a same-named different look.
+
+Service format 15 carries `Show.appliedThemeId` and `Show.reflowSource`. With
+an explicit assignment the theme chain is slide theme → applied item theme →
+Default, with slide customizations still winning per field and the transition
+resolver walking the same branch; without it the legacy current → slide → show
+default chain is the exact code path every earlier service used. Applying
+clears every slide's old slide theme and TEXT customization through the shared
+`textCustomizationFields()` classification (colour, family, size, alignments,
+spacing, caps, weight/slant/underline, fit/minimum, effects and the placement
+override) while preserving backdrop colour/gradient, background asset/fit/
+camera, authored item geometry/order, words, notes, groups, IDs, counts and
+media/audio references. "Use service default" removes the assignment and the
+target's legacy show-default and slide themes only.
+
+Reflow reads `reflowSource`: a closed kind, ordered blocks with section/verse
+labels and original-case lines, scripture provenance and a fingerprint of the
+service text projection it describes. A word, break, order or section edit
+invalidates the fingerprint; a style-only edit does not; undo/redo and save/
+reopen carry words and source together. A legacy or edited item falls back to
+the conservative current-word source, with unlabelled scripture blocks naming
+the whole passage rather than an invented verse range. Nothing in a reflow can
+read the Library or a provider.
+
+Eligibility is one sentence (`domain::reflowEligibility`): one text box per
+content slide, no foreground picture beside words, at most one leading blank
+cue, no internal/trailing wordless cue, and one common background/fit/text
+context. Songs keep the section-starts-a-new-slide policy; passages pack
+greedily with the import's measured caption reservation. `ui::ReflowPlanner`
+captures the chosen look's box (from the snapshot, never the browsing cursor),
+the source, the projection fingerprint and the document generation, measures
+asynchronously in bounded rounds, and refuses a reply whose item vanished or
+whose words moved. `ui::ThemeApplySession` orders the two stores: prevalidate,
+write the Library preference durably, then publish ONE service edit (look plus
+replacement slides); a refused write or stale plan publishes neither, and the
+two undo scopes stay separate. No cross-store crash atomicity is claimed.
+
+Evidence: `domain_tests` (snapshot capture/codec/limits, the item chain,
+preservation, service-15 read/write, projection fingerprint, eligibility rules,
+both fallbacks); `catalog_tests`/`catalog_controller_tests` (durable preference,
+revisions, restart, separate signal); `reflow_tests` (both pagination policies,
+splitting, reservation, word conservation); `document_controller_tests`
+(adapter verbs, snapshot/measure, A→restart→B, source capture/refresh);
+`theme_apply_tests` (two-store transaction, one-undo restoration, stale and
+refused paths, separate scopes); `reflow_planner_tests` (real worker: roomy vs
+tight look, prepare/commit/undo, stale words, no worker, and the PT.8
+Library→service→reflow→Go→save/reopen journey with legacy scripture and media/
+override preservation); `workspace_ui_tests` (the row actions, the dialog,
+keyboard menus, the removed bypasses, no-worker and ineligible paths). The
+PLAN ledger closes PT.1–PT.8; physical gates (projector, NDI, target-GPU)
+remain recorded separately under M7/ND/TA.
 
 ### Transparent presentation content (2026-11-07)
 

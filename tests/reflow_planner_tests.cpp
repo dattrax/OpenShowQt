@@ -24,8 +24,10 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
+#include "CatalogController.h"
 #include "DocumentController.h"
 #include "ReflowPlanner.h"
 #include "ThemeApplySession.h"
@@ -85,6 +87,10 @@ QStringList slideListIds(const QVariantList& rows) {
         ids.append(row.toMap().value(QStringLiteral("id")).toString());
     }
     return ids;
+}
+
+QVariantList refreshedSlides(const QVariantMap& plan) {
+    return plan.value(QStringLiteral("slides")).toList();
 }
 
 QStringList wordsOf(const QVariantList& slides) {
@@ -341,6 +347,271 @@ int main(int argc, char** argv) {
     check(docs.slidesOf(show).size() == committedSlideCount &&
               docs.reflowSourceInfo(show).value(QStringLiteral("hasSource")).toBool(),
           "preparing, cancelling and a refused stale plan never re-paginate the item");
+
+    // --- PT.8: the Library -> service -> reflow -> Go -> undo/save journey --
+    {
+        const std::filesystem::path journeyRoot = root / "journey";
+        openshow::ui::CatalogController library(nullptr, journeyRoot / "catalog");
+        QVariantList journeyStanzas;
+        journeyStanzas.append(QVariantMap{
+            {QStringLiteral("label"), QStringLiteral("Verse 1")},
+            {QStringLiteral("lines"),
+             QStringList{QStringLiteral("Journey verse one"),
+                         QStringLiteral("second line")}}});
+        journeyStanzas.append(QVariantMap{
+            {QStringLiteral("label"), QStringLiteral("Chorus")},
+            {QStringLiteral("lines"), QStringList{QStringLiteral("Journey chorus")}}});
+        const QString item = library.addSong(QStringLiteral("Journey song"),
+                                             journeyStanzas, QString(), QString(),
+                                             QString());
+        check(!item.isEmpty(), "PT.8: the Library song exists");
+
+        // The look is captured in one service and remembered by value.
+        QString snapshot;
+        {
+            openshow::ui::DocumentController serviceA(nullptr, journeyRoot / "a");
+            check(serviceA.createBlankTheme(QStringLiteral("Easter")),
+                  "PT.8: service A has a look");
+            const QString easter = themeIdNamed(serviceA, QStringLiteral("Easter"));
+            check(!easter.isEmpty() &&
+                      serviceA.editTheme(easter, QStringLiteral("Easter"),
+                                         QStringLiteral("#ffeeaa"),
+                                         QStringLiteral("#000000"), QString(),
+                                         QStringLiteral("Journey Serif"), 52.0,
+                                         QStringLiteral("center"), 1.35) &&
+                      serviceA.setThemePlacement(easter, 140.0, 110.0, 1640.0, 860.0),
+                  "PT.8: the look is authored");
+            snapshot = serviceA.themeSnapshotJson(easter);
+            check(!snapshot.isEmpty() &&
+                      library.rememberItemTheme(item, snapshot),
+                  "PT.8: the Library remembers the look (service A is not touched)");
+        }
+
+        // A later service B prepares the song and wears the saved look.
+        openshow::ui::DocumentController serviceB(nullptr, journeyRoot / "b");
+        const std::filesystem::path backgroundPath = journeyRoot / "journey-bg.png";
+        {
+            std::ofstream bytes(backgroundPath, std::ios::binary);
+            bytes << "journey-background";
+        }
+        check(serviceB.importMediaFile(QString::fromStdString(backgroundPath.string())),
+              "PT.8: service B has a background asset");
+        const QString background =
+            serviceB.assets().last().toMap().value(QStringLiteral("id")).toString();
+        QVariantList planRows;
+        planRows.append(QVariantMap{
+            {QStringLiteral("lines"),
+             QStringList{QStringLiteral("Journey verse one"),
+                         QStringLiteral("second line")}},
+            {QStringLiteral("group"), QStringLiteral("Verse 1")},
+            {QStringLiteral("label"), QStringLiteral("Verse 1")}});
+        planRows.append(QVariantMap{
+            {QStringLiteral("lines"), QStringList{QStringLiteral("Journey chorus")}},
+            {QStringLiteral("group"), QStringLiteral("Chorus")},
+            {QStringLiteral("label"), QStringLiteral("Chorus")}});
+        const QString showB = serviceB.upsertCatalogSong(
+            item, QStringLiteral("Journey song"), QString(), QString(), QString(),
+            planRows, true, -1, snapshot);
+        check(!showB.isEmpty(), "PT.8: service B prepares the song");
+        serviceB.selectSong(showB);
+        serviceB.selectSlide(0);
+        check(serviceB.slideAppearance()
+                      .value(QStringLiteral("textColor"))
+                      .toMap()
+                      .value(QStringLiteral("value"))
+                      .toString() == QStringLiteral("#ffeeaa") &&
+                  serviceB.slideAppearance()
+                          .value(QStringLiteral("fontSize"))
+                          .toMap()
+                          .value(QStringLiteral("value"))
+                          .toDouble() == 52.0,
+              "PT.8: the future-service saved look is worn, with no Library open elsewhere");
+
+        // Per-slide overrides and media: Apply only removes the text override
+        // and leaves the backdrop and common background alone.
+        const QVariantList beforeApply = serviceB.slidesOf(showB);
+        for (int i = 0; i < beforeApply.size(); ++i) {
+            check(serviceB.setSlideBackgroundFor(
+                      showB,
+                      beforeApply.at(i).toMap().value(QStringLiteral("id")).toString(),
+                      background),
+                  "PT.8: the text run shares a background");
+        }
+        check(serviceB.customizeCurrentSlide(QStringLiteral("textColor"),
+                                             QStringLiteral("#123456")) &&
+                  serviceB.customizeCurrentSlide(QStringLiteral("backgroundColor"),
+                                                 QStringLiteral("#654321")),
+              "PT.8: the slide carries old text and backdrop overrides");
+        openshow::ui::ThemeApplySession session(&serviceB, &library);
+        check(session.applyOnly(showB, snapshot, item, true),
+              "PT.8: Apply only republishes the same look");
+        check(serviceB.slideAppearance()
+                      .value(QStringLiteral("textColor"))
+                      .toMap()
+                      .value(QStringLiteral("customized"))
+                      .toBool() == false &&
+                  serviceB.slideAppearance()
+                          .value(QStringLiteral("backgroundColor"))
+                          .toMap()
+                          .value(QStringLiteral("customized"))
+                          .toBool(),
+              "PT.8: the text override went and the backdrop override stayed");
+        check(slideListIds(serviceB.slidesOf(showB)) == slideListIds(beforeApply),
+              "PT.8: Apply only preserves every slide ID");
+        bool mediaKept = true;
+        for (const QVariant& row : serviceB.slidesOf(showB)) {
+            mediaKept = mediaKept &&
+                        row.toMap().value(QStringLiteral("backgroundAssetId"))
+                                .toString() == background;
+        }
+        check(mediaKept, "PT.8: the common background survives Apply only");
+
+        // Reflow, then Go: the compiled scene carries the same words.
+        openshow::ui::ReflowPlanner journeyPlanner(&serviceB, &worker);
+        Reply prepared;
+        QObject::connect(&journeyPlanner, &openshow::ui::ReflowPlanner::prepared,
+                         [&prepared](bool ok, const QString& error) {
+                             prepared.fired = true;
+                             prepared.ok = ok;
+                             prepared.error = error;
+                         });
+        check(journeyPlanner.prepare(showB, snapshot),
+              "PT.8: the reflow preparation starts");
+        waitForReply(journeyPlanner, &prepared);
+        check(prepared.ok, "PT.8: the reflow plan measures");
+        const QVariantMap journeyPlan = journeyPlanner.plan();
+        check(session.applyReflow(showB, snapshot, journeyPlan, item, true),
+              "PT.8: Apply and reflow publishes the plan");
+        const QVariantList reflowedRows = serviceB.slidesOf(showB);
+        check(wordsOf(refreshedSlides(journeyPlan)) ==
+                  (QStringList{QStringLiteral("Journey"), QStringLiteral("verse"),
+                               QStringLiteral("one"), QStringLiteral("second"),
+                               QStringLiteral("line"), QStringLiteral("Journey"),
+                               QStringLiteral("chorus")}),
+              "PT.8: the plan keeps every current word in order");
+        const QString firstSlideId =
+            reflowedRows.at(0).toMap().value(QStringLiteral("id")).toString();
+        const QString scene = serviceB.sceneJsonForSlide(firstSlideId);
+        check(!scene.isEmpty() && scene.contains(QStringLiteral("Journey verse one")),
+              "PT.8: the reflowed slide compiles with its words");
+        serviceB.selectSong(showB);
+        serviceB.selectSlide(0);
+        const bool wasLive = worker.wordsOnAir();
+        worker.presentSceneJson(scene);
+        QElapsedTimer goClock;
+        goClock.start();
+        while (!worker.wordsOnAir() && goClock.elapsed() < 10000)
+            QTest::qWait(20);
+        check(worker.wordsOnAir(), "PT.8: Go puts the reflowed words on air");
+        if (!wasLive) {
+            // Leave the audience where we found it.
+            worker.clearSlide();
+        }
+
+        // Save/reopen: the source, the look and the words survive.
+        check(serviceB.save(), "PT.8: service B saves");
+        openshow::ui::DocumentController reopened(nullptr, journeyRoot / "b");
+        check(reopened.load(), "PT.8: service B reopens");
+        check(reopened.reflowSourceMatches(showB) &&
+                  reopened.showInfo(showB)
+                          .value(QStringLiteral("appliedThemeId"))
+                          .toString() != QString(),
+              "PT.8: the applied look and the source survive save/reopen");
+        reopened.selectSong(showB);
+        reopened.selectSlide(0);
+        check(reopened.slideAppearance()
+                      .value(QStringLiteral("textColor"))
+                      .toMap()
+                      .value(QStringLiteral("value"))
+                      .toString() == QStringLiteral("#ffeeaa"),
+              "PT.8: the reopened item still wears the chosen look");
+
+        // Legacy scripture: an Add captures its own source, so the legacy
+        // path is a captured source dropped again — the eligibility then
+        // uses the conservative current-word source and honest labels.
+        {
+            check(serviceB.createPlaylist(QStringLiteral("Legacy schedule")),
+                  "PT.8: a schedule exists for the legacy passage");
+            QString playlist;
+            for (const QVariant& row : serviceB.playlists()) {
+                if (row.toMap().value(QStringLiteral("name")).toString() ==
+                    QStringLiteral("Legacy schedule"))
+                    playlist = row.toMap().value(QStringLiteral("id")).toString();
+            }
+            QVariantList verses;
+            verses.append(QVariantMap{
+                {QStringLiteral("lines"),
+                 QStringList{QStringLiteral("In the beginning was the Word")}},
+                {QStringLiteral("notes"), QStringLiteral("John 1:1")}});
+            verses.append(QVariantMap{
+                {QStringLiteral("lines"),
+                 QStringList{QStringLiteral("He was with God in the beginning")}},
+                {QStringLiteral("notes"), QStringLiteral("John 1:2")}});
+            check(!playlist.isEmpty() &&
+                      serviceB.addScripturePassage(
+                          playlist, QStringLiteral("John 1:1-3"),
+                          QStringLiteral("NIV"), QStringLiteral("NIV notice"),
+                          verses),
+                  "PT.8: a legacy passage is added");
+            QString passage;
+            for (const QVariant& entry : serviceB.playlistEntries()) {
+                if (entry.toMap().value(QStringLiteral("showName")).toString() ==
+                    QStringLiteral("John 1:1-3"))
+                    passage = entry.toMap().value(QStringLiteral("showId")).toString();
+            }
+            check(!passage.isEmpty() &&
+                      serviceB.forgetReflowSource(passage),
+                  "PT.8: the passage's captured source is dropped");
+            const QVariantMap legacyEligibility =
+                journeyPlanner.eligibility(passage);
+            check(legacyEligibility.value(QStringLiteral("eligible")).toBool() &&
+                      !legacyEligibility.value(QStringLiteral("usesStoredSource"))
+                           .toBool() &&
+                      !legacyEligibility.value(QStringLiteral("sectionStartsNewSlide"))
+                           .toBool(),
+                  "PT.8: legacy scripture falls back to its current words");
+            Reply legacyPrepared;
+            QObject::connect(&journeyPlanner, &openshow::ui::ReflowPlanner::prepared,
+                             [&legacyPrepared](bool ok, const QString& error) {
+                                 legacyPrepared.fired = true;
+                                 legacyPrepared.ok = ok;
+                                 legacyPrepared.error = error;
+                             });
+            check(journeyPlanner.prepare(passage, snapshot),
+                  "PT.8: the legacy passage prepares");
+            waitForReply(journeyPlanner, &legacyPrepared);
+            check(legacyPrepared.ok &&
+                      session.applyReflow(passage, snapshot,
+                                          journeyPlanner.plan(), QString(), false),
+                  "PT.8: the legacy passage reflows without a Library link");
+            QStringList passageWords;
+            for (const QVariant& row : serviceB.slidesOf(passage)) {
+                for (const QString& word :
+                     row.toMap().value(QStringLiteral("preview")).toString()
+                         .split(QLatin1Char(' '), Qt::SkipEmptyParts))
+                    passageWords.append(word);
+            }
+            check(passageWords.join(QLatin1Char(' ')) ==
+                      QStringLiteral("In the beginning was the Word"),
+                  "PT.8: the legacy passage keeps its current words");
+        }
+
+        // Separate undo scopes.
+        openshow::ui::DocumentController undoService(nullptr, journeyRoot / "b");
+        check(undoService.load(), "PT.8: the journey service reloads for undo");
+        openshow::ui::ThemeApplySession undoSession(&undoService, &library);
+        const QVariantList beforeUndo = undoService.slidesOf(showB);
+        check(undoSession.applyOnly(showB, snapshot, item, true),
+              "PT.8: an apply is published for the undo leg");
+        undoService.undo();
+        check(slideListIds(undoService.slidesOf(showB)) == slideListIds(beforeUndo),
+              "PT.8: one service undo restores the slide identities");
+        check(!library.itemThemeSnapshot(item).isEmpty(),
+              "PT.8: the service undo leaves the Library preference");
+        library.undo();
+        check(library.itemThemeSnapshot(item).isEmpty(),
+              "PT.8: the Library undo is its own scope");
+    }
 
     worker.shutdownNow();
     if (gFailed > 0) {

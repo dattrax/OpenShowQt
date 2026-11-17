@@ -2195,10 +2195,10 @@ explicit Go. [Workflow, persistence, source preservation and acceptance](docs/ui
 | PT.5 | DONE | Prepare bounded optional reflow against the chosen item's future appearance | Use captured worker-measured style, source and generation; preserve section/verse policy and eligible common media/audio/leading blank; explain unsupported multi-box/mixed-media cases; cancellation/failure/stale replies leave everything unchanged |
 | PT.6 | DONE | Commit prepared item changes and remembered preferences with honest history/persistence | Prevalidate before durable catalog write, then publish one compound service edit; service undo restores theme/slides/media/IDs once, Library preference uses Library history; fault/refusal/reconnect tests prove no partial UI mutation or surprise Apply-only repagination; do not claim cross-store crash atomicity |
 | PT.7 | DONE | Move apply actions to left-hand item rows and add the keep/reflow dialog | Library/Service rows target explicit identities; show title/occurrence count, Apply only/Apply and reflow/Cancel and eligibility reasons; unprepared Library songs remember without entering the running order; remove central tile theme menu/header apply bypass; keyboard and no-worker paths work |
-| PT.8 | TODO | Close Library→service→reflow→Go→undo/save journeys and reconcile docs | Whole-item uniformity, current-word conservation, future-service saved looks, legacy scripture, override/media preservation, stale/failure paths and separate undo scopes verified; focused then desktop/headless/source guards pass, with skips/physical gates recorded separately |
+| PT.8 | DONE | Close Library→service→reflow→Go→undo/save journeys and reconcile docs | Whole-item uniformity, current-word conservation, future-service saved looks, legacy scripture, override/media preservation, stale/failure paths and separate undo scopes verified; focused then desktop/headless/source guards pass, with skips/physical gates recorded separately |
 
 Order: PT.1 → PT.2/PT.3/PT.4 → PT.5 → PT.6 → PT.7 → PT.8; split any leaf
-exceeding two engineer-days. PT.1–PT.7 DONE; PT.8 TODO. No global live
+exceeding two engineer-days. PT.1–PT.8 DONE. No global live
 theme library, automatic audience presentation, provider cache or arbitrary
 multi-object slide reflow is introduced. Recheck catalog/service allocations before implementing; existing
 scene 8/protocol 0.20 suffice. Prior TL/BX/DR/PV completion remains historical.
@@ -2407,6 +2407,34 @@ reflow refusal leaving slides unchanged, an ineligible item's disabled reflow
 and stated reason with Apply only still available, Use service default
 forgetting the preference, both keyboard menus, and the unprepared song's
 remember-only path with an unchanged running order.
+
+PT.8 evidence (2026-11-17): `reflow_planner_tests` now carries the whole
+journey against the real worker. A look captured in service A is remembered in
+the Library by value; a later service B prepares the song and wears the saved
+look without opening A; Apply only removes a per-slide text override, keeps
+the backdrop override and every slide ID, and preserves the common background;
+Apply and reflow keeps every current word in order; the reflowed slide compiles
+and an explicit Go puts those words on air; save/reopen keeps the applied look,
+the reflow source and the words; a legacy passage (captured source dropped) is
+eligible through the conservative current-word source and keeps its words; and
+one service undo restores slide identities while Library undo remains its own
+scope. `DocumentController::forgetReflowSource` exposes the legacy/edited
+fixture honestly (one edit; words untouched).
+
+Focused runs then the full desktop suite pass (88/88 on the clean runs,
+including the display matrices and the guard negatives) and the headless set
+(`-LE display`, 48/48) passes; the workspace binary also passes at
+`QT_SCALE_FACTOR=1.5`. Two later parallel re-runs saw the known
+timing-sensitive display tests (`worker_rpc_transport` once,
+`background_media_tests` once) flake under `-j8`; each passed alone and in
+neighbouring full runs, and neither exercises the PT paths. Source guards
+(`CheckNoQt`, `CheckNoNdi`, `CheckNoRenderLayer`, `CheckNoSkiaPrivate`,
+`ui_loads`) are part of the suite and pass. Physical gates recorded separately
+and not claimed here: projector/second display, NDI transport, target-GPU
+behaviour. Documentation reconciled: `docs/architecture.md` gains the PT
+model/interaction section and no longer describes the removed tile/header
+apply surfaces; the PT brief's planning-only banner now records the
+implementation; this ledger and `PROGRESS.md` close the group.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

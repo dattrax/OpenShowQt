@@ -11,8 +11,9 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Whole-item themes and reflow (2026-11-17): PT.1–PT.7 are DONE; PT.8 is
-TODO.** The
+**Whole-item themes and reflow (2026-11-17): PT.1–PT.8 are DONE.**
+The group is closed; docs are reconciled and the desktop/headless suites plus
+the scale-1.5 workspace run pass. The
 [whole-item theme/reflow brief](docs/ui/presentation-theme-reflow-plan.md) moves
 theme application to left-hand song/passage rows and offers keep breaks or
 measured reflow. Library songs remember the chosen look by value for future
@@ -78,8 +79,20 @@ Cancel, plus Remember theme for an unprepared Library song. Service rows also
 offer Use service default. The cue-tile theme menu and the header's separate
 default-theme picker are gone; per-slide styling stays in Edit. Both the mouse
 and the Menu/Shift+F10 keyboard path reach the row menus.
-Next action: PT.8 (close the Library→service→reflow→Go→undo/save journeys and
-reconcile the docs).
+PT.8 closed the journey: a look saved in service A is worn by a later service
+B, Apply only preserves IDs/backdrop/common media while removing text
+overrides, Apply and reflow keeps every current word and goes on air through a
+real Go, save/reopen keeps the look/source/words, legacy scripture falls back
+to its current words, and the two undo scopes stay separate. `docs/architecture.md`
+gained the PT model/interaction section; the PT brief records the
+implementation instead of its planning-only banner.
+Ledger: PT.1–PT.8 DONE; desktop 88/88 on the clean runs, headless 48/48
+(display excluded), workspace at scale 1.5 clean. Two later `-j8` re-runs
+flaked the known timing-sensitive `worker_rpc_transport` and
+`background_media_tests`; both passed alone and in neighbouring full runs. Physical gates (projector, NDI, target GPU)
+remain open under M7/ND/TA and are not claimed.
+Next action: await the next group (TA.1, TV leftovers, ND, FO.1–FO.6,
+M7.1a–7.4 remain open in `PLAN.md`).
 
 **Edit canvas follow-up (BX.5, 2026-11-16): fixed and verified.** Sustained
 box drags could be stolen by Edit's parent Flickable; the earlier pointer matrix

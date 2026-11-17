@@ -497,6 +497,10 @@ public:
     // prepared plan carries the value it measured; comparing them is how a
     // stale plan is refused without guessing.
     Q_INVOKABLE QString showWordsFingerprint(const QString& showId) const;
+    // Task PT.8: drop a captured source (one edit), leaving the words alone.
+    // The conservative current-word source then covers the item, exactly as
+    // a service written before the source existed.
+    Q_INVOKABLE bool forgetReflowSource(const QString& showId);
     // Task PT.6: publish a prepared plan as ONE service edit — the chosen
     // look, the replacement slides (words, sections, notes, text context and
     // common background/fit), the untouched leading cue, show audio and
