@@ -11,15 +11,27 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Next planned group: PT.1–PT.8, all TODO.** The
+**Whole-item themes and reflow (2026-11-17): PT.1 is DONE; PT.2–PT.8 are
+TODO.** The
 [whole-item theme/reflow brief](docs/ui/presentation-theme-reflow-plan.md) moves
 theme application to left-hand song/passage rows and offers keep breaks or
 measured reflow. Library songs remember the chosen look by value for future
 services; applying replaces text/layout overrides and preserves words/media.
 The brief covers portable snapshots, explicit item precedence, offline/current-
 word reflow sources, eligibility, stale work and separate Library/service history.
-Next action: PT.1. This update changes planning docs only; no feature or new
-runtime verification is claimed, and completed groups below retain their evidence.
+Completed groups below retain their evidence.
+
+PT.1 added `ThemeSnapshot` and its validated codec. The value is the domain's
+own appearance records — colour, type, both alignments, All caps, spacing,
+weight/slant/underline, fit/minimum, stroke/shadow, placement, movement and
+named contexts — captured concrete through the Theme Editor's resolution
+fixture (the service current theme excluded), with contexts resolved against
+that same base and unknown names retained. No service ids, media paths or
+backdrop fields travel. The strict deterministic codec shares one semantic
+sentence (`Documents::validThemeSnapshot`) with the coming catalog loader, so
+the two cannot drift. `domain_tests` covers round-trip/determinism, Unicode,
+effects/layout/movement/contexts, silent-theme defaults and every refusal.
+Next action: PT.2 (catalog 2 remembered looks).
 
 **Edit canvas follow-up (BX.5, 2026-11-16): fixed and verified.** Sustained
 box drags could be stolen by Edit's parent Flickable; the earlier pointer matrix

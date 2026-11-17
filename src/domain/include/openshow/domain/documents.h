@@ -890,6 +890,11 @@ struct Playlist {
     std::vector<PlaylistEntry> entries;  // running order
 };
 
+// A portable remembered look (task PT.1); see themesnapshot.h. Declared
+// here only so the model can validate one and capture a theme as one
+// without the model header depending on the codec header.
+struct ThemeSnapshot;
+
 // The registry plus every supported edit. Single-threaded by contract;
 // the worker will own one instance behind its RPC loop.
 class Documents {
@@ -1106,6 +1111,19 @@ public:
                        std::string* error = nullptr);
     const Theme* findTheme(const Id& themeId) const;
     std::vector<Id> themeIds() const;  // creation order
+    // Task PT.1: capture an existing theme's effective look as a portable
+    // snapshot. Silent members are resolved against the chosen theme's
+    // normal Default floor, with the service's current-theme override
+    // excluded (the Theme Editor's fixture rule), and every named context
+    // is resolved to concrete answers against that same base. No service
+    // ids, asset paths or background media travel. Returns false naming the
+    // unknown theme.
+    bool themeSnapshotFor(const Id& themeId, ThemeSnapshot* out,
+                          std::string* error = nullptr) const;
+    // Task PT.1: the one semantic sentence for a portable look, shared by
+    // the snapshot codec, the catalog loader and the service application
+    // path, so the three cannot drift into different ideas of a look.
+    static bool validThemeSnapshot(const ThemeSnapshot& snapshot, std::string* error);
     // Resolved appearance of one slide: its override when set, else the
     // show default, else nullptr.
     const Theme* themeForSlide(const Id& showId, const Id& slideId) const;

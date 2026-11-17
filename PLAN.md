@@ -2188,7 +2188,7 @@ explicit Go. [Workflow, persistence, source preservation and acceptance](docs/ui
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| PT.1 | TODO | Share a validated portable theme-snapshot value/codec | Capture complete effective appearance, placement, contexts and movement without service IDs/media; reuse domain validation/limits, preserve Unicode/layout/effects and avoid a second style vocabulary |
+| PT.1 | DONE | Share a validated portable theme-snapshot value/codec | Capture complete effective appearance, placement, contexts and movement without service IDs/media; reuse domain validation/limits, preserve Unicode/layout/effects and avoid a second style vocabulary |
 | PT.2 | TODO | Remember Library song snapshots and use them on future service preparation | Catalog 2 over 1; durable preference/history with unchanged canonical words; import/reuse local themes by full definition, not name; A→restart→B with colliding/deleted/edited A theme still uses the saved look; no implicit reflow on preference notification |
 | PT.3 | TODO | Add explicit whole-item theme assignment and scoped override replacement | Service 15 over 14, legacy pixels unchanged; explicit item choice wins over the current service theme, while deliberate later Edit overrides remain possible; appearance/transition agree; Apply only preserves IDs/breaks/words/media/background overrides and updates all occurrences of that show |
 | PT.4 | TODO | Preserve bounded song/selected-scripture reflow sources with projection provenance | Capture structured source at preparation/Add; save/reopen offline, detect text edits, never overwrite from a changed Library/provider; conservative current-word fallback for legacy/edited text, honest passage labels and preserved notes/sections |
@@ -2202,6 +2202,27 @@ exceeding two engineer-days. All TODO. No global live theme library, automatic
 audience presentation, provider cache or arbitrary multi-object slide reflow is
 introduced. Recheck catalog/service allocations before implementing; existing
 scene 8/protocol 0.20 suffice. Prior TL/BX/DR/PV completion remains historical.
+
+PT.1 evidence (2026-11-17): `openshow::domain::ThemeSnapshot`
+(`themesnapshot.h`) is the portable remembered look. Its fields are the
+domain's own records — colour, family/size, both alignments, All caps, line
+spacing, weight/slant/underline, fit/minimum, complete stroke and shadow,
+primary placement, resolved movement and named contexts — captured concrete,
+so no second style vocabulary exists. `Documents::themeSnapshotFor` resolves a
+theme exactly as the Theme Editor's fixture does (a private copy, the service
+current theme cleared, the chosen theme as the show default), so an unrelated
+current-theme override cannot be baked in; each context is captured with its
+silent typography/layout/movement resolved against that same base while unknown
+context names are retained verbatim. No service id, asset path, background
+colour or background media travels. `themeSnapshotToJson`/`FromJson` is a
+deterministic strict codec (fixed key order, unknown keys, missing members,
+wrong kinds, off-list words, out-of-band numbers, non-placeable boxes and
+duplicate/both-box-and-inset contexts all refuse naming the rule) and
+`Documents::validThemeSnapshot` is the one semantic sentence the codec, the
+catalog loader and the service path will share. `domain_tests` covers the
+round-trip and byte-determinism, Unicode family/name retention, effects and
+layout, resolved movement and contexts, a silent theme resolving to the
+contract's concrete defaults, and every refusal above.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

@@ -28,6 +28,7 @@
 #include "openshow/domain/documents.h"
 #include "openshow/domain/history.h"
 #include "openshow/domain/storage.h"
+#include "openshow/domain/themesnapshot.h"
 #include "openshow/domain/version.h"
 
 namespace {
@@ -4981,6 +4982,205 @@ void exerciseShowAudio(const fs::path& tempRoot) {
           "show audio: removal clears the show's reference");
 }
 
+// Task PT.1: the portable remembered look. Capture resolves the complete
+// effective appearance (including contexts and movement) against the chosen
+// theme's normal Default floor, the codec is strict and deterministic, and
+// no service identity or media path travels.
+void exerciseThemeSnapshot() {
+    using openshow::domain::BoxRect;
+    using openshow::domain::TextContext;
+    using openshow::domain::ThemeSnapshot;
+    using openshow::domain::ThemeTextStyle;
+    using openshow::domain::TextShadow;
+    using openshow::domain::TextStroke;
+    using openshow::domain::TransitionKind;
+    using openshow::domain::TransitionOptions;
+    using openshow::domain::themeSnapshotFromJson;
+    using openshow::domain::themeSnapshotToJson;
+
+    Documents docs;
+    std::string error;
+    const Id theme = docs.createTheme("Br\xC3\xBC" "n", "#f0e0d0", "#101010", "",
+                                      "Noto Serif \xC3\xBC" "n\xC3\xAF" "code", 48.0, "left",
+                                      1.4, &error);
+    check(!theme.empty(), "a theme exists to snapshot");
+    ThemeTextStyle style;
+    style.fontWeight = 700;
+    style.fontStyle = "italic";
+    style.fontUnderline = true;
+    style.fitMode = "fixed";
+    style.minFontSize = 18.0;
+    style.verticalAlign = "bottom";
+    style.allCaps = true;
+    style.stroke = TextStroke{true, "#ff0000", 3.5};
+    style.shadow = TextShadow{true, "#00ff00", 0.4, -4.0, 6.0, 2.5};
+    check(docs.setThemeTextStyle(theme, style, &error),
+          "the theme carries the full style block");
+    check(docs.setThemePlacement(theme, BoxRect{120.0, 80.0, 1680.0, 900.0}, &error),
+          "the theme places its box");
+    TransitionOptions cut;
+    cut.kind = TransitionKind::kCut;
+    cut.textDurationMs = 0;
+    cut.mediaDurationMs = 10000;
+    check(docs.setThemeTransition(theme, cut, &error), "the theme carries its movement");
+    TextContext scripture;
+    scripture.name = "scripture";
+    scripture.fontSize = 32.0;
+    scripture.verticalAlign = "top";
+    scripture.allCaps = false;
+    TextContext future;
+    future.name = "future view";
+    future.align = "right";
+    check(docs.setThemeContexts(theme, {scripture, future}, &error),
+          "the theme carries two named contexts");
+
+    ThemeSnapshot snapshot;
+    check(docs.themeSnapshotFor(theme, &snapshot, &error),
+          "the theme captures as a portable snapshot");
+    check(snapshot.name == "Br\xC3\xBC" "n" && snapshot.textColor == "#f0e0d0" &&
+              snapshot.fontFamily == "Noto Serif \xC3\xBC" "n\xC3\xAF" "code" &&
+              snapshot.fontSize == 48.0 && snapshot.align == "left" &&
+              snapshot.lineSpacing == 1.4,
+          "the capture keeps the display name, colours and type");
+    check(snapshot.fontWeight == 700 && snapshot.fontStyle == "italic" &&
+              snapshot.fontUnderline && snapshot.fitMode == "fixed" &&
+              snapshot.minFontSize == 18.0 && snapshot.verticalAlign == "bottom" &&
+              snapshot.allCaps && snapshot.stroke == style.stroke &&
+              snapshot.shadow == style.shadow,
+          "the capture keeps weight, slant, fit, layout and both effects");
+    check(snapshot.placement.has_value() &&
+              *snapshot.placement == BoxRect{120.0, 80.0, 1680.0, 900.0},
+          "the capture keeps the primary placement");
+    check(snapshot.transition == cut, "the capture keeps the resolved movement");
+    check(snapshot.contexts.size() == 2 &&
+              snapshot.contexts[0].name == "scripture" &&
+              snapshot.contexts[1].name == "future view",
+          "context names travel, including one this build does not know");
+    check(snapshot.contexts[0].fontSize.value_or(0.0) == 32.0 &&
+              snapshot.contexts[0].verticalAlign.value_or("") == "top" &&
+              snapshot.contexts[0].allCaps.value_or(true) == false,
+          "the context keeps the answers it stated");
+    check(snapshot.contexts[0].fontFamily.value_or("") ==
+                  "Noto Serif \xC3\xBC" "n\xC3\xAF" "code" &&
+              snapshot.contexts[0].lineSpacing.value_or(0.0) == 1.4 &&
+              snapshot.contexts[0].align.value_or("") == "left",
+          "silent context members resolve against the captured base");
+    check(snapshot.contexts[1].align.value_or("") == "right" &&
+              snapshot.contexts[1].transition.has_value() &&
+              *snapshot.contexts[1].transition == cut,
+          "the unknown context keeps its own answers and resolved movement");
+
+    const boost::json::object json = themeSnapshotToJson(snapshot);
+    const std::string text = boost::json::serialize(json);
+    check(!json.contains("id") && !json.contains("assetPath") &&
+              !json.contains("backgroundColor") && !json.contains("backgroundGradient"),
+          "no service identity, media path or backdrop field travels");
+    boost::system::error_code parseError;
+    const boost::json::value parsed = boost::json::parse(text, parseError);
+    ThemeSnapshot roundTrip;
+    check(!parseError && themeSnapshotFromJson(parsed, &roundTrip, &error) &&
+              roundTrip == snapshot,
+          "the snapshot survives its JSON round-trip");
+    check(boost::json::serialize(themeSnapshotToJson(roundTrip)) == text,
+          "the codec is deterministic");
+
+    // A silent theme captures the contract's concrete defaults, not silence.
+    const Id sparse = docs.createTheme("Plain", "#ffffff", "#000000", "", "", 0.0,
+                                       "center", kDefaultLineSpacing, &error);
+    ThemeSnapshot plain;
+    check(!sparse.empty() && docs.themeSnapshotFor(sparse, &plain, &error),
+          "a silent theme captures too");
+    check(plain.fontWeight == 400 && plain.fontStyle == "normal" &&
+              !plain.fontUnderline && plain.fitMode == "shrink" &&
+              plain.minFontSize == 12.0 && plain.verticalAlign == "center" &&
+              !plain.allCaps && !plain.placement.has_value() &&
+              plain.transition == TransitionOptions::defaults() &&
+              plain.contexts.empty(),
+          "the silent theme resolves to the contract's concrete defaults");
+
+    const auto refuses = [&](const boost::json::object& mutated, const char* needle,
+                             const char* what) {
+        ThemeSnapshot keeper;
+        keeper.name = "keep";
+        keeper.textColor = "#ffffff";
+        error.clear();
+        check(!themeSnapshotFromJson(boost::json::value(mutated), &keeper, &error) &&
+                  error.find(needle) != std::string::npos && keeper.name == "keep",
+              what);
+    };
+    {
+        boost::json::object extra = json;
+        extra["surprise"] = true;
+        refuses(extra, "has no field 'surprise'", "an unknown key is refused by name");
+    }
+    {
+        boost::json::object partial = json;
+        partial.erase("fontWeight");
+        refuses(partial, "wants a number 'fontWeight'",
+                "a partial snapshot is refused");
+    }
+    {
+        boost::json::object bad = json;
+        bad["textColor"] = "red";
+        refuses(bad, "#rgb", "a non-hex colour is refused");
+    }
+    {
+        boost::json::object bad = json;
+        bad["align"] = "middle";
+        refuses(bad, "alignment", "an off-list alignment is refused");
+    }
+    {
+        boost::json::object bad = json;
+        bad["fontWeight"] = 1000;
+        refuses(bad, "weight", "an out-of-band weight is refused");
+    }
+    {
+        boost::json::object bad = json;
+        bad["verticalAlign"] = "middle";
+        refuses(bad, "vertical alignment", "an off-list anchor is refused");
+    }
+    {
+        boost::json::object bad = json;
+        bad["placement"] =
+            boost::json::object{{"x", 0}, {"y", 0}, {"width", 0}, {"height", 20}};
+        refuses(bad, "placement", "a non-placeable box is refused");
+    }
+    {
+        boost::json::object bad = json;
+        bad["transition"] = boost::json::object{{"kind", "wipe"},
+                                                {"textDurationMs", 0},
+                                                {"mediaDurationMs", 0}};
+        refuses(bad, "fade", "an unknown transition kind is refused");
+    }
+    {
+        boost::json::object bad = json;
+        bad["contexts"] = boost::json::array{boost::json::object{{"name", "half"}}};
+        refuses(bad, "wants a string 'fontFamily'",
+                "a partial context is refused");
+    }
+    {
+        boost::json::object bad = json;
+        boost::json::array contexts = bad["contexts"].as_array();
+        contexts[1].as_object()["name"] = "scripture";
+        bad["contexts"] = std::move(contexts);
+        refuses(bad, "appears twice", "duplicate context names are refused");
+    }
+    {
+        boost::json::object bad = json;
+        boost::json::array contexts = bad["contexts"].as_array();
+        contexts[1].as_object()["box"] =
+            boost::json::object{{"x", 0}, {"y", 0}, {"width", 100}, {"height", 100}};
+        contexts[1].as_object()["inset"] = 12.0;
+        bad["contexts"] = std::move(contexts);
+        refuses(bad, "both", "a context cannot carry a box and an inset together");
+    }
+
+    ThemeSnapshot missing;
+    error.clear();
+    check(!docs.themeSnapshotFor("theme-does-not-exist", &missing, &error),
+          "an unknown theme cannot be captured");
+}
+
 int main() {
     const std::string_view version = openshow::domain::applicationVersion();
     bool ok = check(!version.empty(), "applicationVersion is not empty");
@@ -5002,6 +5202,7 @@ int main() {
     exerciseTextContextChain();
     exerciseTextStyle();
     exerciseTransition();
+    exerciseThemeSnapshot();
     exercisePlaylists();
     exerciseFailureLeavesNoTrace();
 

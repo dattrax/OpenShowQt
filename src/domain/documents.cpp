@@ -7,6 +7,8 @@
 
 #include "openshow/domain/documents.h"
 
+#include "openshow/domain/themesnapshot.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -1442,6 +1444,204 @@ const TextContext* Documents::contextInChain(const std::vector<const Theme*>& ch
 // by the loader's era-gated read, and by the worker's parse of the optional
 // scene.present duration fields — so "10001" costs the same words at every
 // door and no door can accept what another would refuse.
+bool Documents::validThemeSnapshot(const ThemeSnapshot& snapshot, std::string* error) {
+    // One sentence for the portable look: the same fields a Theme answers
+    // for, with the same limits, plus the catalog-side budgets this value
+    // has because it crosses into application data.
+    const auto failSnapshot = [error](const std::string& why) {
+        fail(error, "remembered look: " + why);
+        return false;
+    };
+    if (snapshot.name.empty()) {
+        return failSnapshot("it needs a display name");
+    }
+    if (snapshot.name.size() > kMaxThemeSnapshotNameChars) {
+        return failSnapshot("its name is over " +
+                            std::to_string(kMaxThemeSnapshotNameChars) + " characters");
+    }
+    if (!validColor(snapshot.textColor, error)) {
+        return false;
+    }
+    if (snapshot.fontFamily.size() > kMaxThemeSnapshotFamilyChars) {
+        return failSnapshot("its font family name is over " +
+                            std::to_string(kMaxThemeSnapshotFamilyChars) + " characters");
+    }
+    if (!std::isfinite(snapshot.fontSize) || snapshot.fontSize < 0.0) {
+        return failSnapshot("its font size must be finite and >= 0");
+    }
+    if (!isThemeAlign(snapshot.align)) {
+        return failSnapshot("its alignment must be \"left\", \"center\" or \"right\"");
+    }
+    if (!std::isfinite(snapshot.lineSpacing) || snapshot.lineSpacing < 0.25 ||
+        snapshot.lineSpacing > 8.0) {
+        return failSnapshot("its line spacing must be a finite multiplier within 0.25..8");
+    }
+    if (!isFontWeightInBand(snapshot.fontWeight)) {
+        return failSnapshot("its font weight must be an integer 100..900");
+    }
+    if (!isFontStyleName(snapshot.fontStyle)) {
+        return failSnapshot("its font style must be \"normal\" or \"italic\"");
+    }
+    if (!isFitModeName(snapshot.fitMode)) {
+        return failSnapshot("its fit must be \"shrink\" or \"fixed\"");
+    }
+    if (!std::isfinite(snapshot.minFontSize) || snapshot.minFontSize < 1.0 ||
+        snapshot.minFontSize > 4096.0) {
+        return failSnapshot("its minimum font size must be a finite size within 1..4096");
+    }
+    if (!isVerticalAlignName(snapshot.verticalAlign)) {
+        return failSnapshot(
+            "its vertical alignment must be \"top\", \"center\" or \"bottom\"");
+    }
+    if (!validStroke(snapshot.stroke, error) || !validShadow(snapshot.shadow, error)) {
+        return false;
+    }
+    if (snapshot.placement.has_value() &&
+        !placeableBox(snapshot.placement->x, snapshot.placement->y,
+                      snapshot.placement->width, snapshot.placement->height)) {
+        return failSnapshot("its placement needs finite coordinates and positive extent");
+    }
+    if (!validTransitionOptions(snapshot.transition, error)) {
+        return false;
+    }
+    if (snapshot.contexts.size() > kMaxThemeSnapshotContexts) {
+        return failSnapshot("it carries more than " +
+                            std::to_string(kMaxThemeSnapshotContexts) + " contexts");
+    }
+    for (std::size_t i = 0; i < snapshot.contexts.size(); ++i) {
+        const TextContext& context = snapshot.contexts[i];
+        if (context.name.empty()) {
+            return failSnapshot("context " + std::to_string(i) + " has no name");
+        }
+        for (std::size_t j = 0; j < i; ++j) {
+            if (snapshot.contexts[j].name == context.name) {
+                return failSnapshot("context name '" + context.name + "' appears twice");
+            }
+        }
+        if (context.fontFamily.has_value() &&
+            context.fontFamily->size() > kMaxThemeSnapshotFamilyChars) {
+            return failSnapshot("context '" + context.name +
+                                "' has an over-long font family name");
+        }
+        if (context.fontSize.has_value() &&
+            (!std::isfinite(*context.fontSize) || *context.fontSize < 0.0)) {
+            return failSnapshot("context '" + context.name +
+                                "' has a font size that is not finite and >= 0");
+        }
+        if (context.lineSpacing.has_value() &&
+            (!std::isfinite(*context.lineSpacing) || *context.lineSpacing < 0.25 ||
+             *context.lineSpacing > 8.0)) {
+            return failSnapshot("context '" + context.name +
+                                "' has line spacing outside 0.25..8");
+        }
+        if (context.align.has_value() && !isThemeAlign(*context.align)) {
+            return failSnapshot("context '" + context.name +
+                                "' has an unknown horizontal alignment");
+        }
+        if (context.verticalAlign.has_value() &&
+            !isVerticalAlignName(*context.verticalAlign)) {
+            return failSnapshot("context '" + context.name +
+                                "' has an unknown vertical alignment");
+        }
+        if (context.box.has_value() &&
+            !placeableBox(context.box->x, context.box->y, context.box->width,
+                          context.box->height)) {
+            return failSnapshot("context '" + context.name +
+                                "' has a box that cannot be placed");
+        }
+        if (context.inset.has_value() &&
+            (!std::isfinite(*context.inset) || *context.inset < 0.0)) {
+            return failSnapshot("context '" + context.name +
+                                "' has an inset that is not finite and >= 0");
+        }
+        if (context.box.has_value() && context.inset.has_value()) {
+            return failSnapshot("context '" + context.name +
+                                "' carries both a box and an inset");
+        }
+        if (context.transition.has_value() &&
+            !validTransitionOptions(*context.transition, error)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool Documents::themeSnapshotFor(const Id& themeId, ThemeSnapshot* out,
+                                 std::string* error) const {
+    if (out == nullptr) {
+        fail(error, "theme snapshot: it needs a destination");
+        return false;
+    }
+    const Theme* source = findTheme(themeId);
+    if (source == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    // Resolve exactly as the Theme Editor's sample does: a private copy, the
+    // service current theme cleared so browsing is not out-resolved, the
+    // chosen theme as the show default, and one neutral slide. Nothing here
+    // is presented or kept.
+    Documents fixture = *this;
+    if (!fixture.setCurrentTheme({}, nullptr)) {
+        fail(error, "theme snapshot: could not isolate the capture fixture");
+        return false;
+    }
+    const Id show = fixture.createShow("Theme snapshot");
+    const Id slide = fixture.appendSlide(show);
+    if (show.empty() || slide.empty()) {
+        fail(error, "theme snapshot: could not build the capture fixture");
+        return false;
+    }
+    if (!fixture.setShowDefaultTheme(show, themeId, nullptr)) {
+        fail(error, "theme snapshot: could not resolve theme '" + themeId + "'");
+        return false;
+    }
+    const ResolvedAppearance look = fixture.appearanceForSlide(show, slide);
+    ThemeSnapshot snapshot;
+    snapshot.name = source->name;
+    snapshot.textColor = look.textColor;
+    snapshot.fontFamily = look.fontFamily;
+    snapshot.fontSize = look.fontSize;
+    snapshot.align = look.align;
+    snapshot.lineSpacing = look.lineSpacing;
+    snapshot.fontWeight = look.fontWeight;
+    snapshot.fontStyle = look.fontStyle;
+    snapshot.fontUnderline = look.fontUnderline;
+    snapshot.fitMode = look.fitMode;
+    snapshot.minFontSize = look.minFontSize;
+    snapshot.verticalAlign = look.verticalAlign;
+    snapshot.allCaps = look.allCaps;
+    snapshot.stroke = look.stroke;
+    snapshot.shadow = look.shadow;
+    snapshot.placement = look.placement;
+    snapshot.transition = fixture.resolveTransitionForSlide(show, slide);
+    // Contexts are captured RESOLVED against the same base: a context that
+    // stayed silent now states the value it inherited, so materialising the
+    // snapshot reproduces the look without depending on a later theme edit.
+    // Unknown names are kept verbatim.
+    snapshot.contexts.reserve(source->contexts.size());
+    for (const TextContext& context : source->contexts) {
+        TextContext resolved;
+        resolved.name = context.name;
+        resolved.fontFamily = context.fontFamily.value_or(snapshot.fontFamily);
+        resolved.fontSize = context.fontSize.value_or(snapshot.fontSize);
+        resolved.lineSpacing = context.lineSpacing.value_or(snapshot.lineSpacing);
+        resolved.align = context.align.value_or(snapshot.align);
+        resolved.box = context.box;
+        resolved.inset = context.inset;
+        resolved.verticalAlign =
+            context.verticalAlign.value_or(snapshot.verticalAlign);
+        resolved.allCaps = context.allCaps.value_or(snapshot.allCaps);
+        resolved.transition = context.transition.value_or(snapshot.transition);
+        snapshot.contexts.push_back(std::move(resolved));
+    }
+    if (!validThemeSnapshot(snapshot, error)) {
+        return false;
+    }
+    *out = std::move(snapshot);
+    return true;
+}
+
 bool Documents::validTransitionOptions(const TransitionOptions& options, std::string* error) {
     // Each refusal names BOTH the operator's word and the wire key: a settings
     // page quotes this to a person, and a socket quotes it to whoever wrote the

@@ -2,6 +2,7 @@ add_library(openshow_domain STATIC
   documents.cpp
   history.cpp
   storage.cpp
+  themesnapshot.cpp
   version.cpp
 )
 add_library(openshow::domain ALIAS openshow_domain)
