@@ -148,6 +148,15 @@ public:
     explicit DocumentController(QObject* parent = nullptr,
                                 std::filesystem::path baseDirectory = {});
 
+    // Task PT.5: read-only model access for planning adapters (eligibility,
+    // source and projection). No mutation path is exposed: every edit still
+    // goes through this controller's verbs.
+    const openshow::domain::Documents& documents() const { return fDocuments; }
+    // A monotonic marker for "the document changed". Planning adapters
+    // capture it with a preparation and can say so when it moved; it does
+    // not claim WHICH item changed (the projection check does that).
+    Q_INVOKABLE quint64 documentGeneration() const { return fGeneration; }
+
     QVariantList songs() const;
     QVariantList slides() const;
     QVariantList playlists() const;
@@ -842,6 +851,7 @@ private:
 
     bool fDirty = false;
     QString fStatus;
+    quint64 fGeneration = 0;
 };
 
 }  // namespace openshow::ui

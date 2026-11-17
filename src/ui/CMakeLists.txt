@@ -59,6 +59,8 @@ add_library(openshow-ui-core STATIC
   ServiceCatalogBridge.h
   SongImport.cpp
   SongImport.h
+  ReflowPlanner.cpp
+  ReflowPlanner.h
   SongPlanner.cpp
   SongPlanner.h
   WorkerController.cpp

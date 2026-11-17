@@ -11,7 +11,7 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Whole-item themes and reflow (2026-11-17): PT.1–PT.4 are DONE; PT.5–PT.8 are
+**Whole-item themes and reflow (2026-11-17): PT.1–PT.5 are DONE; PT.6–PT.8 are
 TODO.** The
 [whole-item theme/reflow brief](docs/ui/presentation-theme-reflow-plan.md) moves
 theme application to left-hand song/passage rows and offers keep breaks or
@@ -56,7 +56,16 @@ and save/reopen carry both. Song preparation/refresh and scripture Add capture
 their own source, and a conservative current-word fallback covers legacy or
 edited items without consulting the Library or a provider (unlabelled scripture
 blocks name the whole passage rather than guessing verses).
-Next action: PT.5 (bounded optional reflow against the future appearance).
+PT.5 added the eligibility sentence and the preparation. Reflow is offered only
+for a run of simple text slides with one box each, common background/fit/context
+and at most one leading blank cue; every other structure refuses with a specific
+reason. A plan measures the item's own words (stored source or the conservative
+fallback) in the chosen look's box through the worker, using the song or passage
+policy, and is refused if the words moved while it was measured. Cancelling,
+failure and supersession never touch the document, and Apply only remains
+available without a measuring worker.
+Next action: PT.6 (commit prepared item changes and preferences with honest
+history/persistence).
 
 **Edit canvas follow-up (BX.5, 2026-11-16): fixed and verified.** Sustained
 box drags could be stolen by Edit's parent Flickable; the earlier pointer matrix

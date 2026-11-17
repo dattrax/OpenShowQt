@@ -50,6 +50,13 @@ add_executable(song_pagination_tests song_pagination_tests.cpp)
 target_link_libraries(song_pagination_tests PRIVATE openshow::importer)
 add_test(NAME song_pagination_tests COMMAND song_pagination_tests)
 
+# Task PT.5: re-pagination of words the service already holds. Section vs
+# greedy passage policy, splitting/continuation labels, the caption
+# reservation and the no-loss arithmetic, all on a scripted measurer.
+add_executable(reflow_tests reflow_tests.cpp)
+target_link_libraries(reflow_tests PRIVATE openshow::importer)
+add_test(NAME reflow_tests COMMAND reflow_tests)
+
 add_executable(scene_tests
   scene_tests.cpp
 )
@@ -508,6 +515,15 @@ if(OPENSHOW_BUILD_UI)
     OPENSHOW_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   add_test(NAME song_service_tests COMMAND song_service_tests)
   set_tests_properties(song_service_tests PROPERTIES LABELS display TIMEOUT 240)
+
+  # Task PT.5: optional reflow preparation against the chosen future look,
+  # through the production planner and the REAL worker. Display: the worker
+  # opens its output window.
+  qt_add_executable(reflow_planner_tests reflow_planner_tests.cpp)
+  target_link_libraries(reflow_planner_tests PRIVATE openshow::ui-core Qt6::Test
+    Qt6::Gui)
+  add_test(NAME reflow_planner_tests COMMAND reflow_planner_tests)
+  set_tests_properties(reflow_planner_tests PROPERTIES LABELS display TIMEOUT 240)
 
   add_executable(bible_import_page_tests bible_import_page_tests.cpp)
   target_link_libraries(bible_import_page_tests PRIVATE openshow::ui-core Qt6::Test)

@@ -2192,13 +2192,13 @@ explicit Go. [Workflow, persistence, source preservation and acceptance](docs/ui
 | PT.2 | DONE | Remember Library song snapshots and use them on future service preparation | Catalog 2 over 1; durable preference/history with unchanged canonical words; import/reuse local themes by full definition, not name; A→restart→B with colliding/deleted/edited A theme still uses the saved look; no implicit reflow on preference notification |
 | PT.3 | DONE | Add explicit whole-item theme assignment and scoped override replacement | Service 15 over 14, legacy pixels unchanged; explicit item choice wins over the current service theme, while deliberate later Edit overrides remain possible; appearance/transition agree; Apply only preserves IDs/breaks/words/media/background overrides and updates all occurrences of that show |
 | PT.4 | DONE | Preserve bounded song/selected-scripture reflow sources with projection provenance | Capture structured source at preparation/Add; save/reopen offline, detect text edits, never overwrite from a changed Library/provider; conservative current-word fallback for legacy/edited text, honest passage labels and preserved notes/sections |
-| PT.5 | TODO | Prepare bounded optional reflow against the chosen item's future appearance | Use captured worker-measured style, source and generation; preserve section/verse policy and eligible common media/audio/leading blank; explain unsupported multi-box/mixed-media cases; cancellation/failure/stale replies leave everything unchanged |
+| PT.5 | DONE | Prepare bounded optional reflow against the chosen item's future appearance | Use captured worker-measured style, source and generation; preserve section/verse policy and eligible common media/audio/leading blank; explain unsupported multi-box/mixed-media cases; cancellation/failure/stale replies leave everything unchanged |
 | PT.6 | TODO | Commit prepared item changes and remembered preferences with honest history/persistence | Prevalidate before durable catalog write, then publish one compound service edit; service undo restores theme/slides/media/IDs once, Library preference uses Library history; fault/refusal/reconnect tests prove no partial UI mutation or surprise Apply-only repagination; do not claim cross-store crash atomicity |
 | PT.7 | TODO | Move apply actions to left-hand item rows and add the keep/reflow dialog | Library/Service rows target explicit identities; show title/occurrence count, Apply only/Apply and reflow/Cancel and eligibility reasons; unprepared Library songs remember without entering the running order; remove central tile theme menu/header apply bypass; keyboard and no-worker paths work |
 | PT.8 | TODO | Close Library→service→reflow→Go→undo/save journeys and reconcile docs | Whole-item uniformity, current-word conservation, future-service saved looks, legacy scripture, override/media preservation, stale/failure paths and separate undo scopes verified; focused then desktop/headless/source guards pass, with skips/physical gates recorded separately |
 
 Order: PT.1 → PT.2/PT.3/PT.4 → PT.5 → PT.6 → PT.7 → PT.8; split any leaf
-exceeding two engineer-days. PT.1–PT.4 DONE; PT.5–PT.8 TODO. No global live
+exceeding two engineer-days. PT.1–PT.5 DONE; PT.6–PT.8 TODO. No global live
 theme library, automatic audience presentation, provider cache or arbitrary
 multi-object slide reflow is introduced. Recheck catalog/service allocations before implementing; existing
 scene 8/protocol 0.20 suffice. Prior TL/BX/DR/PV completion remains historical.
@@ -2308,6 +2308,44 @@ legacy and scripture fallbacks, every budget refusal and the storage
 round-trip plus both refusals; `document_controller_tests` covers capture at
 Add, invalidation by text, recapture by refresh, style-only stability,
 scripture provenance, unknown shows and save/reopen.
+
+PT.5 evidence (2026-11-17): `domain::reflowEligibility` is the one answer
+the dialog, the plan and the commit will quote. It resolves the source (the
+stored one while its fingerprint matches, otherwise PT.4's conservative
+current-word source and says so), reports the section policy and the optional
+leading cue, and refuses with a specific reason: no words (picture-only/PPTX),
+more than one text box on a slide, a foreground picture on a word slide, a
+picture-only or repeated leading cue, an internal or trailing wordless cue, or
+differing background/fit/text context across the words. Eligibility never
+flattens or deletes media to qualify.
+
+`importer::paginateReflow` re-paginates the bounded blocks at the chosen
+future box through the worker's measuring port. Songs use the unchanged
+section rule (a section starts a fresh slide); scripture packs greedily like
+the import, reserves the reference/attribution height in caption type, and
+labels continuations without inventing verse ranges. Neither policy clips,
+drops, repeats or font-shrinks a word; `reflowWordsPreserved` is the
+arithmetic gate every caller runs before publishing.
+
+`ui::ReflowPlanner` captures the look from the portable snapshot (not the
+browsing cursor), the resolved source, the show's projection fingerprint and
+the document generation, then measures asynchronously in bounded rounds
+(`SongPlanner`'s discipline). Cancelling, a worker failure, supersession and a
+refused measurement leave the document untouched; a reply whose item vanished
+or whose words moved is refused ("the item's words changed while its reflow
+was being prepared — nothing was changed"); the plan records the leading cue,
+common background/fit, text context, show audio, reserved height, generation
+and slide rows for the coming commit. Prepare refuses without a measuring
+worker (Apply only stays available) and never changes the audience.
+
+`reflow_tests` (scripted measurer) covers both policies, splitting and
+continuation labels, the caption reservation, Unicode/blank-line word
+conservation and tamper detection, plus both refusals. `domain_tests` covers
+every eligibility rule and the stored-versus-fallback choice.
+`reflow_planner_tests` (real worker) covers a roomy versus tight look producing
+different slide counts with identical words, the leading-cue/background/audio
+payload, cancel, a words-changed refusal, an ineligible item and the
+no-worker path.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

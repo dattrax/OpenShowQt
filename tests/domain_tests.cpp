@@ -27,6 +27,7 @@
 
 #include "openshow/domain/documents.h"
 #include "openshow/domain/history.h"
+#include "openshow/domain/refloweligibility.h"
 #include "openshow/domain/storage.h"
 #include "openshow/domain/themesnapshot.h"
 #include "openshow/domain/version.h"
@@ -5652,6 +5653,180 @@ void exerciseReflowSource(const fs::path& tempRoot) {
     }
 }
 
+// Task PT.5: the single eligibility sentence. Reflow is offered for a run
+// of simple text slides; every structural exception refuses with a specific
+// reason and never flattens media to qualify.
+void exerciseReflowEligibility() {
+    using openshow::domain::BackgroundFit;
+    using openshow::domain::ReflowEligibility;
+    using openshow::domain::ReflowSource;
+    using openshow::domain::ReflowSourceKind;
+    using openshow::domain::reflowEligibility;
+
+    Documents docs;
+    std::string error;
+    const Id show = docs.createShow("Eligible song");
+    const Id one = docs.appendSlide(show);
+    const Id two = docs.appendSlide(show);
+    docs.setSlideLines(show, one, {"First"});
+    docs.setSlideGroup(show, one, "Verse 1");
+    docs.setSlideLines(show, two, {"Second"});
+    docs.setSlideGroup(show, two, "Chorus");
+
+    ReflowEligibility simple = reflowEligibility(docs, show);
+    check(simple.eligible && simple.reason.empty(),
+          "a run of simple text slides is eligible");
+    check(!simple.usesStoredSource && simple.sectionStartsNewSlide &&
+              !simple.hasLeadingBlankCue && simple.contentSlideCount == 2 &&
+              simple.source.kind == ReflowSourceKind::kLocalSong &&
+              simple.source.blocks.size() == 2,
+          "a legacy song uses the conservative current-word source");
+    check(!reflowEligibility(docs, "show-nope").eligible &&
+              reflowEligibility(docs, "show-nope").reason.find("no longer") !=
+                  std::string::npos,
+          "an unknown item is refused by name");
+
+    // A stored, matching source is preferred; editing the words falls back.
+    const ReflowSource stored = openshow::domain::sourceFromShowProjection(docs, show);
+    check(docs.setShowReflowSource(show, stored, &error),
+          "a matching source can be stored");
+    check(reflowEligibility(docs, show).usesStoredSource,
+          "the stored source is used while it matches");
+    docs.setSlideLines(show, one, {"Edited"});
+    check(!reflowEligibility(docs, show).usesStoredSource,
+          "an edited word falls back to the current-word source");
+    docs.setSlideLines(show, one, {"First"});
+
+    // Scripture policy is greedy and says so.
+    {
+        const Id passage = docs.createScriptureShow(
+            "John 1:1-2",
+            openshow::domain::ScriptureProvenance{"John 1:1-2", "NIV", "NIV notice"},
+            &error);
+        const Id verseOne = docs.appendSlide(passage);
+        docs.setSlideLines(passage, verseOne, {"In the beginning"});
+        docs.setSlideNotes(passage, verseOne, "John 1:1");
+        const ReflowEligibility scripture = reflowEligibility(docs, passage);
+        check(scripture.eligible && !scripture.sectionStartsNewSlide &&
+                  scripture.source.kind == ReflowSourceKind::kScripture,
+              "a passage is eligible and packs greedily");
+    }
+
+    // One optional leading blank cue survives; two do not.
+    {
+        const Id leading = docs.createShow("Leading cue");
+        const Id cue = docs.insertSlide(leading, 0);
+        const Id words = docs.appendSlide(leading);
+        docs.setSlideLines(leading, words, {"Words"});
+        const ReflowEligibility withCue = reflowEligibility(docs, leading);
+        check(withCue.eligible && withCue.hasLeadingBlankCue && !cue.empty(),
+              "one leading blank cue is allowed and reported");
+        docs.insertSlide(leading, 0);
+        check(!reflowEligibility(docs, leading).eligible,
+              "two leading blank cues are refused");
+    }
+
+    // An internal or trailing wordless cue is refused, not deleted.
+    {
+        const Id internal = docs.createShow("Internal cue");
+        const Id a = docs.appendSlide(internal);
+        docs.appendSlide(internal);
+        const Id c = docs.appendSlide(internal);
+        docs.setSlideLines(internal, a, {"A"});
+        docs.setSlideLines(internal, c, {"C"});
+        check(reflowEligibility(docs, internal).reason.find("wordless cue") !=
+                  std::string::npos,
+              "an internal wordless cue is refused by name");
+        const openshow::domain::Show* internalShow = docs.findShow(internal);
+        check(internalShow != nullptr &&
+                  docs.removeSlide(internal, internalShow->slides[1].id, &error),
+              "the internal cue is removed for the trailing fixture");
+        const Id trailing = docs.createShow("Trailing cue");
+        const Id only = docs.appendSlide(trailing);
+        docs.appendSlide(trailing);
+        docs.setSlideLines(trailing, only, {"Only"});
+        check(reflowEligibility(docs, trailing).reason.find("ends with a wordless cue") !=
+                  std::string::npos,
+              "a trailing wordless cue is refused by name");
+    }
+
+    // A second text box, or a foreground picture on a word slide, refuses.
+    {
+        const Id extra = docs.createShow("Two boxes");
+        const Id slide = docs.appendSlide(extra);
+        docs.setSlideLines(extra, slide, {"Words"});
+        openshow::domain::SlideItem second;
+        second.lines = {"More"};
+        check(!docs.addItem(extra, slide, second, &error).empty(),
+              "a second text box is added");
+        check(reflowEligibility(docs, extra).reason.find("more than one text box") !=
+                  std::string::npos,
+              "a second text box is refused by name");
+    }
+    {
+        const Id pictured = docs.createShow("Words and a picture");
+        const Id slide = docs.appendSlide(pictured);
+        docs.setSlideLines(pictured, slide, {"Words"});
+        const Id asset = docs.addAsset("pic.png", "/tmp/pic.png");
+        check(!asset.empty(), "a picture asset exists");
+        openshow::domain::SlideItem picture;
+        picture.kind = openshow::domain::ItemKind::Image;
+        picture.assetId = asset;
+        check(!docs.addItem(pictured, slide, picture, &error).empty(),
+              "a foreground picture is added beside the words");
+        check(reflowEligibility(docs, pictured).reason.find("picture as well as words") !=
+                  std::string::npos,
+              "a picture beside words is refused by name");
+    }
+    {
+        const Id pictures = docs.createShow("Pictures only");
+        const Id slide = docs.appendSlide(pictures);
+        const Id asset = docs.addAsset("only.png", "/tmp/only.png");
+        openshow::domain::SlideItem picture;
+        picture.kind = openshow::domain::ItemKind::Image;
+        picture.assetId = asset;
+        docs.removeItem(pictures, slide, docs.findShow(pictures)->slides[0].items[0].id,
+                        nullptr);
+        check(!docs.addItem(pictures, slide, picture, &error).empty(),
+              "a picture-only slide is built");
+        check(reflowEligibility(docs, pictures).reason.find("no words") !=
+                  std::string::npos,
+              "a picture-only deck gains no fake text-reflow action");
+    }
+
+    // Differing media or text settings across the words refuse.
+    {
+        const Id mixed = docs.createShow("Mixed media");
+        const Id a = docs.appendSlide(mixed);
+        const Id b = docs.appendSlide(mixed);
+        docs.setSlideLines(mixed, a, {"A"});
+        docs.setSlideLines(mixed, b, {"B"});
+        const Id asset = docs.addAsset("bg.png", "/tmp/bg.png");
+        check(docs.setSlideBackground(mixed, b, asset, &error),
+              "one slide takes a background");
+        check(reflowEligibility(docs, mixed).reason.find("different backgrounds") !=
+                  std::string::npos,
+              "differing backgrounds are refused by name");
+        docs.setSlideBackground(mixed, a, asset, &error);
+        check(reflowEligibility(docs, mixed).eligible,
+              "a common background is eligible");
+        check(docs.setSlideBackgroundFit(mixed, b, BackgroundFit::Contain, &error),
+              "one slide takes a different fit");
+        check(reflowEligibility(docs, mixed).reason.find("different background fitting") !=
+                  std::string::npos,
+              "differing fitting is refused by name");
+        docs.setSlideBackgroundFit(mixed, b, BackgroundFit::Cover, &error);
+        check(docs.setSlideTextContext(mixed, b, "scripture", &error),
+              "one slide takes a different text context");
+        check(reflowEligibility(docs, mixed).reason.find("different text settings") !=
+                  std::string::npos,
+              "differing text settings are refused by name");
+        docs.setSlideTextContext(mixed, b, "", &error);
+        check(reflowEligibility(docs, mixed).eligible,
+              "restoring the common settings makes it eligible again");
+    }
+}
+
 int main() {
     const std::string_view version = openshow::domain::applicationVersion();
     bool ok = check(!version.empty(), "applicationVersion is not empty");
@@ -5687,6 +5862,7 @@ int main() {
     exerciseTextStyleStorage(tempRoot);
     exerciseWholeItemTheme(tempRoot);
     exerciseReflowSource(tempRoot);
+    exerciseReflowEligibility();
     exerciseTransitionStorage(tempRoot);
     exerciseForegroundThemeStorage(tempRoot);
     exerciseDefaultThemeFloor(tempRoot);

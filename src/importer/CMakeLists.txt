@@ -8,6 +8,7 @@ add_library(openshow_importer STATIC
   biblepassage.cpp
   bookindex.cpp
   lyrics.cpp
+  reflowpagination.cpp
   scripturepagination.cpp
   songpagination.cpp
   textflow.cpp

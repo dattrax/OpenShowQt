@@ -176,6 +176,7 @@ bool DocumentController::edit(const std::function<bool()>& mutation) {
     if (!fHistory->apply(mutation)) {
         return false;
     }
+    ++fGeneration;
     fDirty = true;
     autosaveNow("edit");
     emit documentsChanged();
@@ -4063,6 +4064,7 @@ bool DocumentController::load() {
     }
     fDocuments = std::move(attempt.documents);
     fHistory->clear();
+    ++fGeneration;
     fDirty = false;
     const std::vector<openshow::domain::Id> ids = fDocuments.showIds();
     fCurrentSongId = ids.empty() ? openshow::domain::Id{} : ids.front();
@@ -4102,6 +4104,7 @@ void DocumentController::undo() {
     }
     // Undo/redo can take the current playlist away too.
     anchorPlaylistNavigation();
+    ++fGeneration;
     fDirty = true;
     autosaveNow("undo");
     emit documentsChanged();
@@ -4136,6 +4139,7 @@ void DocumentController::redo() {
     }
     // Undo/redo can take the current playlist away too.
     anchorPlaylistNavigation();
+    ++fGeneration;
     fDirty = true;
     autosaveNow("redo");
     emit documentsChanged();
