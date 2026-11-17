@@ -31,6 +31,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -668,6 +669,12 @@ struct Show {
     // the catalog is gone. Kept beside the link rather than inside it for
     // that reason — losing the catalog must not lose the attribution.
     std::optional<SongProvenance> song;
+    // Task PT.3: the whole-item theme an explicit operator application put
+    // on this presentation. When set, the theme chain is slide theme →
+    // applied item theme → Default; the service current theme is excluded,
+    // so an unrelated global choice cannot mask the item's own look. Empty
+    // means the legacy chain every earlier service used.
+    Id appliedThemeId;
     // The show's independent AUDIO layer (media library). A show plays one
     // audio file alongside its slides: every slide compiles the same
     // reference, so stepping through a song chart does not restart the
@@ -685,6 +692,35 @@ inline constexpr double kDefaultLineSpacing = 1.25;
 
 inline bool isThemeAlign(const std::string& align) {
     return align == "left" || align == "center" || align == "right";
+}
+
+// Task PT.3: the one classification of a slide customization, shared by the
+// whole-item apply verb and the inspector so a future style field cannot be
+// silently omitted. "Text" fields are the look a whole-item theme replaces
+// (colour, typography, layout and the primary placement). "Backdrop" fields
+// are authored slide answers that an item theme must preserve; the
+// background ASSET/fit/camera live outside the customization set already.
+inline const std::vector<std::string>& textCustomizationFields() {
+    static const std::vector<std::string> kFields{
+        "textColor", "fontFamily", "fontSize", "align", "lineSpacing", "placement",
+        "fontWeight", "fontStyle", "fontUnderline", "fitMode", "minFontSize",
+        "verticalAlign", "allCaps", "stroke", "shadow"};
+    return kFields;
+}
+inline const std::vector<std::string>& backdropCustomizationFields() {
+    static const std::vector<std::string> kFields{"backgroundColor",
+                                                  "backgroundGradient"};
+    return kFields;
+}
+inline bool isTextCustomizationField(const std::string& field) {
+    return std::find(textCustomizationFields().begin(),
+                     textCustomizationFields().end(),
+                     field) != textCustomizationFields().end();
+}
+inline bool isBackdropCustomizationField(const std::string& field) {
+    return std::find(backdropCustomizationFields().begin(),
+                     backdropCustomizationFields().end(),
+                     field) != backdropCustomizationFields().end();
 }
 
 // A theme's named text context (milestone TF): a typography-and-box
@@ -1124,6 +1160,18 @@ public:
     // the snapshot codec, the catalog loader and the service application
     // path, so the three cannot drift into different ideas of a look.
     static bool validThemeSnapshot(const ThemeSnapshot& snapshot, std::string* error);
+    // Task PT.3: apply a whole-item theme. The show gains the explicit
+    // assignment and every slide loses its old per-slide text/layout/
+    // effects/placement overrides and old slide theme, while backdrop
+    // customizations, words, notes, groups, items and media references are
+    // untouched and every id/count stays the same. The default is one
+    // ordinary edit; the caller adds it to history.
+    bool applyWholeItemTheme(const Id& showId, const Id& themeId,
+                             std::string* error = nullptr);
+    // Task PT.3: return the item to inheritance. Removes the explicit
+    // assignment and the target's legacy show-default and slide themes; the
+    // service current theme and every other presentation are untouched.
+    bool clearWholeItemTheme(const Id& showId, std::string* error = nullptr);
     // Task PT.2: materialise a remembered look as a service-local theme.
     // An existing theme whose full appearance matches (name and id aside) is
     // reused, whatever it is called; otherwise a fresh local id is minted

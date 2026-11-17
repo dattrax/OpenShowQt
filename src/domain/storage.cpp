@@ -82,7 +82,10 @@ namespace {
 // earlier file drew. Format 14 adds the text-layout pair ("verticalAlign",
 // "allCaps") to the same sparse style block and to named text contexts;
 // absent keeps the centre/normal-case answers every earlier file drew.
-constexpr unsigned long long kServiceFormat = 14;
+// Format 15 (task PT.3) adds a show's explicit "appliedThemeId" — the
+// whole-item theme an operator applied from its row. Absent keeps the
+// legacy current → slide → show-default chain every earlier file used.
+constexpr unsigned long long kServiceFormat = 15;
 constexpr unsigned long long kServiceFormatThemedBackgrounds = 11;
 // And 13 introduces a show's "audioAssetId" — the independent audio layer a
 // cue plays alongside its slides (media library). Named like every
@@ -131,6 +134,10 @@ constexpr unsigned long long kServiceFormatTextDecoration = 12;
 // every introducer so the guards for the earlier style members keep reading
 // the format that introduced THEM.
 constexpr unsigned long long kServiceFormatTextLayout = 14;
+// And 15 introduces the explicit whole-item theme assignment. Named like
+// every introducer so the earlier style/formats guards keep quoting their
+// own era.
+constexpr unsigned long long kServiceFormatAppliedTheme = 15;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -1006,6 +1013,12 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             songJson.emplace("copyright", show.song->copyright);
             entry.emplace("song", std::move(songJson));
         }
+        // Format 15: an explicit whole-item theme, written only when it
+        // speaks. An item that never used the feature saves byte-for-byte as
+        // it did before the key.
+        if (!show.appliedThemeId.empty()) {
+            entry.emplace("appliedThemeId", show.appliedThemeId);
+        }
         // Format 13: the show's audio layer, written only when it speaks so
         // a cue with no track saves byte-for-byte as it did before the key.
         if (!show.audioAssetId.empty()) {
@@ -1285,7 +1298,7 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         format != kServiceFormatLegacyContextless && format != kServiceFormatContexts &&
         format != kServiceFormatTextStyle && format != kServiceFormatTransition &&
         format != kServiceFormatTextDecoration && format != kServiceFormatShowAudio &&
-        format != kServiceFormatTextLayout) {
+        format != kServiceFormatTextLayout && format != kServiceFormatAppliedTheme) {
         fail(error, "service.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " + std::to_string(kServiceFormat) +
                         " and formats " + std::to_string(kServiceFormatLegacyBoxes) +
@@ -1515,6 +1528,21 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                 return false;
             }
             show.song = std::move(song);
+        }
+        // Format 15's explicit whole-item theme. An earlier file carrying
+        // the key is another build meaning something by it and is refused by
+        // name, the placement rule every era-guarded key follows.
+        if (jsonShow.contains("appliedThemeId")) {
+            if (format < kServiceFormatAppliedTheme) {
+                fail(error, "service.json: an \"appliedThemeId\" in a format " +
+                                std::to_string(format) +
+                                " file, where that key does not exist");
+                return false;
+            }
+            if (!wantOptionalString(jsonShow, "appliedThemeId",
+                                    &show.appliedThemeId, error)) {
+                return false;
+            }
         }
         // Format 13's show audio layer. An earlier file carrying the key is
         // another build meaning something by it and is refused by name, the
@@ -2388,6 +2416,11 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         if (!show.defaultThemeId.empty() && themeIds.count(show.defaultThemeId) == 0) {
             fail(error, "service.json: show '" + show.id + "' defaults to unknown theme '" +
                             show.defaultThemeId + "'");
+            return false;
+        }
+        if (!show.appliedThemeId.empty() && themeIds.count(show.appliedThemeId) == 0) {
+            fail(error, "service.json: show '" + show.id +
+                            "' applies unknown theme '" + show.appliedThemeId + "'");
             return false;
         }
         if (!show.audioAssetId.empty()) {

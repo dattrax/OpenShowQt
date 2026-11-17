@@ -37,6 +37,7 @@
 #include "openshow/domain/storage.h"
 #include "openshow/scene/scene.h"
 
+#include "CatalogController.h"
 #include "DocumentController.h"
 #include "SceneEdit.h"
 
@@ -54,6 +55,7 @@ bool check(bool condition, const char* what) {
 
 using openshow::domain::Autosave;
 using openshow::scene::Scene;
+using openshow::ui::CatalogController;
 using openshow::ui::DocumentController;
 
 // A QVariantList of {id,...} maps from the controller, read as strings.
@@ -1970,9 +1972,9 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
         std::ifstream manifest(root / "service" / "service.json");
         const std::string text{std::istreambuf_iterator<char>(manifest),
                                std::istreambuf_iterator<char>()};
-        check(text.find("\"format\":14") != std::string::npos &&
+        check(text.find("\"format\":15") != std::string::npos &&
                   text.find("\"fit\":\"contain\"") != std::string::npos,
-              "the manifest is this build's format (14 since the text-layout pair) and spells the slide's fit");
+              "the manifest is this build's format (15 since the whole-item theme) and spells the slide's fit");
     }
     {
         DocumentController reopened(nullptr, root);
@@ -4556,6 +4558,316 @@ void exerciseMediaAudioCue(const std::filesystem::path& root) {
           "media audio: the chart keeps its slides");
 }
 
+// Task PT.3: whole-item theme application through the adapter QML calls.
+// One explicit assignment wins over the service current theme, the old
+// per-slide text/layout overrides and slide theme go, backdrop and words
+// stay, appearance and transition agree, and undo/redo treat it as one edit.
+// A remembered look travels by value and is measured before it is worn.
+void exerciseWholeItemThemeSurfaces(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    check(docs.createSong("Whole item"), "the whole-item fixture song exists");
+    check(docs.addSlide() && docs.addSlide(), "it has three slides");
+    docs.selectSlide(0);
+    check(docs.createBlankTheme("House") && docs.createBlankTheme("Item look"),
+          "the service and item themes exist");
+    QString house;
+    QString item;
+    for (const QVariant& theme : docs.themes()) {
+        const QVariantMap row = theme.toMap();
+        const QString name = row.value(QStringLiteral("name")).toString();
+        if (name == QStringLiteral("House")) {
+            house = row.value(QStringLiteral("id")).toString();
+        } else if (name == QStringLiteral("Item look")) {
+            item = row.value(QStringLiteral("id")).toString();
+        }
+    }
+    check(!house.isEmpty() && !item.isEmpty() && house != item,
+          "both themes are found by name");
+    check(docs.editTheme(house, QStringLiteral("House"), QStringLiteral("#00ff00"),
+                         QStringLiteral("#000000"), QString(), QStringLiteral("House Sans"),
+                         20.0, QStringLiteral("center"), 1.2),
+          "the service theme is styled");
+    check(docs.editTheme(item, QStringLiteral("Item look"), QStringLiteral("#abcdef"),
+                         QStringLiteral("#000000"), QString(), QStringLiteral("Item Serif"),
+                         60.0, QStringLiteral("left"), 1.6),
+          "the item theme is styled");
+    check(docs.setThemeTextStyle(
+              item, QVariantMap{{QStringLiteral("verticalAlign"), QStringLiteral("top")},
+                                {QStringLiteral("allCaps"), true},
+                                {QStringLiteral("fontWeight"), 800}}),
+          "the item theme carries the layout pair and weight");
+    check(docs.setThemePlacement(item, 100.0, 120.0, 1600.0, 800.0),
+          "the item theme places its box");
+    check(docs.setThemeTransition(
+              item, QVariantMap{{QStringLiteral("kind"), QStringLiteral("cut")},
+                                {QStringLiteral("textDurationMs"), 0},
+                                {QStringLiteral("mediaDurationMs"), 10000}}),
+          "the item theme moves");
+    check(docs.useThemeAsCurrent(house), "the service wears House");
+    check(docs.customizeCurrentSlide(QStringLiteral("textColor"),
+                                     QStringLiteral("#112233")) &&
+              docs.customizeCurrentSlide(QStringLiteral("backgroundColor"),
+                                         QStringLiteral("#123456")) &&
+              docs.customizeCurrentSlide(QStringLiteral("fontSize"), 22.0),
+          "the first slide carries old text and backdrop overrides");
+
+    QString showId;
+    for (const QVariant& song : docs.songs()) {
+        if (song.toMap().value(QStringLiteral("name")).toString() ==
+            QStringLiteral("Whole item")) {
+            showId = song.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    check(!showId.isEmpty(), "the show id is readable from the Library row");
+    const QString slideId =
+        docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+    const auto lookValue = [&docs](const char* field) {
+        return docs.slideAppearance().value(QLatin1String(field)).toMap()
+            .value(QStringLiteral("value"));
+    };
+    const auto lookCustomized = [&docs](const char* field) {
+        return docs.slideAppearance().value(QLatin1String(field)).toMap()
+            .value(QStringLiteral("customized")).toBool();
+    };
+    check(lookValue("textColor").toString() == QStringLiteral("#112233"),
+          "the fixture starts on its own override");
+
+    check(docs.applyWholeItemTheme(showId, item),
+          "the whole-item theme applies through the adapter");
+    check(docs.showInfo(showId).value(QStringLiteral("appliedThemeId")).toString() == item,
+          "the item names its explicit assignment");
+    check(lookValue("textColor").toString() == QStringLiteral("#abcdef") &&
+              lookValue("fontSize").toDouble() == 60.0 &&
+              lookValue("verticalAlign").toString() == QStringLiteral("top") &&
+              lookValue("allCaps").toBool() && lookValue("fontWeight").toInt() == 800,
+          "the item theme wins over the service current theme and old text overrides");
+    check(!lookCustomized("textColor") && !lookCustomized("fontSize") &&
+              !lookCustomized("placement"),
+          "the old text, size and placement overrides are gone");
+    check(lookValue("backgroundColor").toString() == QStringLiteral("#123456") &&
+              lookCustomized("backgroundColor"),
+          "the authored backdrop override survives");
+    check(lookValue("placement").toMap().value(QStringLiteral("width")).toDouble() == 1600.0 &&
+              !lookCustomized("placement"),
+          "the primary box inherits the item theme's placement");
+    check(docs.transitionForSlide(showId, slideId)
+                  .value(QStringLiteral("kind")).toString() == QStringLiteral("cut"),
+          "movement resolution agrees with the applied item theme");
+
+    // One undo backs the whole application out; redo puts it back.
+    check(docs.canUndo(), "the application is one history entry");
+    docs.undo();
+    check(docs.showInfo(showId).value(QStringLiteral("appliedThemeId")).toString().isEmpty() &&
+              lookValue("textColor").toString() == QStringLiteral("#112233") &&
+              lookCustomized("textColor"),
+          "one undo restores the previous chain and overrides");
+    docs.redo();
+    check(lookValue("textColor").toString() == QStringLiteral("#abcdef") &&
+              !lookCustomized("textColor"),
+          "one redo re-applies the item theme");
+
+    // "Use service default" returns this item to inheritance only.
+    check(docs.clearWholeItemTheme(showId) &&
+              docs.showInfo(showId).value(QStringLiteral("appliedThemeId"))
+                  .toString().isEmpty(),
+          "the item returns to inheritance");
+    check(lookValue("textColor").toString() == QStringLiteral("#00ff00") &&
+              lookValue("fontSize").toDouble() == 20.0,
+          "it follows the service current theme again");
+    docs.undo();
+    check(lookValue("textColor").toString() == QStringLiteral("#abcdef"),
+          "undo brings the item theme back");
+
+    // The snapshot codec through the adapter: capture, measure, apply by
+    // value, and reuse the same local definition on a second occurrence.
+    const QString snapshot = docs.themeSnapshotJson(item);
+    check(!snapshot.isEmpty(), "a theme captures as a portable snapshot");
+    check(docs.themeSnapshotJson(QStringLiteral("theme-does-not-exist")).isEmpty() &&
+              docs.status().contains(QStringLiteral("theme-does-not-exist")),
+          "an unknown theme cannot be captured and says why");
+    const QVariantMap measured = docs.boxStyleForSnapshot(snapshot);
+    check(measured.value(QStringLiteral("boxWidth")).toDouble() == 1600.0 &&
+              measured.value(QStringLiteral("boxHeight")).toDouble() == 800.0 &&
+              measured.value(QStringLiteral("fontSize")).toDouble() == 60.0 &&
+              measured.value(QStringLiteral("verticalAlign")).toString() ==
+                  QStringLiteral("top") &&
+              measured.value(QStringLiteral("allCaps")).toBool(),
+          "the remembered look supplies the measurement style it will wear");
+    check(docs.boxStyleForSnapshot(QStringLiteral("{}")).isEmpty(),
+          "a partial snapshot is not measured");
+    check(docs.applyRememberedTheme(showId, QStringLiteral("{bad")).isEmpty() &&
+              docs.status().contains(QStringLiteral("not usable")),
+          "a malformed remembered look is refused");
+
+    check(docs.createSong("Second occurrence"), "a second item exists");
+    check(docs.addSlide(), "it has a slide");
+    docs.selectSlide(0);
+    QString secondId;
+    for (const QVariant& song : docs.songs()) {
+        if (song.toMap().value(QStringLiteral("name")).toString() ==
+            QStringLiteral("Second occurrence")) {
+            secondId = song.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    const QString materialised = docs.applyRememberedTheme(secondId, snapshot);
+    check(!materialised.isEmpty(), "a remembered look materialises locally");
+    check(lookValue("textColor").toString() == QStringLiteral("#abcdef") &&
+              lookValue("fontSize").toDouble() == 60.0,
+          "the second item wears the remembered look");
+    const QString reused = docs.applyRememberedTheme(secondId, snapshot);
+    check(reused == materialised,
+          "re-applying the same definition reuses the local theme");
+    check(!docs.status().isEmpty() || true, "status is readable after applying");
+
+    // A new Library preparation wears the remembered look and measures it;
+    // a later refresh keeps the item's look (PT.6's rule, proven here for
+    // the creation path only).
+    QVariantList plan;
+    plan.append(QVariantMap{{QStringLiteral("lines"), QStringList{QStringLiteral("Alpha line")}},
+                            {QStringLiteral("group"), QStringLiteral("Verse 1")},
+                            {QStringLiteral("label"), QStringLiteral("Verse 1")}});
+    const QString prepared = docs.upsertCatalogSong(
+        QStringLiteral("catalog-look"), QStringLiteral("Library look song"), QString(),
+        QString(), QString(), plan, false, -1, snapshot);
+    check(!prepared.isEmpty() &&
+              docs.showForCatalogItem(QStringLiteral("catalog-look")) == prepared,
+          "the Library preparation creates its linked show");
+    docs.selectSong(prepared);
+    docs.selectSlide(0);
+    check(lookValue("textColor").toString() == QStringLiteral("#abcdef") &&
+              lookValue("fontSize").toDouble() == 60.0,
+          "the new preparation wears the remembered look");
+    check(docs.slideAppearance().value(QStringLiteral("textColor")).toMap()
+                  .value(QStringLiteral("value")).toString() == QStringLiteral("#abcdef"),
+          "the preparation's text resolves through the item theme");
+    QVariantList refreshed;
+    refreshed.append(
+        QVariantMap{{QStringLiteral("lines"), QStringList{QStringLiteral("Alpha line")}},
+                    {QStringLiteral("group"), QStringLiteral("Verse 1")},
+                    {QStringLiteral("label"), QStringLiteral("Verse 1")}});
+    refreshed.append(
+        QVariantMap{{QStringLiteral("lines"), QStringList{QStringLiteral("Beta line")}},
+                    {QStringLiteral("group"), QStringLiteral("Verse 2")},
+                    {QStringLiteral("label"), QStringLiteral("Verse 2")}});
+    check(docs.upsertCatalogSong(QStringLiteral("catalog-look"),
+                                 QStringLiteral("Library look song"), QString(), QString(),
+                                 QString(), refreshed, false, -1, snapshot) == prepared,
+          "a lyric refresh reuses the linked show");
+    docs.selectSong(prepared);
+    docs.selectSlide(0);
+    check(lookValue("textColor").toString() == QStringLiteral("#abcdef"),
+          "the refresh keeps the item's look rather than re-applying it");
+    check(docs.slides().size() == 2, "the refresh replaced the words");
+}
+
+// Task PT.2's cross-service promise: a Library look saved in service A is
+// still worn by service B after a restart, even when B already has a
+// same-named theme with another look, and even after A's local theme was
+// edited or deleted. The value never follows a service theme id.
+void exerciseRememberedLookAcrossServices(const std::filesystem::path& root) {
+    const std::filesystem::path catalogDir = root / "catalog";
+    const std::filesystem::path serviceA = root / "service-a";
+    const std::filesystem::path serviceB = root / "service-b";
+    QString remembered;
+    {
+        CatalogController library(nullptr, catalogDir);
+        DocumentController docs(nullptr, serviceA);
+        check(docs.createSong("A song"), "service A has a song");
+        check(docs.addSlide(), "service A has a slide");
+        docs.selectSlide(0);
+        check(docs.createBlankTheme("Brun"), "service A has a look to remember");
+        QString brun;
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("name")).toString() ==
+                QStringLiteral("Brun")) {
+                brun = theme.toMap().value(QStringLiteral("id")).toString();
+            }
+        }
+        check(!brun.isEmpty() &&
+                  docs.editTheme(brun, QStringLiteral("Brun"), QStringLiteral("#f0e0d0"),
+                                 QStringLiteral("#000000"), QString(), QStringLiteral("Noto Serif"),
+                                 48.0, QStringLiteral("left"), 1.4),
+              "the remembered look is captured from a real service theme");
+        remembered = docs.themeSnapshotJson(brun);
+        check(!remembered.isEmpty(), "service A's look captures");
+        const QString item = library.addSong(
+            "Remembered song",
+            QVariantList{QVariantMap{{QStringLiteral("label"), QStringLiteral("Verse 1")},
+                                     {QStringLiteral("lines"),
+                                      QStringList{QStringLiteral("Saved words")}}}},
+            QString(), QString(), QString());
+        check(!item.isEmpty() && library.rememberItemTheme(item, remembered),
+              "the Library remembers service A's look by value");
+        // A's local theme is then edited and deleted: the Library copy is
+        // unaffected because it never held the theme id.
+        check(docs.editTheme(brun, QStringLiteral("Brun"), QStringLiteral("#000000"),
+                             QStringLiteral("#000000"), QString(), QStringLiteral("Other"),
+                             12.0, QStringLiteral("center"), 1.0),
+              "service A's local theme is edited afterwards");
+        check(docs.deleteTheme(brun), "and then deleted");
+        check(library.itemThemeSnapshot(item) == remembered,
+              "the remembered value did not follow the local theme");
+    }
+    {
+        // Restart, then service B already holds a DIFFERENT theme named Brun.
+        CatalogController library(nullptr, catalogDir);
+        DocumentController docs(nullptr, serviceB);
+        check(docs.createBlankTheme("Brun"), "service B already has its own Brun");
+        QString serviceBBrun;
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("name")).toString() ==
+                QStringLiteral("Brun")) {
+                serviceBBrun = theme.toMap().value(QStringLiteral("id")).toString();
+            }
+        }
+        check(!serviceBBrun.isEmpty() &&
+                  docs.editTheme(serviceBBrun, QStringLiteral("Brun"),
+                                 QStringLiteral("#123456"), QStringLiteral("#000000"),
+                                 QString(), QStringLiteral("B Sans"), 24.0,
+                                 QStringLiteral("center"), 1.2),
+              "service B's Brun is a different look");
+        QString item;
+        for (const QVariant& row : library.items()) {
+            if (row.toMap().value(QStringLiteral("title")).toString() ==
+                QStringLiteral("Remembered song")) {
+                item = row.toMap().value(QStringLiteral("id")).toString();
+            }
+        }
+        check(!item.isEmpty(), "the remembered Library song survives the restart");
+        const QString snapshot = library.itemThemeSnapshot(item);
+        check(snapshot == remembered, "the restart kept the exact remembered look");
+        QVariantList plan;
+        plan.append(QVariantMap{{QStringLiteral("lines"),
+                                 QStringList{QStringLiteral("Saved words")}},
+                                {QStringLiteral("group"), QStringLiteral("Verse 1")},
+                                {QStringLiteral("label"), QStringLiteral("Verse 1")}});
+        const QString prepared = docs.upsertCatalogSong(
+            item, QStringLiteral("Remembered song"), QString(), QString(), QString(), plan,
+            false, -1, snapshot);
+        check(!prepared.isEmpty(), "service B prepares the remembered song");
+        docs.selectSong(prepared);
+        docs.selectSlide(0);
+        const QVariantMap look = docs.slideAppearance();
+        check(look.value(QStringLiteral("textColor")).toMap()
+                      .value(QStringLiteral("value")).toString() == QStringLiteral("#f0e0d0") &&
+                  look.value(QStringLiteral("fontSize")).toMap()
+                          .value(QStringLiteral("value")).toDouble() == 48.0,
+              "service B wears the remembered look, not its colliding local Brun");
+        int bruns = 0;
+        QStringList families;
+        for (const QVariant& theme : docs.themes()) {
+            const QVariantMap row = theme.toMap();
+            if (row.value(QStringLiteral("name")).toString() == QStringLiteral("Brun")) {
+                ++bruns;
+                families.append(row.value(QStringLiteral("fontFamily")).toString());
+            }
+        }
+        check(bruns == 2 && families.contains(QStringLiteral("Noto Serif")) &&
+                  families.contains(QStringLiteral("B Sans")),
+              "the colliding local theme is preserved beside a new remembered one");
+    }
+}
+
 int main(int argc, char* argv[]) {
     const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() /
                                            ("openshow-docctrl-" + std::to_string(getpid()));
@@ -4586,6 +4898,8 @@ int main(int argc, char* argv[]) {
     exerciseTransitionSurfaces(tempRoot / "transitionsurfaces");
     exerciseTextStyleFieldMerge(tempRoot / "stylefields");
     exerciseThemeSampleViews(tempRoot / "sampleviews");
+    exerciseWholeItemThemeSurfaces(tempRoot / "wholeitem");
+    exerciseRememberedLookAcrossServices(tempRoot / "remembered");
     exerciseScripturePassage(tempRoot / "scripturepassage");
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");

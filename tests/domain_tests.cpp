@@ -1867,9 +1867,9 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         const std::string manifest = readFile(gradedDir / "service.json");
         check(manifest.find("\"backgroundGradient\"") == std::string::npos,
               "theme backgrounds are absent from saved files");
-        check(manifest.find("\"format\":14") != std::string::npos,
-              "the manifest says format 14 (the text-layout pair, beside the"
-              " catalog song link, attribution and underline style)");
+        check(manifest.find("\"format\":15") != std::string::npos,
+              "the manifest says format 15 (the whole-item theme, beside the"
+              " text-layout pair, catalog song link, attribution and underline style)");
         check(manifest.find("\"transition\":{") != std::string::npos,
               "the root transition is written by name, not left to an absent key");
         check(openshow::domain::saveService(back, tempRoot / "v5-regraded", &error) &&
@@ -3830,7 +3830,7 @@ void exerciseForegroundThemeStorage(const fs::path& tempRoot) {
     const auto dir = tempRoot / "foreground-themes";
     check(openshow::domain::saveService(docs, dir, &error), "save foreground themes");
     auto json = boost::json::parse(readFile(dir / "service.json"));
-    check(json.at("format").as_int64() == 14, "foreground theme files identify format 14");
+    check(json.at("format").as_int64() == 15, "foreground theme files identify format 15");
     for (auto& value : json.at("themes").as_array()) {
         check(!value.as_object().contains("backgroundColor") && !value.as_object().contains("backgroundGradient"),
               "new service files contain no theme background settings");
@@ -5203,6 +5203,200 @@ void exerciseThemeSnapshot() {
           "an unknown theme cannot be captured");
 }
 
+// Task PT.3: an explicit whole-item theme. The item's own layer wins over
+// the service current theme, the old text/layout overrides and slide themes
+// go, backdrop customizations and every id/word/media reference stay, and
+// service 15 carries the assignment. "Use service default" restores the
+// legacy chain for that item only.
+void exerciseWholeItemTheme(const fs::path& tempRoot) {
+    std::string error;
+    Documents docs;
+    const Id show = docs.createShow("Item look");
+    const Id first = docs.appendSlide(show);
+    const Id second = docs.appendSlide(show);
+    docs.setSlideLines(show, first, {"First line"});
+    docs.setSlideLines(show, second, {"Second line"});
+    docs.setSlideNotes(show, first, "Verse 1");
+    docs.setSlideGroup(show, first, "Verse 1");
+
+    const Id current = docs.createTheme("Current", "#ffffff", "#000000", "", "Current Sans",
+                                        20.0, "center", 1.2, &error);
+    const Id showDefault = docs.createTheme("Show default", "#ffffff", "#000000", "", "Show Sans",
+                                            30.0, "center", 1.2, &error);
+    const Id slideTheme = docs.createTheme("Slide", "#ffffff", "#000000", "", "Slide Sans",
+                                           40.0, "center", 1.2, &error);
+    const Id item = docs.createTheme("Item", "#abcdef", "#000000", "", "Item Serif",
+                                     60.0, "left", 1.6, &error);
+    check(!current.empty() && !showDefault.empty() && !slideTheme.empty() &&
+              !item.empty(),
+          "the whole-item fixture's themes exist");
+    openshow::domain::ThemeTextStyle itemStyle;
+    itemStyle.fontWeight = 800;
+    itemStyle.verticalAlign = "top";
+    itemStyle.allCaps = true;
+    check(docs.setThemeTextStyle(item, itemStyle, &error), "the item theme has a style");
+    openshow::domain::TransitionOptions cut;
+    cut.kind = openshow::domain::TransitionKind::kCut;
+    cut.textDurationMs = 0;
+    cut.mediaDurationMs = 10000;
+    check(docs.setThemeTransition(item, cut, &error), "the item theme has movement");
+    check(docs.setCurrentTheme(current, &error) && docs.setShowDefaultTheme(show, showDefault, &error) &&
+              docs.setSlideTheme(show, first, slideTheme, &error),
+          "the legacy chain is populated");
+
+    openshow::domain::SlideCustomization customizations;
+    customizations.textColor = "#112233";
+    customizations.backgroundColor = "#123456";
+    customizations.fontFamily = "Custom Sans";
+    customizations.fontSize = 22.0;
+    customizations.placement = BoxRect{10.0, 20.0, 500.0, 300.0};
+    customizations.fontWeight = 300;
+    openshow::domain::TextStroke outline;
+    outline.enabled = true;
+    outline.color = "#ff0000";
+    outline.width = 4.0;
+    customizations.stroke = outline;
+    check(docs.setSlideCustomizations(show, first, customizations, &error),
+          "the first slide carries text and backdrop customizations");
+    const auto before = docs.appearanceForSlide(show, first);
+    check(before.textColor == "#112233" && before.fontSize == 22.0,
+          "the fixture resolves its own overrides before applying");
+
+    const std::size_t slideCount =
+        docs.findShow(show) != nullptr ? docs.findShow(show)->slides.size() : 0;
+    const Id firstItem = docs.findShow(show)->slides[0].items.front().id;
+
+    check(docs.applyWholeItemTheme(show, item, &error),
+          "the whole-item theme applies");
+    const openshow::domain::Show* applied = docs.findShow(show);
+    check(applied != nullptr && applied->appliedThemeId == item,
+          "the show carries the explicit assignment");
+    check(applied != nullptr && applied->slides.size() == slideCount &&
+              applied->slides[0].id == first && applied->slides[1].id == second &&
+              applied->slides[0].items.front().id == firstItem &&
+              applied->slides[0].items.front().lines == std::vector<std::string>{"First line"} &&
+              applied->slides[0].notes == "Verse 1" &&
+              applied->slides[0].group == "Verse 1",
+          "ids, counts, words, notes, groups and item order are unchanged");
+    check(applied != nullptr && applied->slides[0].themeId.empty(),
+          "the old per-slide theme is cleared");
+    const auto look = docs.appearanceForSlide(show, first);
+    check(look.textColor == "#abcdef" && look.fontSize == 60.0 &&
+              look.align == "left" && look.fontWeight == 800 &&
+              look.verticalAlign == "top" && look.allCaps,
+          "the item theme wins over the service current theme and the old overrides");
+    check(look.backgroundColor == "#123456",
+          "the backdrop customization survives the text-override removal");
+    check(!look.placement.has_value(),
+          "the old placement override is removed; the item theme places no box");
+    check(docs.resolveTransitionForSlide(show, first) == cut,
+          "movement resolution uses the same item branch");
+    // A deliberate later per-slide Edit choice still overrides the item, and
+    // a per-field customization still wins over the applied theme.
+    {
+        const Id later = docs.createTheme("Later", "#ff00ff", "#000000", "", "Later Sans",
+                                          12.0, "right", 1.0, &error);
+        check(!later.empty() && docs.setSlideTheme(show, first, later, &error),
+              "a later per-slide theme can still be chosen");
+        check(docs.appearanceForSlide(show, first).textColor == "#ff00ff",
+              "the later per-slide choice wins over the applied item theme");
+        check(docs.setSlideTheme(show, first, {}, &error),
+              "the later per-slide choice can be removed again");
+    }
+    {
+        openshow::domain::SlideCustomization own;
+        own.fontSize = 33.0;
+        own.backgroundColor = "#123456";
+        check(docs.setSlideCustomizations(show, second, own, &error),
+              "a per-field customization can still be authored after applying");
+        check(docs.appearanceForSlide(show, second).fontSize == 33.0 &&
+                  docs.appearanceForSlide(show, second).textColor == "#abcdef",
+              "one authored field overrides the item while the rest still wear it");
+        docs.removeSlideCustomizations(show, second, &error);
+    }
+    // A show listed twice is one show: both cues see the same assignment.
+    {
+        const Id playlist = docs.createPlaylist("Occurrences");
+        check(!playlist.empty() &&
+                  !docs.addPlaylistEntry(playlist, show, "", &error).empty() &&
+                  !docs.addPlaylistEntry(playlist, show, "", &error).empty(),
+              "the show is scheduled twice");
+        const openshow::domain::Playlist* run = docs.findPlaylist(playlist);
+        check(run != nullptr && run->entries.size() == 2 &&
+                  run->entries[0].showId == run->entries[1].showId &&
+                  docs.findShow(run->entries[1].showId)->appliedThemeId == item,
+              "both occurrences name the one updated show");
+    }
+    // The other show keeps the legacy chain.
+    const Id other = docs.createShow("Other");
+    const Id otherSlide = docs.appendSlide(other);
+    docs.setSlideLines(other, otherSlide, {"Other"});
+    check(docs.appearanceForSlide(other, otherSlide).fontSize == 20.0,
+          "an unrelated presentation still follows the service current theme");
+
+    // Storage 15 round-trips the assignment and the surviving backdrop.
+    const fs::path dir = tempRoot / "whole-item";
+    check(openshow::domain::saveService(docs, dir, &error),
+          "a service with a whole-item theme saves");
+    Documents reloaded;
+    check(openshow::domain::loadService(&reloaded, dir, &error),
+          "the service reloads");
+    const openshow::domain::Show* back = reloaded.findShow(show);
+    check(back != nullptr && back->appliedThemeId == item &&
+              reloaded.appearanceForSlide(show, first).textColor == "#abcdef" &&
+              reloaded.appearanceForSlide(show, first).backgroundColor == "#123456",
+          "the assignment, item look and surviving backdrop round-trip");
+    const std::string manifest = readFile(dir / "service.json");
+    check(manifest.find("\"format\":15") != std::string::npos,
+          "the service is written as format 15");
+
+    // An older format naming the new key is refused by name.
+    {
+        std::string legacy = manifest;
+        check(replaceOnce(legacy, "\"format\":15", "\"format\":14"),
+              "the saved manifest can be rewritten as format 14");
+        const fs::path legacyDir = tempRoot / "whole-item-legacy";
+        std::filesystem::create_directories(legacyDir);
+        check(writeFile(legacyDir / "service.json", legacy),
+              "the legacy manifest is written");
+        Documents refused;
+        error.clear();
+        check(!openshow::domain::loadService(&refused, legacyDir, &error) &&
+                  error.find("appliedThemeId") != std::string::npos,
+              "a format-14 file naming appliedThemeId is refused by name");
+    }
+    // An unknown applied theme is refused in the reference pass.
+    {
+        std::string missing = manifest;
+        check(replaceOnce(missing, "\"appliedThemeId\":\"" + item + "\"",
+                          "\"appliedThemeId\":\"theme-nope\""),
+              "the applied theme id can be made unknown");
+        const fs::path missingDir = tempRoot / "whole-item-missing";
+        std::filesystem::create_directories(missingDir);
+        check(writeFile(missingDir / "service.json", missing),
+              "the unknown-theme manifest is written");
+        Documents refused;
+        error.clear();
+        check(!openshow::domain::loadService(&refused, missingDir, &error) &&
+                  error.find("applies unknown theme") != std::string::npos,
+              "a file applying an unknown theme is refused");
+    }
+
+    // "Use service default" returns just this item to the legacy chain.
+    check(docs.clearWholeItemTheme(show, &error),
+          "the whole-item theme can be returned to inheritance");
+    const openshow::domain::Show* cleared = docs.findShow(show);
+    check(cleared != nullptr && cleared->appliedThemeId.empty() &&
+              cleared->defaultThemeId.empty() && cleared->slides[0].themeId.empty(),
+          "the assignment, show default and slide theme are cleared");
+    check(docs.findTheme(current) != nullptr,
+          "the service current theme is untouched");
+    check(docs.appearanceForSlide(show, first).fontSize == 20.0,
+          "the item follows the service current theme again");
+    check(docs.appearanceForSlide(other, otherSlide).fontSize == 20.0,
+          "the unrelated presentation is unchanged");
+}
+
 int main() {
     const std::string_view version = openshow::domain::applicationVersion();
     bool ok = check(!version.empty(), "applicationVersion is not empty");
@@ -5236,6 +5430,7 @@ int main() {
     exerciseDeckPageAssets(tempRoot / "deck-pages");
     exerciseBoxStorage(tempRoot);
     exerciseTextStyleStorage(tempRoot);
+    exerciseWholeItemTheme(tempRoot);
     exerciseTransitionStorage(tempRoot);
     exerciseForegroundThemeStorage(tempRoot);
     exerciseDefaultThemeFloor(tempRoot);

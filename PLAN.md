@@ -2189,8 +2189,8 @@ explicit Go. [Workflow, persistence, source preservation and acceptance](docs/ui
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
 | PT.1 | DONE | Share a validated portable theme-snapshot value/codec | Capture complete effective appearance, placement, contexts and movement without service IDs/media; reuse domain validation/limits, preserve Unicode/layout/effects and avoid a second style vocabulary |
-| PT.2 | TODO | Remember Library song snapshots and use them on future service preparation | Catalog 2 over 1; durable preference/history with unchanged canonical words; import/reuse local themes by full definition, not name; A→restart→B with colliding/deleted/edited A theme still uses the saved look; no implicit reflow on preference notification |
-| PT.3 | TODO | Add explicit whole-item theme assignment and scoped override replacement | Service 15 over 14, legacy pixels unchanged; explicit item choice wins over the current service theme, while deliberate later Edit overrides remain possible; appearance/transition agree; Apply only preserves IDs/breaks/words/media/background overrides and updates all occurrences of that show |
+| PT.2 | DONE | Remember Library song snapshots and use them on future service preparation | Catalog 2 over 1; durable preference/history with unchanged canonical words; import/reuse local themes by full definition, not name; A→restart→B with colliding/deleted/edited A theme still uses the saved look; no implicit reflow on preference notification |
+| PT.3 | DONE | Add explicit whole-item theme assignment and scoped override replacement | Service 15 over 14, legacy pixels unchanged; explicit item choice wins over the current service theme, while deliberate later Edit overrides remain possible; appearance/transition agree; Apply only preserves IDs/breaks/words/media/background overrides and updates all occurrences of that show |
 | PT.4 | TODO | Preserve bounded song/selected-scripture reflow sources with projection provenance | Capture structured source at preparation/Add; save/reopen offline, detect text edits, never overwrite from a changed Library/provider; conservative current-word fallback for legacy/edited text, honest passage labels and preserved notes/sections |
 | PT.5 | TODO | Prepare bounded optional reflow against the chosen item's future appearance | Use captured worker-measured style, source and generation; preserve section/verse policy and eligible common media/audio/leading blank; explain unsupported multi-box/mixed-media cases; cancellation/failure/stale replies leave everything unchanged |
 | PT.6 | TODO | Commit prepared item changes and remembered preferences with honest history/persistence | Prevalidate before durable catalog write, then publish one compound service edit; service undo restores theme/slides/media/IDs once, Library preference uses Library history; fault/refusal/reconnect tests prove no partial UI mutation or surprise Apply-only repagination; do not claim cross-store crash atomicity |
@@ -2198,9 +2198,9 @@ explicit Go. [Workflow, persistence, source preservation and acceptance](docs/ui
 | PT.8 | TODO | Close Library→service→reflow→Go→undo/save journeys and reconcile docs | Whole-item uniformity, current-word conservation, future-service saved looks, legacy scripture, override/media preservation, stale/failure paths and separate undo scopes verified; focused then desktop/headless/source guards pass, with skips/physical gates recorded separately |
 
 Order: PT.1 → PT.2/PT.3/PT.4 → PT.5 → PT.6 → PT.7 → PT.8; split any leaf
-exceeding two engineer-days. All TODO. No global live theme library, automatic
-audience presentation, provider cache or arbitrary multi-object slide reflow is
-introduced. Recheck catalog/service allocations before implementing; existing
+exceeding two engineer-days. PT.1–PT.3 DONE; PT.4–PT.8 TODO. No global live
+theme library, automatic audience presentation, provider cache or arbitrary
+multi-object slide reflow is introduced. Recheck catalog/service allocations before implementing; existing
 scene 8/protocol 0.20 suffice. Prior TL/BX/DR/PV completion remains historical.
 
 PT.1 evidence (2026-11-17): `openshow::domain::ThemeSnapshot`
@@ -2223,6 +2223,58 @@ catalog loader and the service path will share. `domain_tests` covers the
 round-trip and byte-determinism, Unicode family/name retention, effects and
 layout, resolved movement and contexts, a silent theme resolving to the
 contract's concrete defaults, and every refusal above.
+
+PT.2 evidence (2026-11-17): catalog format 2 adds the optional
+`themeSnapshot` to a song (`CatalogItem::themeSnapshot`,
+`Catalog::setThemeSnapshot`). A format-1 catalog loads with no preference; a
+format-1 record naming the newer key is refused by name, and a malformed
+format-2 snapshot refuses through `Documents::validThemeSnapshot` before any
+durable write. Remembering a real change advances both revisions and leaves
+title, stanzas and attribution byte-identical; re-setting the same value is a
+no-op with no history step; Library undo/redo owns the preference. The value
+round-trips through `catalog.json` and survives restart. `CatalogController`
+exposes `itemThemeSnapshot`/`rememberItemTheme`/`forgetItemTheme`, and its
+change signal is the separate `itemThemeChanged`: the service bridge listens to
+`itemChanged` only, so remembering a look cannot re-prepare a linked show and
+defeat an Apply-only result (asserted by signal counts).
+`DocumentController::themeSnapshotJson` captures a service theme through the
+same fixture; `ServiceCatalogBridge` measures a NEW Add with
+`boxStyleForSnapshot`/`songInputForStyle` and passes the snapshot to
+`upsertCatalogSong`, which consults it only when it creates the show. A lyric
+refresh therefore keeps the item's existing look. Import/reuse is by full
+definition: `Documents::ensureThemeFromSnapshot` reuses a matching local theme
+(name and id aside), never overwrites a same-named different look, and follows
+a renamed definition. `catalog_tests`, `catalog_controller_tests`,
+`domain_tests` and `document_controller_tests` cover the A→restart→B journey
+with a colliding local theme and with A's theme edited and deleted afterwards.
+
+PT.3 evidence (2026-11-17): service 15 adds optional `Show.appliedThemeId`.
+When present the theme chain is slide theme → applied item theme → Default,
+with slide customizations still winning per field, and
+`resolveTransitionForSlide` walks the same branch; when absent the legacy
+current → slide → show-default → Default chain is byte-for-byte the code path
+every service 1–14 used. `Documents::applyWholeItemTheme` sets the assignment,
+clears every slide's old slide theme and every TEXT customization (colour,
+family, size, both alignments, spacing, All caps, weight/slant/underline,
+fit/minimum, whole stroke/shadow records and the placement override) through
+the shared `textCustomizationFields()` classification, so a future style field
+cannot be silently omitted; backdrop colour/gradient customizations, background
+asset/fit/camera, authored item geometry/order, words, notes, groups, IDs,
+slide counts and media/audio references are preserved. `clearWholeItemTheme`
+is "Use service default": it removes the assignment and the target's legacy
+show-default and slide themes, leaving the service current theme and every
+other presentation untouched. Both are ordinary document edits (one history
+entry each; undo/redo verified), `showInfo` reports `appliedThemeId`, and the
+adapter's `applyWholeItemTheme`/`clearWholeItemTheme`/`applyRememberedTheme`
+verbs are what QML will call. Service storage writes `appliedThemeId` only
+when speaking, refuses the key in a format-14 file by name, and refuses a file
+applying an unknown theme in the reference pass. `domain_tests` covers
+appearance/transition agreement, ID/word/media/backdrop preservation, the
+cleared placement, a deliberate later per-slide theme and per-field
+customization still winning, both occurrences of a twice-scheduled show, save/
+reopen format 15, and both refusals; `document_controller_tests` covers the
+adapter verbs, one-step undo/redo, inheritance after clearing, snapshot
+capture/measurement/apply-by-value and the creation-versus-refresh rule.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

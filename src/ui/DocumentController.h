@@ -467,7 +467,26 @@ public:
                                           const QString& title, const QString& ccli,
                                           const QString& authors, const QString& copyright,
                                           const QVariantList& slides,
-                                          bool addToRunningOrder, int index = -1);
+                                          bool addToRunningOrder, int index = -1,
+                                          const QString& themeSnapshotJson = QString());
+    // Task PT.3: whole-item theme application. One history entry each.
+    // `applyRememberedTheme` materialises a portable snapshot (its codec
+    // JSON) as a service-local theme and applies it to the item, so a
+    // Library look travels by value. Returns the materialised theme id, or
+    // "" with status.
+    Q_INVOKABLE bool applyWholeItemTheme(const QString& showId,
+                                         const QString& themeId);
+    Q_INVOKABLE bool clearWholeItemTheme(const QString& showId);
+    Q_INVOKABLE QString applyRememberedTheme(const QString& showId,
+                                             const QString& snapshotJson);
+    // Task PT.2: capture a service theme's effective look as the portable
+    // codec's JSON, so the Library can remember it. "" on an unknown theme
+    // (status says why).
+    Q_INVOKABLE QString themeSnapshotJson(const QString& themeId);
+    // The measurement style a portable snapshot implies (the same shape
+    // `songBoxStyle` returns), so a future-service Add measures the look it
+    // will wear without first putting a throwaway theme in the service.
+    Q_INVOKABLE QVariantMap boxStyleForSnapshot(const QString& snapshotJson) const;
     // The service show prepared from a catalog item, "" when none is linked.
     Q_INVOKABLE QString showForCatalogItem(const QString& catalogItemId) const;
     // Propagates a catalog rename to the linked show without re-laying the

@@ -142,6 +142,11 @@ void ServiceCatalogBridge::start(const QString& catalogItemId, Mode mode, int in
     fPendingStanzas = item->stanzas;
     fMode = mode;
     fPendingIndex = index;
+    // Task PT.3: a NEW preparation wears the Library's remembered look and
+    // must MEASURE it, not the service current theme. A refresh keeps the
+    // item's existing applied theme (PT.6), so it captures nothing here.
+    fPendingThemeSnapshot =
+        mode == Mode::Add ? fCatalog->itemThemeSnapshot(catalogItemId) : QString();
     // The plan this run will publish must belong to the catalog and the
     // service it was CAPTURED from (review D6).
     fPendingRecordRevision = item->recordRevision;
@@ -151,6 +156,15 @@ void ServiceCatalogBridge::start(const QString& catalogItemId, Mode mode, int in
     setStatus(mode == Mode::Add
                   ? QStringLiteral("Preparing \u201c%1\u201d\u2026").arg(fPendingTitle)
                   : QStringLiteral("Updating \u201c%1\u201d\u2026").arg(fPendingTitle));
+    if (!fPendingThemeSnapshot.isEmpty() && fDocuments != nullptr) {
+        openshow::importer::SongPaginationInput captured;
+        if (songInputForStyle(fPendingStanzas,
+                              fDocuments->boxStyleForSnapshot(fPendingThemeSnapshot),
+                              &captured)) {
+            fPlanner.start(fPendingStanzas, &captured);
+            return;
+        }
+    }
     fPlanner.start(fPendingStanzas);
 }
 
@@ -206,7 +220,8 @@ void ServiceCatalogBridge::publishPlan() {
     }
     const QString showId = fDocuments->upsertCatalogSong(
         fPendingId, fPendingTitle, fPendingCcli, fPendingAuthors,
-        fPendingCopyright, slides, fMode == Mode::Add, fPendingIndex);
+        fPendingCopyright, slides, fMode == Mode::Add, fPendingIndex,
+        fPendingThemeSnapshot);
     if (showId.isEmpty()) {
         setStatus(QStringLiteral("the song could not be added: %1")
                       .arg(fDocuments->status()));

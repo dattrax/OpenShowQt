@@ -210,6 +210,117 @@ void testMovesUndoAndDuplicates() {
     std::filesystem::remove_all(dir, ignored);
 }
 
+// Task PT.2: the Library remembers a future-service look by value. It is
+// durable, advances the revisions, never touches canonical words, is one
+// Library history step, and announces itself through the separate
+// itemThemeChanged signal so the service bridge cannot re-prepare a linked
+// show and defeat an Apply-only choice.
+void testRememberedLookAdapter() {
+    const std::filesystem::path dir = scratchDirectory();
+    const QString look = QStringLiteral(
+        R"({"name":"Remembered","textColor":"#f0e0d0","fontFamily":"Noto Serif",)"
+        R"("fontSize":48.0,"align":"left","lineSpacing":1.4,"fontWeight":700,)"
+        R"("fontStyle":"italic","fontUnderline":true,"fitMode":"fixed",)"
+        R"("minFontSize":18.0,"verticalAlign":"bottom","allCaps":true,)"
+        R"("stroke":{"enabled":true,"color":"#ff0000","width":3.5},)"
+        R"("shadow":{"enabled":true,"color":"#00ff00","opacity":0.4,)"
+        R"("offsetX":-4.0,"offsetY":6.0,"blurSigma":2.5},)"
+        R"("placement":{"x":120.0,"y":80.0,"width":1680.0,"height":900.0},)"
+        R"("transition":{"kind":"cut","textDurationMs":0,"mediaDurationMs":10000},)"
+        R"("contexts":[]})");
+
+    QString id;
+    {
+        CatalogController library(nullptr, dir);
+        id = library.addSong("Remembered", stanzas({"Original words", "Second line"}),
+                             "9000002", "A Writer", "\u00a9 2024");
+        check(!id.isEmpty(), "a song exists to remember a look for");
+        const QVariantMap before = library.items().first().toMap();
+        check(!before.value(QStringLiteral("hasThemeSnapshot")).toBool(),
+              "a new song remembers nothing");
+
+        int themeSignals = 0;
+        int itemSignals = 0;
+        QObject::connect(&library, &CatalogController::itemThemeChanged,
+                         [&themeSignals](const QString&) { ++themeSignals; });
+        QObject::connect(&library, &CatalogController::itemChanged,
+                         [&itemSignals](const QString&) { ++itemSignals; });
+        check(library.rememberItemTheme(id, look),
+              "the Library remembers the chosen look");
+        const QVariantMap after = library.items().first().toMap();
+        check(after.value(QStringLiteral("hasThemeSnapshot")).toBool(),
+              "the row reports that it remembers a look");
+        check(after.value(QStringLiteral("contentRevision")).toULongLong() ==
+                      before.value(QStringLiteral("contentRevision")).toULongLong() + 1 &&
+                  after.value(QStringLiteral("recordRevision")).toULongLong() ==
+                      before.value(QStringLiteral("recordRevision")).toULongLong() + 1,
+              "a real preference change advances both revisions");
+        check(after.value(QStringLiteral("stanzaCount")).toInt() ==
+                      before.value(QStringLiteral("stanzaCount")).toInt() &&
+                  after.value(QStringLiteral("lineCount")).toInt() ==
+                      before.value(QStringLiteral("lineCount")).toInt() &&
+                  after.value(QStringLiteral("title")).toString() == QLatin1String("Remembered"),
+              "the canonical words and title are untouched");
+        check(!library.itemThemeSnapshot(id).isEmpty(),
+              "the remembered look reads back as codec JSON");
+        check(themeSignals == 1 && itemSignals == 0,
+              "the preference announces itself without the content signal");
+
+        check(library.rememberItemTheme(id, look) &&
+                  library.items().first().toMap()
+                          .value(QStringLiteral("contentRevision"))
+                          .toULongLong() ==
+                      after.value(QStringLiteral("contentRevision")).toULongLong(),
+              "remembering the same look again costs no revision");
+
+        const QString invalid = QStringLiteral("{not json");
+        check(!library.rememberItemTheme(id, invalid),
+              "a malformed snapshot is refused");
+        check(library.items().first().toMap()
+                  .value(QStringLiteral("hasThemeSnapshot")).toBool(),
+              "the refusal kept the previous preference");
+        check(!library.rememberItemTheme(QStringLiteral("item-does-not-exist"), look),
+              "an unknown item cannot remember a look");
+
+        library.undo();
+        check(library.items().first().toMap()
+                      .value(QStringLiteral("hasThemeSnapshot"))
+                      .toBool() == false,
+              "one Library undo forgets the look");
+        library.redo();
+        check(library.items().first().toMap()
+                  .value(QStringLiteral("hasThemeSnapshot"))
+                  .toBool(),
+              "Library redo remembers it again");
+    }
+    {
+        // Restart: the preference is durable and the words are canonical.
+        CatalogController reopened(nullptr, dir);
+        check(reopened.items().size() == 1 &&
+                  reopened.items().first().toMap()
+                      .value(QStringLiteral("hasThemeSnapshot"))
+                      .toBool(),
+              "the remembered look survives a restart");
+        check(!reopened.itemThemeSnapshot(id).isEmpty(),
+              "the codec JSON is readable after a restart");
+        check(reopened.items().first().toMap().value(QStringLiteral("lineCount")).toInt() == 2,
+              "the words survive the restart unchanged");
+        check(reopened.forgetItemTheme(id) &&
+                  reopened.items().first().toMap()
+                          .value(QStringLiteral("hasThemeSnapshot"))
+                          .toBool() == false &&
+                  reopened.itemThemeSnapshot(id).isEmpty(),
+              "the adapter can forget the look durably");
+        reopened.undo();
+        check(reopened.items().first().toMap()
+                  .value(QStringLiteral("hasThemeSnapshot"))
+                  .toBool(),
+              "the forget is one Library history step");
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(dir, ignored);
+}
+
 void testWriteFailureChangesNothing() {
     const std::filesystem::path dir = scratchDirectory();
     CatalogController library(nullptr, dir);
@@ -278,6 +389,7 @@ int main(int argc, char** argv) {
     testDurableAddAndRestart();
     testTitleOnlyFiltering();
     testMovesUndoAndDuplicates();
+    testRememberedLookAdapter();
     testWriteFailureChangesNothing();
     testUnreadableCatalogIsNotOverwritten();
     if (gFailed) {

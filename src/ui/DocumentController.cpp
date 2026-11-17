@@ -12,6 +12,9 @@
 #include <cmath>
 #include <set>
 
+#include <boost/json.hpp>
+
+#include "openshow/domain/themesnapshot.h"
 #include "openshow/scene/scene.h"
 
 namespace openshow::ui {
@@ -2745,6 +2748,9 @@ QVariantMap DocumentController::showInfo(const QString& showId) const {
     return {{"id", QString::fromStdString(show->id)},
             {"name", QString::fromStdString(show->name)},
             {"defaultThemeId", QString::fromStdString(show->defaultThemeId)},
+            // Task PT.3: the explicit whole-item theme, "" when the item
+            // inherits. A row uses this to offer "Use service default".
+            {"appliedThemeId", QString::fromStdString(show->appliedThemeId)},
             // The show's own audio layer, so a running-order row can say a
             // cue carries a track without asking the worker (which may not
             // be connected and is not the authoring authority).
@@ -2928,8 +2934,28 @@ bool DocumentController::insertShowInPlaylist(const QString& showId, int index) 
 QString DocumentController::upsertCatalogSong(
     const QString& catalogItemId, const QString& title, const QString& ccli,
     const QString& authors, const QString& copyright, const QVariantList& slides,
-    bool addToRunningOrder, int index) {
+    bool addToRunningOrder, int index, const QString& themeSnapshotJson) {
     flushText();
+    // Task PT.3: a Library song's remembered look is measured and worn by a
+    // NEW preparation. A later lyric refresh keeps the item's existing look
+    // (PT.6), so the snapshot is consulted only when this call creates the
+    // show.
+    openshow::domain::ThemeSnapshot libraryLook;
+    bool haveLibraryLook = false;
+    if (!themeSnapshotJson.isEmpty()) {
+        boost::system::error_code parseError;
+        const boost::json::value parsed =
+            boost::json::parse(themeSnapshotJson.toStdString(), parseError);
+        std::string lookError;
+        if (parseError ||
+            !openshow::domain::themeSnapshotFromJson(parsed, &libraryLook,
+                                                     &lookError)) {
+            setStatus(QStringLiteral("add song: the remembered look is not usable: %1")
+                          .arg(QString::fromStdString(lookError)));
+            return QString();
+        }
+        haveLibraryLook = true;
+    }
     const std::string itemId = catalogItemId.toStdString();
     if (itemId.empty()) {
         setStatus(QStringLiteral("add song: the Library item has no id"));
@@ -3034,6 +3060,14 @@ QString DocumentController::upsertCatalogSong(
                 return false;
             }
         }
+        if (created && haveLibraryLook) {
+            const openshow::domain::Id lookTheme =
+                fDocuments.ensureThemeFromSnapshot(libraryLook, &error);
+            if (lookTheme.empty() ||
+                !fDocuments.applyWholeItemTheme(showId, lookTheme, &error)) {
+                return false;
+            }
+        }
         if (addToRunningOrder) {
             if (fCurrentPlaylistId.empty()) {
                 error = "there is no running order to add to";
@@ -3072,6 +3106,123 @@ QString DocumentController::upsertCatalogSong(
     emit slideTextChanged();
     emit boxSelectionChanged();
     return QString::fromStdString(showId);
+}
+
+bool DocumentController::applyWholeItemTheme(const QString& showId,
+                                             const QString& themeId) {
+    flushText();
+    std::string error;
+    const bool ok = edit([&] {
+        return fDocuments.applyWholeItemTheme(showId.toStdString(),
+                                              themeId.toStdString(), &error);
+    });
+    if (!ok) {
+        setStatus(QStringLiteral("apply theme: %1").arg(QString::fromStdString(error)));
+    }
+    return ok;
+}
+
+bool DocumentController::clearWholeItemTheme(const QString& showId) {
+    flushText();
+    std::string error;
+    const bool ok = edit([&] {
+        return fDocuments.clearWholeItemTheme(showId.toStdString(), &error);
+    });
+    if (!ok) {
+        setStatus(QStringLiteral("use service default: %1")
+                      .arg(QString::fromStdString(error)));
+    }
+    return ok;
+}
+
+QString DocumentController::applyRememberedTheme(const QString& showId,
+                                                 const QString& snapshotJson) {
+    flushText();
+    boost::system::error_code parseError;
+    const boost::json::value parsed =
+        boost::json::parse(snapshotJson.toStdString(), parseError);
+    openshow::domain::ThemeSnapshot snapshot;
+    std::string error;
+    if (parseError ||
+        !openshow::domain::themeSnapshotFromJson(parsed, &snapshot, &error)) {
+        setStatus(QStringLiteral("apply theme: the remembered look is not usable: %1")
+                      .arg(QString::fromStdString(error)));
+        return QString();
+    }
+    QString themeId;
+    const bool ok = edit([&] {
+        const openshow::domain::Id look =
+            fDocuments.ensureThemeFromSnapshot(snapshot, &error);
+        if (look.empty() ||
+            !fDocuments.applyWholeItemTheme(showId.toStdString(), look, &error)) {
+            return false;
+        }
+        themeId = QString::fromStdString(look);
+        return true;
+    });
+    if (!ok) {
+        setStatus(QStringLiteral("apply theme: %1").arg(QString::fromStdString(error)));
+        return QString();
+    }
+    return themeId;
+}
+
+QString DocumentController::themeSnapshotJson(const QString& themeId) {
+    openshow::domain::ThemeSnapshot snapshot;
+    std::string error;
+    if (!fDocuments.themeSnapshotFor(themeId.toStdString(), &snapshot, &error)) {
+        setStatus(QStringLiteral("remember look: %1")
+                      .arg(QString::fromStdString(error)));
+        return QString();
+    }
+    return QString::fromStdString(
+        boost::json::serialize(openshow::domain::themeSnapshotToJson(snapshot)));
+}
+
+QVariantMap DocumentController::boxStyleForSnapshot(const QString& snapshotJson) const {
+    QVariantMap style;
+    boost::system::error_code parseError;
+    const boost::json::value parsed =
+        boost::json::parse(snapshotJson.toStdString(), parseError);
+    openshow::domain::ThemeSnapshot snapshot;
+    std::string error;
+    if (parseError ||
+        !openshow::domain::themeSnapshotFromJson(parsed, &snapshot, &error)) {
+        return style;
+    }
+    // The same shape songBoxStyle returns, from the value instead of a
+    // compiled fixture: the planner measures the future look before the
+    // service holds a theme for it.
+    const openshow::domain::BoxRect box =
+        snapshot.placement.value_or(openshow::domain::BoxRect{160.0, 100.0, 1600.0, 880.0});
+    style.insert(QStringLiteral("context"), QString());
+    style.insert(QStringLiteral("boxWidth"), box.width);
+    style.insert(QStringLiteral("boxHeight"), box.height);
+    style.insert(QStringLiteral("fontSize"), snapshot.fontSize);
+    style.insert(QStringLiteral("lineSpacing"), snapshot.lineSpacing);
+    style.insert(QStringLiteral("fontFamily"), QString::fromStdString(snapshot.fontFamily));
+    style.insert(QStringLiteral("fontWeight"), snapshot.fontWeight);
+    style.insert(QStringLiteral("fontStyle"), QString::fromStdString(snapshot.fontStyle));
+    style.insert(QStringLiteral("fontUnderline"), snapshot.fontUnderline);
+    style.insert(QStringLiteral("fitMode"), QString::fromStdString(snapshot.fitMode));
+    style.insert(QStringLiteral("minFontSize"), snapshot.minFontSize);
+    style.insert(QStringLiteral("verticalAlign"),
+                 QString::fromStdString(snapshot.verticalAlign));
+    style.insert(QStringLiteral("allCaps"), snapshot.allCaps);
+    QVariantMap stroke;
+    stroke.insert(QStringLiteral("enabled"), snapshot.stroke.enabled);
+    stroke.insert(QStringLiteral("color"), QString::fromStdString(snapshot.stroke.color));
+    stroke.insert(QStringLiteral("width"), snapshot.stroke.width);
+    style.insert(QStringLiteral("stroke"), stroke);
+    QVariantMap shadow;
+    shadow.insert(QStringLiteral("enabled"), snapshot.shadow.enabled);
+    shadow.insert(QStringLiteral("color"), QString::fromStdString(snapshot.shadow.color));
+    shadow.insert(QStringLiteral("opacity"), snapshot.shadow.opacity);
+    shadow.insert(QStringLiteral("offsetX"), snapshot.shadow.offsetX);
+    shadow.insert(QStringLiteral("offsetY"), snapshot.shadow.offsetY);
+    shadow.insert(QStringLiteral("blurSigma"), snapshot.shadow.blurSigma);
+    style.insert(QStringLiteral("shadow"), shadow);
+    return style;
 }
 
 QString DocumentController::showForCatalogItem(const QString& catalogItemId) const {

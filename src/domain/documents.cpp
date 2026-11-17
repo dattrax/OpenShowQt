@@ -1390,19 +1390,36 @@ std::vector<const Theme*> Documents::themeChainForSlide(const Id& showId,
         return layers;
     }
     const Slide& slide = show->slides[static_cast<size_t>(index)];
-    if (!fCurrentThemeId.empty()) {
-        if (const Theme* t = findTheme(fCurrentThemeId)) {
-            layers.push_back(t);
+    // Task PT.3: an explicit whole-item application replaces the service
+    // current theme and the show default for THIS presentation. A later,
+    // deliberate per-slide Edit theme still wins, and the Default floor
+    // still closes the chain. When no application exists, the legacy chain
+    // is untouched, services 1-14 included.
+    const Theme* applied = show->appliedThemeId.empty()
+                               ? nullptr
+                               : findTheme(show->appliedThemeId);
+    if (applied != nullptr) {
+        if (!slide.themeId.empty()) {
+            if (const Theme* t = findTheme(slide.themeId)) {
+                layers.push_back(t);
+            }
         }
-    }
-    if (!slide.themeId.empty()) {
-        if (const Theme* t = findTheme(slide.themeId)) {
-            layers.push_back(t);
+        layers.push_back(applied);
+    } else {
+        if (!fCurrentThemeId.empty()) {
+            if (const Theme* t = findTheme(fCurrentThemeId)) {
+                layers.push_back(t);
+            }
         }
-    }
-    if (!show->defaultThemeId.empty()) {
-        if (const Theme* t = findTheme(show->defaultThemeId)) {
-            layers.push_back(t);
+        if (!slide.themeId.empty()) {
+            if (const Theme* t = findTheme(slide.themeId)) {
+                layers.push_back(t);
+            }
+        }
+        if (!show->defaultThemeId.empty()) {
+            if (const Theme* t = findTheme(show->defaultThemeId)) {
+                layers.push_back(t);
+            }
         }
     }
     // The Default theme closes the chain (operator amendment 2026-11-02):
@@ -1562,6 +1579,44 @@ bool Documents::validThemeSnapshot(const ThemeSnapshot& snapshot, std::string* e
             !validTransitionOptions(*context.transition, error)) {
             return false;
         }
+    }
+    return true;
+}
+
+bool Documents::applyWholeItemTheme(const Id& showId, const Id& themeId,
+                                    std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    if (findTheme(themeId) == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    show->appliedThemeId = themeId;
+    for (Slide& slide : show->slides) {
+        // The item's look replaces the look, not the words or the backdrop:
+        // strip exactly the text fields the shared classification names, so
+        // a future style field cannot be silently omitted.
+        for (const std::string& field : textCustomizationFields()) {
+            slide.customizations.clearField(field);
+        }
+        slide.themeId.clear();
+    }
+    return true;
+}
+
+bool Documents::clearWholeItemTheme(const Id& showId, std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    show->appliedThemeId.clear();
+    show->defaultThemeId.clear();
+    for (Slide& slide : show->slides) {
+        slide.themeId.clear();
     }
     return true;
 }

@@ -87,6 +87,10 @@ private:
 
     QString fPendingId;
     QString fPendingTitle;
+    // Task PT.3: the remembered Library look captured for this Add, as the
+    // snapshot codec's JSON. Empty for a refresh (a lyric edit keeps the
+    // item's existing look) and for a song that remembers nothing.
+    QString fPendingThemeSnapshot;
     QString fPendingCcli;
     QString fPendingAuthors;
     QString fPendingCopyright;

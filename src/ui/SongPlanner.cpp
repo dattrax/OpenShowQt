@@ -16,15 +16,11 @@ constexpr int kMeasureAnswerBudgetMs = 15000;
 
 }  // namespace
 
-bool songInputFor(DocumentController* documents,
-                  const std::vector<openshow::catalog::Stanza>& stanzas,
-                  openshow::importer::SongPaginationInput* out) {
+bool songInputForStyle(const std::vector<openshow::catalog::Stanza>& stanzas,
+                       const QVariantMap& style,
+                       openshow::importer::SongPaginationInput* out) {
     *out = openshow::importer::SongPaginationInput{};
     out->stanzas = stanzas;
-    if (documents == nullptr) {
-        return false;
-    }
-    const QVariantMap style = documents->songBoxStyle();
     if (!style.contains(QStringLiteral("boxWidth"))) {
         return false;
     }
@@ -79,6 +75,17 @@ bool songInputFor(DocumentController* documents,
         }
     }
     return true;
+}
+
+bool songInputFor(DocumentController* documents,
+                  const std::vector<openshow::catalog::Stanza>& stanzas,
+                  openshow::importer::SongPaginationInput* out) {
+    if (documents == nullptr) {
+        *out = openshow::importer::SongPaginationInput{};
+        out->stanzas = stanzas;
+        return false;
+    }
+    return songInputForStyle(stanzas, documents->songBoxStyle(), out);
 }
 
 SongPlanner::SongPlanner(DocumentController* documents, WorkerController* worker,

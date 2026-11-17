@@ -42,6 +42,14 @@ bool songInputFor(DocumentController* documents,
                   const std::vector<openshow::catalog::Stanza>& stanzas,
                   openshow::importer::SongPaginationInput* out);
 
+// The same input from an explicit style map (task PT.3): a remembered
+// Library look is measured before the service holds a theme for it, so the
+// future-service preparation uses exactly the numbers the added slide will
+// wear. False when the map has no usable box.
+bool songInputForStyle(const std::vector<openshow::catalog::Stanza>& stanzas,
+                       const QVariantMap& style,
+                       openshow::importer::SongPaginationInput* out);
+
 class SongPlanner final : public QObject {
     Q_OBJECT
 public:

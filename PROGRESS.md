@@ -11,7 +11,7 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Whole-item themes and reflow (2026-11-17): PT.1 is DONE; PT.2–PT.8 are
+**Whole-item themes and reflow (2026-11-17): PT.1–PT.3 are DONE; PT.4–PT.8 are
 TODO.** The
 [whole-item theme/reflow brief](docs/ui/presentation-theme-reflow-plan.md) moves
 theme application to left-hand song/passage rows and offers keep breaks or
@@ -31,7 +31,24 @@ backdrop fields travel. The strict deterministic codec shares one semantic
 sentence (`Documents::validThemeSnapshot`) with the coming catalog loader, so
 the two cannot drift. `domain_tests` covers round-trip/determinism, Unicode,
 effects/layout/movement/contexts, silent-theme defaults and every refusal.
-Next action: PT.2 (catalog 2 remembered looks).
+PT.2 added catalog format 2's optional remembered look and the adapter surface
+that uses it. A real preference change advances both revisions and leaves the
+canonical words untouched; re-setting it is a no-op; Library undo/redo owns it
+and it survives restart. The Library's change signal is separate from content
+so remembering a look cannot re-prepare a linked show. Capture, measurement
+(`boxStyleForSnapshot`) and creation-only application make a new service
+preparation wear the saved look, while a lyric refresh keeps the item's
+existing look. A→restart→B is tested with a colliding local theme and with A's
+theme edited and deleted.
+
+PT.3 added the explicit whole-item assignment in service 15. An applied item
+theme replaces the service current theme and the target's old text/layout
+overrides and slide themes, while backdrop customizations, words, IDs, breaks
+and media stay; a later per-slide Edit choice still wins. "Use service default"
+returns just that item to the legacy chain. Both verbs are one history entry,
+appearance and transition share the branch, and format-14 files naming the new
+key (or files applying an unknown theme) refuse by name.
+Next action: PT.4 (bounded reflow sources and projection provenance).
 
 **Edit canvas follow-up (BX.5, 2026-11-16): fixed and verified.** Sustained
 box drags could be stolen by Edit's parent Flickable; the earlier pointer matrix
