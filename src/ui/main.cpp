@@ -24,7 +24,9 @@
 #include "openshow/protocol/protocol.h"
 
 #include "CatalogController.h"
+#include "ReflowPlanner.h"
 #include "ServiceCatalogBridge.h"
+#include "ThemeApplySession.h"
 #include "SongImport.h"
 #include "DocumentController.h"
 #include "WorkerController.h"
@@ -69,6 +71,11 @@ int main(int argc, char* argv[]) {
     // song into the current service.
     openshow::ui::SongImport songImport(&library, &documents, &worker);
     openshow::ui::ServiceCatalogBridge songService(&library, &documents, &worker);
+
+    // Task PT.7: the one whole-item apply workflow — a measured optional
+    // reflow and the two-store transaction behind the left-hand row action.
+    openshow::ui::ReflowPlanner reflow(&documents, &worker);
+    openshow::ui::ThemeApplySession applySession(&documents, &library);
 
     // Task 6.14b (review R14): scratch persistence runs on the bounded,
     // coalescing executor — the UI thread only ever pays for a snapshot
@@ -134,6 +141,8 @@ int main(int argc, char* argv[]) {
     engine.rootContext()->setContextProperty("library", &library);
     engine.rootContext()->setContextProperty("songImport", &songImport);
     engine.rootContext()->setContextProperty("songService", &songService);
+    engine.rootContext()->setContextProperty("reflow", &reflow);
+    engine.rootContext()->setContextProperty("applySession", &applySession);
     engine.rootContext()->setContextProperty("panels", &panels);
     engine.rootContext()->setContextProperty("appSettings", &settings);
     // Milestone BI: the importer's page. The lookup session owns the

@@ -35,7 +35,9 @@
 #include "CatalogController.h"
 #include "DocumentController.h"
 #include "ScriptureImport.h"
+#include "ReflowPlanner.h"
 #include "ServiceCatalogBridge.h"
+#include "ThemeApplySession.h"
 #include "SongImport.h"
 #include "WorkerController.h"
 #include "WorkspacePanels.h"
@@ -136,6 +138,8 @@ int main(int argc, char** argv) {
     openshow::ui::ScriptureImport scripture(&bible, &docs, &worker);
     openshow::ui::SongImport songImport(&library, &docs, &worker);
     openshow::ui::ServiceCatalogBridge songService(&library, &docs, &worker);
+    openshow::ui::ReflowPlanner reflow(&docs, &worker);
+    openshow::ui::ThemeApplySession applySession(&docs, &library);
 
     const std::string text =
         readFile(OPENSHOW_SOURCE_DIR "/docs/fixtures/songs/morning-light.txt");
@@ -166,6 +170,8 @@ int main(int argc, char** argv) {
     context->setContextProperty("library", &library);
     context->setContextProperty("songImport", &songImport);
     context->setContextProperty("songService", &songService);
+    context->setContextProperty("reflow", &reflow);
+    context->setContextProperty("applySession", &applySession);
     context->setContextProperty("uiSize", QSize(1380, 800));
     engine.loadFromModule("OpenShow", "Main");
     auto* window = engine.rootObjects().isEmpty()

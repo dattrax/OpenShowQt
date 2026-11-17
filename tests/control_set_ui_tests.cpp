@@ -27,7 +27,9 @@
 #include "BibleImport.h"
 #include "CatalogController.h"
 #include "DocumentController.h"
+#include "ReflowPlanner.h"
 #include "ServiceCatalogBridge.h"
+#include "ThemeApplySession.h"
 #include "SongImport.h"
 #include "InspectorAdapter.h"
 #include "ScriptureImport.h"
@@ -156,6 +158,8 @@ bool captureControlSets(const QString& prefix) {
     openshow::ui::CatalogController library(nullptr, base);
     openshow::ui::SongImport songImport(&library, &docs, &worker);
     openshow::ui::ServiceCatalogBridge songService(&library, &docs, &worker);
+    openshow::ui::ReflowPlanner reflow(&docs, &worker);
+    openshow::ui::ThemeApplySession applySession(&docs, &library);
     docs.createSong("Opening song");
     const auto song = docs.currentSongId();
     for (int i = 1; i <= 3; ++i) {
@@ -198,6 +202,8 @@ bool captureControlSets(const QString& prefix) {
     context->setContextProperty("library", &library);
     context->setContextProperty("songImport", &songImport);
     context->setContextProperty("songService", &songService);
+    context->setContextProperty("reflow", &reflow);
+    context->setContextProperty("applySession", &applySession);
     context->setContextProperty("uiSize", QSize(1680, 1020));
     engine.loadFromModule("OpenShow", "Main");
     auto* window = engine.rootObjects().isEmpty() ? nullptr

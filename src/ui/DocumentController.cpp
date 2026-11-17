@@ -2753,6 +2753,10 @@ QVariantMap DocumentController::showInfo(const QString& showId) const {
             // Task PT.3: the explicit whole-item theme, "" when the item
             // inherits. A row uses this to offer "Use service default".
             {"appliedThemeId", QString::fromStdString(show->appliedThemeId)},
+            // Task PT.7: the Library item this show was prepared from, so a
+            // row can point the apply dialog at the right record (and know
+            // whether a chosen look should be remembered).
+            {"catalogItemId", QString::fromStdString(show->catalogItemId)},
             // The show's own audio layer, so a running-order row can say a
             // cue carries a track without asking the worker (which may not
             // be connected and is not the authoring authority).

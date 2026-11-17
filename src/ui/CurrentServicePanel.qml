@@ -38,6 +38,29 @@ Item {
         docs.selectSong(showId)
         servicePanel.entryChosen(selection.currentKey)
     }
+    // Task PT.7: the row's explicit identity for the apply workflow. A show
+    // listed twice is still ONE presentation, so the dialog acts on the show
+    // and reports every occurrence.
+    property string contextShowId: ""
+    property string contextShowTitle: ""
+
+    Menu {
+        id: itemMenu
+        objectName: "serviceItemMenu"
+        MenuItem {
+            objectName: "serviceApplyThemeItem"
+            text: "Apply theme\u2026"
+            onTriggered: servicePanel.applyThemeRequested(servicePanel.contextShowId,
+                                                          servicePanel.contextShowTitle)
+        }
+        MenuItem {
+            objectName: "serviceUseDefaultItem"
+            text: "Use service default"
+            onTriggered: servicePanel.useServiceDefaultRequested(
+                servicePanel.contextShowId)
+        }
+    }
+
     Keys.enabled: servicePanel.activeFocus
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Delete) {
@@ -50,11 +73,25 @@ Item {
         } else if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) {
             selection.selectAll(servicePanel.entryIds)
             event.accepted = true
+        } else if (event.key === Qt.Key_Menu ||
+                   (event.key === Qt.Key_F10 &&
+                    (event.modifiers & Qt.ShiftModifier))) {
+            const index = entryIds.indexOf(selection.currentKey)
+            const row = index >= 0 ? entryList.itemAtIndex(index) : null
+            if (row && index >= 0) {
+                servicePanel.contextShowId = docs.playlistEntries[index].showId
+                servicePanel.contextShowTitle = docs.playlistEntries[index].showName
+                const at = row.mapToItem(servicePanel, row.width / 2, row.height / 2)
+                itemMenu.popup(at.x, at.y)
+            }
+            event.accepted = true
         }
     }
     property string dropTargetPlaylistId: ""
 
     signal entryChosen(string entryId)
+    signal applyThemeRequested(string showId, string title)
+    signal useServiceDefaultRequested(string showId)
 
     function playlistName() {
         const rows = docs.playlists
@@ -257,6 +294,7 @@ Item {
                         hoverEnabled: true
                         preventStealing: true
                         cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
                         drag.smoothed: false
                         drag.target: entryDragProxy
                         onPressed: function(mouse) {
@@ -265,7 +303,17 @@ Item {
                             entryDragProxy.begin(entryRow, mouse.x, mouse.y)
                         }
                         onClicked: function(mouse) {
-                            selection.select(entryRow.modelData.entryId, servicePanel.entryIds, mouse.modifiers)
+                            selection.select(entryRow.modelData.entryId,
+                                             servicePanel.entryIds,
+                                             mouse.button === Qt.RightButton
+                                             ? Qt.NoModifier : mouse.modifiers)
+                            if (mouse.button === Qt.RightButton) {
+                                servicePanel.contextShowId = entryRow.modelData.showId
+                                servicePanel.contextShowTitle = entryRow.modelData.showName
+                                const at = entryRow.mapToItem(servicePanel, mouse.x, mouse.y)
+                                itemMenu.popup(at.x, at.y)
+                                return
+                            }
                             docs.selectSong(entryRow.modelData.showId)
                             servicePanel.entryChosen(entryRow.modelData.entryId)
                         }

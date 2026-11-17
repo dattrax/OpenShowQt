@@ -26,7 +26,9 @@
 #include "CatalogController.h"
 #include "DocumentController.h"
 #include "ScriptureImport.h"
+#include "ReflowPlanner.h"
 #include "ServiceCatalogBridge.h"
+#include "ThemeApplySession.h"
 #include "SongImport.h"
 #include "WorkerController.h"
 #include "WorkspacePanels.h"
@@ -58,6 +60,8 @@ int main(int argc, char** argv) {
     openshow::ui::CatalogController library(nullptr, base);
     openshow::ui::SongImport songImport(&library, &docs, &worker);
     openshow::ui::ServiceCatalogBridge songService(&library, &docs, &worker);
+    openshow::ui::ReflowPlanner reflow(&docs, &worker);
+    openshow::ui::ThemeApplySession applySession(&docs, &library);
     docs.createSong("Good Grace");
     const QString songId = docs.currentSongId();
     docs.addSlide();
@@ -94,6 +98,8 @@ int main(int argc, char** argv) {
     context->setContextProperty("library", &library);
     context->setContextProperty("songImport", &songImport);
     context->setContextProperty("songService", &songService);
+    context->setContextProperty("reflow", &reflow);
+    context->setContextProperty("applySession", &applySession);
     context->setContextProperty("uiSize", QSize(1380, 800));
     engine.loadFromModule("OpenShow", "Main");
     if (engine.rootObjects().isEmpty()) {
@@ -4633,6 +4639,35 @@ int main(int argc, char** argv) {
             }
             return QVariantMap();
         };
+        // Re-resolve a row each time: the Library rebuilds its delegates on
+        // every model change, so a pointer kept across an edit is a snapshot.
+        auto findSongRow = [&](const QString& id) -> QQuickItem* {
+            QList<QQuickItem*> rows;
+            collectNamed(window->contentItem(), "librarySongRow", rows);
+            for (auto* row : rows) {
+                if (row->property("modelData").toMap().value(QStringLiteral("id"))
+                        .toString() == id)
+                    return row;
+            }
+            return nullptr;
+        };
+        auto clickMenuRow = [&](const char* name) {
+            const QList<QQuickItem*> rows = settledRows(name, 1);
+            if (rows.isEmpty())
+                return false;
+            clickAt(rows.first(), 60, rows.first()->height() / 2);
+            return true;
+        };
+        auto findCueRow = [&](const QString& showId) -> QQuickItem* {
+            QList<QQuickItem*> rows;
+            collectNamed(window->contentItem(), "collectionPlaylistRow", rows);
+            for (auto* row : rows) {
+                if (row->property("modelData").toMap().value(QStringLiteral("showId"))
+                        .toString() == showId)
+                    return row;
+            }
+            return nullptr;
+        };
 
         check(docs.createBlankTheme("House") && docs.createBlankTheme("Loud"),
               "two themes serve the apply surfaces");
@@ -4643,198 +4678,269 @@ int main(int argc, char** argv) {
                              QStringLiteral("center"), 1.25),
               "Loud is restyled so which slide wears it is visible in the views");
 
-        // --- the header selector sets the DEFAULT of the show on screen ---
         const QString viewed = docs.currentSongId();
-        auto* selector = findNamed(window->contentItem(), "showThemeSelector");
-        check(selector && selector->isVisible()
-                  && selector->property("text").toString()
-                         .contains(QStringLiteral("no show default")),
-              "the show header names the viewed show with no default set");
-        clickAt(selector, selector->width() / 2, selector->height() / 2);
-        auto* defaultMenu = window->findChild<QObject*>("showDefaultThemeMenu");
-        QList<QQuickItem*> defaultRows;
-        const bool opened = defaultMenu && waitFor([&] {
-                          return defaultMenu->property("visible").toBool();
-                      });
-        defaultRows = settledRows("showDefaultThemeItem", 3);
-        check(opened && !defaultRows.isEmpty(),
-              "the header opens a menu naming every theme");
-        QQuickItem* loudRow = nullptr;
-        for (auto* row : defaultRows) {
-            if (row->property("text").toString() == QStringLiteral("Loud"))
-                loudRow = row;
-        }
-        check(loudRow != nullptr, "the header menu names Loud");
-        clickAt(loudRow, 40, loudRow->height() / 2);
-        check(waitFor([&] {
-                  return songRow(viewed).value(QStringLiteral("defaultThemeId"))
-                             .toString() == loud;
-              })
-                  && waitFor([&] {
-                         return selector->property("text").toString()
-                                == QStringLiteral("Loud");
-                     }),
-              "picking Loud in the header makes it the viewed show's default");
-        // Reopening needs the exit transition finished: a click that
-        // arrives while the closing menu still holds the grab is eaten.
-        waitFor([&] { return !defaultMenu->property("visible").toBool(); });
-        clickAt(selector, selector->width() / 2, selector->height() / 2);
-        QList<QQuickItem*> defaultRows2 = settledRows("showDefaultThemeItem", 3);
-        QQuickItem* loudRow2 = nullptr;
-        for (auto* row : defaultRows2) {
-            if (row->property("text").toString().contains(QStringLiteral("Loud")))
-                loudRow2 = row;
-        }
-        check(loudRow2 != nullptr
-                  && loudRow2->property("text").toString().startsWith(QChar(0x2713)),
-              "the worn default is the checked row when the header reopens");
-        closeMenu("showDefaultThemeMenu");
-        waitFor([&] { return !defaultMenu->property("visible").toBool(); });
-        docs.undo();
-        check(waitFor([&] {
-                  return songRow(viewed).value(QStringLiteral("defaultThemeId"))
-                             .toString().isEmpty();
-              }),
-              "one undo takes the show default back off");
 
-        // --- cue tiles: the right-click themes ONE slide ---
+        // --- the old apply bypasses are gone -------------------------------
+        // The header's separate default picker and a cue tile's theme menu
+        // were alternate, unguarded routes. Whole-item apply lives on the
+        // left-hand rows now; per-slide styling stays in Edit.
+        check(findNamed(window->contentItem(), "showThemeSelector") == nullptr,
+              "the show header no longer carries a separate default-theme picker");
         QList<QQuickItem*> tiles;
         collectNamed(window->contentItem(), "operatorCueTile", tiles);
-        check(tiles.size() >= 2, "the cue grid has tiles to theme");
+        check(tiles.size() >= 2, "the cue grid still has tiles");
         rightClickAt(tiles.at(1), 40, 20);
-        auto* cueMenu = window->findChild<QObject*>("cueThemeMenu");
-        check(cueMenu && waitFor([&] { return cueMenu->property("visible").toBool(); })
-                  && !settledRows("cueApplyThemeItem", 3).isEmpty()
-                  && !settledRows("cueRemoveCustomizationItem", 1).isEmpty(),
-              "right-clicking a cue opens the theme menu on it");
-        QList<QQuickItem*> themeRows = settledRows("cueApplyThemeItem", 3);
-        QQuickItem* loudCueRow = nullptr;
-        for (auto* row : themeRows) {
-            if (row->property("text").toString() == QStringLiteral("Loud"))
-                loudCueRow = row;
+        QTest::qWait(80);
+        check(window->findChild<QObject*>("cueThemeMenu") == nullptr,
+              "a cue tile no longer opens a per-slide theme menu");
+
+        // --- a prepared Library song: row -> Apply theme... -> dialog ------
+        QVariantList dialogStanzas;
+        QVariantMap dialogStanza;
+        dialogStanza.insert(QStringLiteral("label"), QStringLiteral("Verse 1"));
+        dialogStanza.insert(QStringLiteral("lines"),
+                            QStringList{QStringLiteral("Dialog verse line")});
+        dialogStanzas.append(dialogStanza);
+        const QString dialogItem = library.addSong(
+            QStringLiteral("Dialog Song"), dialogStanzas, QString(), QString(),
+            QString());
+        check(!dialogItem.isEmpty(), "a Library song exists for the apply dialog");
+        QVariantList dialogPlan;
+        dialogPlan.append(QVariantMap{
+            {QStringLiteral("lines"), QStringList{QStringLiteral("Dialog verse line")}},
+            {QStringLiteral("group"), QStringLiteral("Verse 1")},
+            {QStringLiteral("label"), QStringLiteral("Verse 1")}});
+        const QString dialogShow = docs.upsertCatalogSong(
+            dialogItem, QStringLiteral("Dialog Song"), QString(), QString(),
+            QString(), dialogPlan, true);
+        check(!dialogShow.isEmpty() &&
+                  docs.showForCatalogItem(dialogItem) == dialogShow,
+              "the dialog song is prepared into the service and linked");
+        openFolder(songsFolder);
+        QTest::qWait(60);
+        check(findSongRow(dialogItem) != nullptr,
+              "the Library lists the dialog song's row");
+        rightClickAt(findSongRow(dialogItem), 60, 14);
+        auto* songMenu = window->findChild<QObject*>("librarySongMenu");
+        const bool songMenuOpened =
+            songMenu && waitFor([&] { return songMenu->property("visible").toBool(); });
+        check(songMenuOpened && clickMenuRow("libraryApplyThemeItem"),
+              "the Library song row offers Apply theme...");
+        auto* dialog = window->findChild<QObject*>("applyThemeDialog");
+        check(dialog && waitFor([&] { return dialog->property("visible").toBool(); }),
+              "Apply theme... opens the whole-item dialog");
+        check(dialog->property("itemTitle").toString() == QStringLiteral("Dialog Song"),
+              "the dialog names the clicked record, not the editing cursor");
+        check(dialog->property("occurrenceCount").toInt() == 1,
+              "the dialog reports how many occurrences the item has");
+        check(dialog->property("rememberOnly").toBool() == false,
+              "a prepared song offers the service actions");
+        auto* picker = window->findChild<QQuickItem*>("applyThemePicker");
+        int loudIndex = -1;
+        for (int i = 0; i < docs.themes().size(); ++i) {
+            if (docs.themes()[i].toMap().value(QStringLiteral("id")).toString() == loud)
+                loudIndex = i;
         }
-        check(loudCueRow != nullptr, "the menu names Loud");
-        clickAt(loudCueRow, 40, loudCueRow->height() / 2);
+        check(picker && loudIndex >= 0, "the dialog carries a theme picker");
+        if (picker)
+            picker->setProperty("currentIndex", loudIndex);
+        QTest::qWait(40);
+        auto* applyOnly = findNamed(window->contentItem(), "applyThemeOnlyButton");
+        auto* applyReflow = findNamed(window->contentItem(), "applyThemeReflowButton");
+        check(applyOnly && applyOnly->property("enabled").toBool(),
+              "Apply only is the safe default and is available");
+        clickAt(applyOnly, applyOnly->width() / 2, applyOnly->height() / 2);
         check(waitFor([&] {
-                  return docs.slides().at(1).toMap().value(QStringLiteral("themeId"))
-                             .toString() == loud;
+                  return !docs.showInfo(dialogShow)
+                              .value(QStringLiteral("appliedThemeId"))
+                              .toString().isEmpty();
               }),
-              "the picked slide wears Loud");
-        check(docs.slides().at(0).toMap().value(QStringLiteral("themeId")).toString()
-                      .isEmpty(),
-              "and only the clicked tile's slide — its neighbour follows the show still");
-        closeMenu("cueThemeMenu");
-        waitFor([&] { return !cueMenu->property("visible").toBool(); });
-
-        // Remove from a clean slide is a wrong click, honestly refused.
-        waitFor([&] { return !cueMenu->property("visible").toBool(); });
-        rightClickAt(tiles.at(0), 40, 20);
-        check(waitFor([&] { return cueMenu->property("visible").toBool(); }),
-              "the menu opens on a second tile too");
-        QList<QQuickItem*> removeRows = settledRows("cueRemoveCustomizationItem", 1);
-        check(!removeRows.isEmpty(), "the menu carries the restore row");
-        clickAt(removeRows.first(), 40, removeRows.first()->height() / 2);
-        check(waitFor([&] { return docs.status().contains(QStringLiteral("restore")); }),
-              "removing customizations a clean slide never made is refused on the status line");
-        closeMenu("cueThemeMenu");
-        waitFor([&] { return !cueMenu->property("visible").toBool(); });
-
-        // And from a customized slide it restores — while the worn theme stays.
-        docs.selectSlide(1);
-        check(docs.customizeCurrentSlide(QStringLiteral("textColor"),
-                                         QStringLiteral("#123456")),
-              "the slide customizes before the menu restores it");
-        waitFor([&] { return !cueMenu->property("visible").toBool(); });
-        rightClickAt(tiles.at(1), 40, 20);
-        check(waitFor([&] { return cueMenu->property("visible").toBool(); }),
-              "the menu opens over the customized tile");
-        QList<QQuickItem*> removeRows2 = settledRows("cueRemoveCustomizationItem", 1);
-        clickAt(removeRows2.value(0), 40,
-                removeRows2.value(0)->height() / 2);
+              "Apply only publishes the chosen look on the linked presentation");
+        docs.selectSong(dialogShow);
+        docs.selectSlide(0);
         check(waitFor([&] {
-                  const QVariantMap row = docs.slides().at(1).toMap();
-                  return !row.value(QStringLiteral("customized")).toBool()
-                         && row.value(QStringLiteral("themeId")).toString() == loud;
+                  return docs.slideAppearance()
+                             .value(QStringLiteral("textColor"))
+                             .toMap()
+                             .value(QStringLiteral("value"))
+                             .toString() == QStringLiteral("#ff0000");
               }),
-              "the menu restore clears the customizations and keeps the worn theme");
-        closeMenu("cueThemeMenu");
-        waitFor([&] { return !cueMenu->property("visible").toBool(); });
+              "the whole item wears Loud");
+        check(!library.itemThemeSnapshot(dialogItem).isEmpty(),
+              "the linked song remembers the chosen look for future services");
+        check(waitFor([&] { return !dialog->property("visible").toBool(); }),
+              "the dialog closes after a successful apply");
+        docs.undo();
+        check(docs.showInfo(dialogShow)
+                  .value(QStringLiteral("appliedThemeId"))
+                  .toString().isEmpty(),
+              "one service undo removes the look");
+        docs.redo();
+        check(!docs.showInfo(dialogShow)
+                   .value(QStringLiteral("appliedThemeId"))
+                   .toString().isEmpty(),
+              "redo puts it back");
 
-        // Follow show gives the slide's own theme back.
-        waitFor([&] { return !cueMenu->property("visible").toBool(); });
-        rightClickAt(tiles.at(1), 40, 20);
-        check(waitFor([&] { return cueMenu->property("visible").toBool(); }),
-              "the menu is up for the follow row");
-        QList<QQuickItem*> followRows = settledRows("cueFollowShowItem", 1);
-        clickAt(followRows.value(0), 40, followRows.value(0)->height() / 2);
+        // --- Apply and reflow with no measuring worker ---------------------
+        // The workspace test runs off air: the button is available for an
+        // eligible item, preparing refuses honestly, and nothing changes.
+        openFolder(songsFolder);
+        QTest::qWait(40);
+        rightClickAt(findSongRow(dialogItem), 60, 14);
+        check(waitFor([&] { return songMenu->property("visible").toBool(); }) &&
+                  clickMenuRow("libraryApplyThemeItem"),
+              "the row menu reopens for the reflow leg");
+        check(dialog && waitFor([&] { return dialog->property("visible").toBool(); }),
+              "the dialog opens for the reflow leg");
+        const QVariantList slidesBeforeReflow = docs.slidesOf(dialogShow);
+        if (picker)
+            picker->setProperty("currentIndex", loudIndex);
+        QTest::qWait(40);
+        check(applyReflow && applyReflow->property("enabled").toBool(),
+              "an eligible item offers Apply and reflow");
+        clickAt(applyReflow, applyReflow->width() / 2, applyReflow->height() / 2);
+        auto* notice = findNamed(window->contentItem(), "applyThemeNotice");
         check(waitFor([&] {
-                  return docs.slides().at(1).toMap().value(QStringLiteral("themeId"))
+                  return notice && notice->property("visible").toBool() &&
+                         notice->property("text").toString().contains(
+                             QStringLiteral("measuring output"));
+              }),
+              "with no worker the reflow refuses naming the measuring output");
+        check(docs.slidesOf(dialogShow).size() == slidesBeforeReflow.size(),
+              "the refused reflow changes no slide");
+        closeMenu("applyThemeDialog");
+        if (auto* popup = window->findChild<QObject*>("applyThemeDialog"))
+            QMetaObject::invokeMethod(popup, "close");
+        waitFor([&] { return !dialog->property("visible").toBool(); });
+
+        // --- an ineligible item explains why, and still applies only ------
+        docs.selectSong(dialogShow);
+        docs.selectSlide(0);
+        check(docs.addTextBox(), "the item gains a second text box");
+        openFolder(songsFolder);
+        QTest::qWait(40);
+        rightClickAt(findSongRow(dialogItem), 60, 14);
+        check(waitFor([&] { return songMenu->property("visible").toBool(); }) &&
+                  clickMenuRow("libraryApplyThemeItem"),
+              "the row menu opens for the ineligible leg");
+        check(dialog && waitFor([&] { return dialog->property("visible").toBool(); }),
+              "the dialog opens for the ineligible item");
+        auto* eligibility = findNamed(window->contentItem(), "applyThemeEligibility");
+        check(applyReflow && !applyReflow->property("enabled").toBool() &&
+                  eligibility &&
+                  eligibility->property("text").toString().contains(
+                      QStringLiteral("more than one text box")),
+              "an ineligible item disables reflow and states the reason");
+        check(applyOnly && applyOnly->property("enabled").toBool(),
+              "Apply only remains available for the ineligible item");
+        QMetaObject::invokeMethod(dialog, "close");
+        waitFor([&] { return !dialog->property("visible").toBool(); });
+        docs.undo();  // the second box
+        check(docs.slidesOf(dialogShow).size() > 0,
+              "the ineligible leg left a undoable clean state");
+
+        // --- Use service default returns the item to inheritance ----------
+        docs.selectSong(dialogShow);
+        docs.selectSlide(0);
+        openFolder(serviceFolder);
+        QTest::qWait(40);
+        QQuickItem* dialogCue_unused = findCueRow(dialogShow);
+        check(dialogCue_unused != nullptr,
+              "the running order lists the dialog song's cue");
+        // The cue may be appended past the visible rows; bring it on screen
+        // so the click lands on it rather than on a neighbour.
+        int dialogCueIndex = -1;
+        for (int i = 0; i < docs.playlistEntries().size(); ++i) {
+            if (docs.playlistEntries()[i].toMap().value(QStringLiteral("showId"))
+                    .toString() == dialogShow)
+                dialogCueIndex = i;
+        }
+        check(dialogCueIndex >= 0, "the dialog song has a cue index");
+        playlistList->setProperty("currentIndex", dialogCueIndex);
+        playlistList->setProperty("contentY",
+                                  qMax(0, dialogCueIndex * 28 - 40));
+        QTest::qWait(80);
+        rightClickAt(findCueRow(dialogShow), 60, 14);
+        QTest::qWait(80);
+        auto* serviceMenu = window->findChild<QObject*>("serviceItemMenu");
+        check(serviceMenu &&
+                  waitFor([&] { return serviceMenu->property("visible").toBool(); }) &&
+                  !settledRows("serviceApplyThemeItem", 1).isEmpty(),
+              "a service row offers whole-item apply and Use service default");
+        check(clickMenuRow("serviceUseDefaultItem"),
+              "Use service default is reachable on the service row");
+        check(waitFor([&] {
+                  return docs.showInfo(dialogShow)
+                             .value(QStringLiteral("appliedThemeId"))
                              .toString().isEmpty();
               }),
-              "follow show takes the slide's theme off again");
-        closeMenu("cueThemeMenu");
-        waitFor([&] { return !cueMenu->property("visible").toBool(); });
+              "Use service default returns the item to inheritance");
+        check(waitFor([&] { return library.itemThemeSnapshot(dialogItem).isEmpty(); }),
+              "and forgets the linked song's remembered look");
 
-        // --- sidebar row: the bulk over a whole presentation, one undo ---
-        // The Library's Presentations folder is the row's home (SL.4).
-        openFolder(presentationsFolder);
-        QTest::qWait(20);
-        QString welcomeId;
-        for (const QVariant& song : docs.songs()) {
-            if (song.toMap().value(QStringLiteral("name")).toString()
-                    == QStringLiteral("Welcome"))
-                welcomeId = song.toMap().value(QStringLiteral("id")).toString();
-        }
-        QQuickItem* welcomeRow = nullptr;
-        QList<QQuickItem*> libraryRows;
-        collectNamed(window->contentItem(), "collectionLibraryRow", libraryRows);
-        for (auto* row : libraryRows) {
-            if (row->property("modelData").toMap().value(QStringLiteral("id")).toString()
-                    == welcomeId)
-                welcomeRow = row;
-        }
-        check(welcomeRow != nullptr, "the library lists Welcome for the bulk menu");
-        rightClickAt(welcomeRow, 30, 14);
-        auto* showMenu = window->findChild<QObject*>("showThemeMenu");
-        check(showMenu && waitFor([&] { return showMenu->property("visible").toBool(); })
-                  && !settledRows("showApplyThemeItem", 3).isEmpty()
-                  && !settledRows("showRemoveAllItem", 1).isEmpty(),
-              "right-clicking the library row opens the show-wide theme menu");
-        QList<QQuickItem*> bulkRows = settledRows("showApplyThemeItem", 3);
-        QQuickItem* bulkLoudRow = nullptr;
-        for (auto* row : bulkRows) {
-            if (row->property("text").toString() == QStringLiteral("Loud"))
-                bulkLoudRow = row;
-        }
-        check(bulkLoudRow != nullptr, "the bulk menu names Loud");
-        clickAt(bulkLoudRow, 40, bulkLoudRow->height() / 2);
-        check(waitFor([&] {
-                  for (const QVariant& slide : docs.slidesOf(welcomeId)) {
-                      if (slide.toMap().value(QStringLiteral("themeId")).toString() != loud)
-                          return false;
-                  }
-                  return true;
-              }),
-              "Apply theme to show puts Loud on EVERY slide of the presentation");
-        docs.undo();
-        check(waitFor([&] {
-                  for (const QVariant& slide : docs.slidesOf(welcomeId)) {
-                      if (!slide.toMap().value(QStringLiteral("themeId")).toString().isEmpty())
-                          return false;
-                  }
-                  return true;
-              }),
-              "one undo removes the WHOLE bulk, not just the last slide");
-        waitFor([&] { return !showMenu->property("visible").toBool(); });
-        rightClickAt(welcomeRow, 30, 14);
-        check(waitFor([&] { return showMenu->property("visible").toBool(); }),
-              "the menu opens for the restore row");
-        QList<QQuickItem*> removeAllRows = settledRows("showRemoveAllItem", 1);
-        clickAt(removeAllRows.value(0), 60, removeAllRows.value(0)->height() / 2);
-        check(waitFor([&] { return docs.status().contains(QStringLiteral("restore")); }),
-              "restoring a show nobody customized is refused on the status line");
-        closeMenu("showThemeMenu");
-        waitFor([&] { return !showMenu->property("visible").toBool(); });
+        // --- the keyboard reaches the same row menu -----------------------
+        openFolder(serviceFolder);
+        QTest::qWait(40);
+        auto* servicePanelItem = window->findChild<QQuickItem*>("currentServicePanel");
+        check(servicePanelItem != nullptr, "the service panel is addressable");
+        if (servicePanelItem)
+            servicePanelItem->forceActiveFocus();
+        playlistList->setProperty("currentIndex", 0);
+        QTest::qWait(40);
+        QTest::keyClick(window, Qt::Key_F10, Qt::ShiftModifier);
+        check(waitFor([&] { return serviceMenu->property("visible").toBool(); }),
+              "Shift+F10 opens the service row menu for the keyboard");
+        closeMenu("serviceItemMenu");
+        waitFor([&] { return !serviceMenu->property("visible").toBool(); });
+        openFolder(songsFolder);
+        QTest::qWait(40);
+        browserPane->forceActiveFocus();
+        songList->setProperty("currentIndex", 0);
+        QTest::qWait(40);
+        QTest::keyClick(window, Qt::Key_Menu);
+        check(waitFor([&] { return songMenu->property("visible").toBool(); }),
+              "the Menu key opens the Library song row menu");
+        closeMenu("librarySongMenu");
+        waitFor([&] { return !songMenu->property("visible").toBool(); });
+
+        // --- an unprepared Library song only remembers --------------------
+        QVariantList rememberStanzas;
+        QVariantMap rememberStanza;
+        rememberStanza.insert(QStringLiteral("label"), QStringLiteral("Verse 1"));
+        rememberStanza.insert(QStringLiteral("lines"),
+                              QStringList{QStringLiteral("Future service line")});
+        rememberStanzas.append(rememberStanza);
+        const QString rememberItem = library.addSong(
+            QStringLiteral("Unprepared Song"), rememberStanzas, QString(), QString(),
+            QString());
+        check(!rememberItem.isEmpty(), "an unprepared Library song exists");
+        openFolder(songsFolder);
+        QTest::qWait(40);
+        check(findSongRow(rememberItem) != nullptr, "the unprepared song has a row");
+        const qsizetype entriesBeforeRemember = docs.playlistEntries().size();
+        rightClickAt(findSongRow(rememberItem), 60, 14);
+        check(waitFor([&] { return songMenu->property("visible").toBool(); }) &&
+                  clickMenuRow("libraryApplyThemeItem"),
+              "the unprepared row offers Apply theme...");
+        check(dialog && waitFor([&] { return dialog->property("visible").toBool(); }),
+              "the unprepared song's dialog opens");
+        check(dialog->property("rememberOnly").toBool(),
+              "an unprepared song only remembers the look");
+        auto* rememberButton = findNamed(window->contentItem(), "applyThemeRememberButton");
+        check(rememberButton && rememberButton->isVisible() &&
+                  applyOnly && !applyOnly->property("enabled").toBool(),
+              "Remember theme replaces the service actions for an unprepared song");
+        if (picker)
+            picker->setProperty("currentIndex", loudIndex);
+        QTest::qWait(40);
+        clickAt(rememberButton, rememberButton->width() / 2,
+                rememberButton->height() / 2);
+        check(waitFor([&] { return !library.itemThemeSnapshot(rememberItem).isEmpty(); }),
+              "Remember theme stores the look in the Library");
+        check(docs.playlistEntries().size() == entriesBeforeRemember,
+              "remembering does not add a hidden presentation or cue");
+        check(waitFor([&] { return !dialog->property("visible").toBool(); }),
+              "the remember dialog closes");
 
         // --- the Edit inspector: customize, badge, restore; never restyle ---
         docs.selectSong(viewed);

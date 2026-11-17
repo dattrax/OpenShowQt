@@ -117,7 +117,7 @@ set(OPENSHOW_WORKSPACE_QML_NAMES
   CameraArtwork.qml
   WorkerFontPicker.qml TextStyleControls.qml TextEffectsControls.qml
   BackgroundControls.qml TransitionControls.qml
-  AppearanceInspector.qml BoxTransform.qml
+  AppearanceInspector.qml BoxTransform.qml ApplyThemeDialog.qml
 )
 set(OPENSHOW_WORKSPACE_QML_FILES)
 foreach(qml IN LISTS OPENSHOW_WORKSPACE_QML_NAMES)

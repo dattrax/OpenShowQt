@@ -2194,11 +2194,11 @@ explicit Go. [Workflow, persistence, source preservation and acceptance](docs/ui
 | PT.4 | DONE | Preserve bounded song/selected-scripture reflow sources with projection provenance | Capture structured source at preparation/Add; save/reopen offline, detect text edits, never overwrite from a changed Library/provider; conservative current-word fallback for legacy/edited text, honest passage labels and preserved notes/sections |
 | PT.5 | DONE | Prepare bounded optional reflow against the chosen item's future appearance | Use captured worker-measured style, source and generation; preserve section/verse policy and eligible common media/audio/leading blank; explain unsupported multi-box/mixed-media cases; cancellation/failure/stale replies leave everything unchanged |
 | PT.6 | DONE | Commit prepared item changes and remembered preferences with honest history/persistence | Prevalidate before durable catalog write, then publish one compound service edit; service undo restores theme/slides/media/IDs once, Library preference uses Library history; fault/refusal/reconnect tests prove no partial UI mutation or surprise Apply-only repagination; do not claim cross-store crash atomicity |
-| PT.7 | TODO | Move apply actions to left-hand item rows and add the keep/reflow dialog | Library/Service rows target explicit identities; show title/occurrence count, Apply only/Apply and reflow/Cancel and eligibility reasons; unprepared Library songs remember without entering the running order; remove central tile theme menu/header apply bypass; keyboard and no-worker paths work |
+| PT.7 | DONE | Move apply actions to left-hand item rows and add the keep/reflow dialog | Library/Service rows target explicit identities; show title/occurrence count, Apply only/Apply and reflow/Cancel and eligibility reasons; unprepared Library songs remember without entering the running order; remove central tile theme menu/header apply bypass; keyboard and no-worker paths work |
 | PT.8 | TODO | Close Library→service→reflow→Go→undo/save journeys and reconcile docs | Whole-item uniformity, current-word conservation, future-service saved looks, legacy scripture, override/media preservation, stale/failure paths and separate undo scopes verified; focused then desktop/headless/source guards pass, with skips/physical gates recorded separately |
 
 Order: PT.1 → PT.2/PT.3/PT.4 → PT.5 → PT.6 → PT.7 → PT.8; split any leaf
-exceeding two engineer-days. PT.1–PT.6 DONE; PT.7–PT.8 TODO. No global live
+exceeding two engineer-days. PT.1–PT.7 DONE; PT.8 TODO. No global live
 theme library, automatic audience presentation, provider cache or arbitrary
 multi-object slide reflow is introduced. Recheck catalog/service allocations before implementing; existing
 scene 8/protocol 0.20 suffice. Prior TL/BX/DR/PV completion remains historical.
@@ -2377,6 +2377,36 @@ and Apply only for an unlinked item with no worker. `reflow_planner_tests` adds
 the real-worker prepare-then-commit-and-undo leg. Worker loss mid-measurement
 uses the planner's existing stateChanged failure path shared with SongPlanner;
 no new reconnect test is claimed.
+
+PT.7 evidence (2026-11-17): `ApplyThemeDialog.qml` is the one whole-item
+workflow, opened from a left-hand row. It captures the target at open (title,
+linked catalog id, occurrence count), offers a theme picker, states that the
+apply replaces text formatting/placement while words/media/notes stay, and
+shows the eligibility sentence. A prepared item offers **Apply only** (the
+safe default), **Apply and reflow** (disabled with the specific reason when
+ineligible, and refused honestly when no measuring worker is connected) and
+**Cancel** (which also retires an in-flight measurement). An unprepared Library
+song offers only **Remember theme**: it stores the look in the Library and adds
+no presentation or cue. A successful apply closes the dialog; a refusal stays
+on it with the operator's sentence.
+
+Library song rows carry **Apply theme…** in their context menu, reachable by
+mouse and by the Menu key / Shift+F10; a presentation row opens the same dialog
+for that show. Service rows carry **Apply theme…** and **Use service default**
+(mouse and Shift+F10): the target is the clicked show, so repeated entries name
+one presentation and the dialog reports every occurrence. **Use service
+default** clears the explicit assignment and a linked song's remembered
+preference, returning the item to inheritance (keep-breaks; a reflow-on-unassign
+variant is not claimed).
+
+Show's per-tile theme menu/follow-theme/customization actions and the header's
+separate show-default picker are removed (asserted absent); per-slide styling
+stays in Edit. `workspace_ui_tests` covers the removed bypasses, the prepared
+Library apply (look + remembered preference + service undo/redo), the no-worker
+reflow refusal leaving slides unchanged, an ineligible item's disabled reflow
+and stated reason with Apply only still available, Use service default
+forgetting the preference, both keyboard menus, and the unprepared song's
+remember-only path with an unchanged running order.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

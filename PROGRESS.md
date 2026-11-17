@@ -11,7 +11,7 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Whole-item themes and reflow (2026-11-17): PT.1–PT.6 are DONE; PT.7–PT.8 are
+**Whole-item themes and reflow (2026-11-17): PT.1–PT.7 are DONE; PT.8 is
 TODO.** The
 [whole-item theme/reflow brief](docs/ui/presentation-theme-reflow-plan.md) moves
 theme application to left-hand song/passage rows and offers keep breaks or
@@ -71,7 +71,15 @@ compound service edit publishes the look and the replacement slides. One
 service undo restores the old theme, slide IDs, words and common media; one
 Library undo forgets the look without touching the service. Refusals and stale
 plans publish neither side, and cross-store crash atomicity is not claimed.
-Next action: PT.7 (left-hand row actions and the keep/reflow dialog).
+PT.7 moved the apply entry point to left-hand song/passage rows and added the
+one keep/reflow dialog: target title, occurrence count, theme, eligibility
+reason, Apply only (default), Apply and reflow (honest no-worker refusal) and
+Cancel, plus Remember theme for an unprepared Library song. Service rows also
+offer Use service default. The cue-tile theme menu and the header's separate
+default-theme picker are gone; per-slide styling stays in Edit. Both the mouse
+and the Menu/Shift+F10 keyboard path reach the row menus.
+Next action: PT.8 (close the Library→service→reflow→Go→undo/save journeys and
+reconcile the docs).
 
 **Edit canvas follow-up (BX.5, 2026-11-16): fixed and verified.** Sustained
 box drags could be stolen by Edit's parent Flickable; the earlier pointer matrix

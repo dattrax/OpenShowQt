@@ -222,6 +222,28 @@ Item {
             selection.selectAll(browser.visibleKeys)
             browser.syncPrimarySelection()
             event.accepted = true
+        } else if (event.key === Qt.Key_Menu ||
+                   (event.key === Qt.Key_F10 &&
+                    (event.modifiers & Qt.ShiftModifier))) {
+            // The keyboard's context menu: open the same row menu the mouse
+            // uses, so Apply theme… is reachable without a pointer.
+            if (browser.selectedFolder === "songs" && songList.count > 0 &&
+                songList.currentIndex >= 0) {
+                const row = songList.itemAtIndex(songList.currentIndex)
+                if (row) {
+                    browser.contextSongId = browser.songRows[songList.currentIndex].id
+                    const at = row.mapToItem(browser, row.width / 2, row.height / 2)
+                    songMenu.popup(at.x, at.y)
+                }
+            } else if (browser.selectedFolder === "presentations" &&
+                       libraryList.count > 0 && libraryList.currentIndex >= 0) {
+                const row = libraryList.itemAtIndex(libraryList.currentIndex)
+                const model = browser.presentationRows[libraryList.currentIndex]
+                if (row && model) {
+                    browser.applyThemeRequested(model.id, model.name || "")
+                }
+            }
+            event.accepted = true
         }
     }
 
@@ -231,9 +253,12 @@ Item {
     // through the presentation id the shell resolves).
     signal presentationChosen(string id)
     signal songChosen(string id)
-    // The host owns the one theme menu; the row supplies the item and the
-    // scene coordinates to open it at.
-    signal themeMenuRequested(string showId, real x, real y)
+    // Task PT.7: the host owns the ONE whole-item apply dialog. The row
+    // supplies an explicit identity — a catalog record or a service show —
+    // never a bare theme id or the editing cursor.
+    signal applyThemeRequested(string showId, string title)
+    signal applyCatalogThemeRequested(string itemId, string title)
+    signal useServiceDefaultRequested(string showId)
 
     function normalized(text) {
         return String(text).toLowerCase()
@@ -308,6 +333,16 @@ Item {
     Menu {
         id: songMenu
         objectName: "librarySongMenu"
+        MenuItem {
+            objectName: "libraryApplyThemeItem"
+            text: "Apply theme\u2026"
+            onTriggered: {
+                const item = library.itemOf(browser.contextSongId)
+                browser.applyCatalogThemeRequested(browser.contextSongId,
+                                                   item.title || "")
+            }
+        }
+        MenuSeparator {}
         MenuItem {
             objectName: "libraryRenameSongItem"
             text: "Rename\u2026"
@@ -809,8 +844,9 @@ Item {
                                 return
                             }
                             if (mouse.button === Qt.RightButton) {
-                                const at = libraryRow.mapToItem(null, mouse.x, mouse.y)
-                                browser.themeMenuRequested(libraryRow.modelData.id, at.x, at.y)
+                                browser.applyThemeRequested(
+                                    libraryRow.modelData.id,
+                                    libraryRow.modelData.name || "")
                             } else {
                                 docs.selectSong(libraryRow.modelData.id)
                                 browser.presentationChosen(libraryRow.modelData.id)
@@ -875,6 +911,10 @@ Item {
                 showHeading: false
                 editingEnabled: browser.editingEnabled
                 onEntryChosen: entryId => browser.serviceEntryChosen(entryId)
+                onApplyThemeRequested: (showId, title) =>
+                    browser.applyThemeRequested(showId, title)
+                onUseServiceDefaultRequested: showId =>
+                    browser.useServiceDefaultRequested(showId)
             }
         }
     }
