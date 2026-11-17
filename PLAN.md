@@ -15,6 +15,8 @@ Text layout and editor consistency: [2026-11-16 brief](docs/ui/text-layout-plan.
 tasks **TL** below.
 Direct box manipulation and geometry cleanup:
 [2026-11-16 brief](docs/ui/box-manipulation-plan.md), tasks **BX** below.
+Whole-item theme application, remembered Library looks and optional reflow:
+[implementation brief](docs/ui/presentation-theme-reflow-plan.md), tasks **PT** below.
 
 ## Goal and reference
 
@@ -2174,6 +2176,32 @@ path produced 24 images at each of scales 1/1.5/2 with no failure. No
 display-labelled test was skipped on this machine. Physical M7/ND/TA gates
 (projector second display, NDI, target-GPU checks) remain open and are not
 claimed here.
+
+### Whole-item themes, remembered Library looks and optional reflow (PT)
+
+Apply themes from left-hand song/passage rows, not individual Show slide tiles.
+Library songs remember a portable snapshot of the chosen look for future services;
+later theme edits elsewhere do not change it. Replace old per-slide text/layout
+overrides while retaining words/media. Offer Apply only (keep breaks), Apply and
+reflow, or Cancel; use worker-measured pagination, and keep audience changes on
+explicit Go. [Workflow, persistence, source preservation and acceptance](docs/ui/presentation-theme-reflow-plan.md).
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| PT.1 | TODO | Share a validated portable theme-snapshot value/codec | Capture complete effective appearance, placement, contexts and movement without service IDs/media; reuse domain validation/limits, preserve Unicode/layout/effects and avoid a second style vocabulary |
+| PT.2 | TODO | Remember Library song snapshots and use them on future service preparation | Catalog 2 over 1; durable preference/history with unchanged canonical words; import/reuse local themes by full definition, not name; A→restart→B with colliding/deleted/edited A theme still uses the saved look; no implicit reflow on preference notification |
+| PT.3 | TODO | Add explicit whole-item theme assignment and scoped override replacement | Service 15 over 14, legacy pixels unchanged; explicit item choice wins over the current service theme, while deliberate later Edit overrides remain possible; appearance/transition agree; Apply only preserves IDs/breaks/words/media/background overrides and updates all occurrences of that show |
+| PT.4 | TODO | Preserve bounded song/selected-scripture reflow sources with projection provenance | Capture structured source at preparation/Add; save/reopen offline, detect text edits, never overwrite from a changed Library/provider; conservative current-word fallback for legacy/edited text, honest passage labels and preserved notes/sections |
+| PT.5 | TODO | Prepare bounded optional reflow against the chosen item's future appearance | Use captured worker-measured style, source and generation; preserve section/verse policy and eligible common media/audio/leading blank; explain unsupported multi-box/mixed-media cases; cancellation/failure/stale replies leave everything unchanged |
+| PT.6 | TODO | Commit prepared item changes and remembered preferences with honest history/persistence | Prevalidate before durable catalog write, then publish one compound service edit; service undo restores theme/slides/media/IDs once, Library preference uses Library history; fault/refusal/reconnect tests prove no partial UI mutation or surprise Apply-only repagination; do not claim cross-store crash atomicity |
+| PT.7 | TODO | Move apply actions to left-hand item rows and add the keep/reflow dialog | Library/Service rows target explicit identities; show title/occurrence count, Apply only/Apply and reflow/Cancel and eligibility reasons; unprepared Library songs remember without entering the running order; remove central tile theme menu/header apply bypass; keyboard and no-worker paths work |
+| PT.8 | TODO | Close Library→service→reflow→Go→undo/save journeys and reconcile docs | Whole-item uniformity, current-word conservation, future-service saved looks, legacy scripture, override/media preservation, stale/failure paths and separate undo scopes verified; focused then desktop/headless/source guards pass, with skips/physical gates recorded separately |
+
+Order: PT.1 → PT.2/PT.3/PT.4 → PT.5 → PT.6 → PT.7 → PT.8; split any leaf
+exceeding two engineer-days. All TODO. No global live theme library, automatic
+audience presentation, provider cache or arbitrary multi-object slide reflow is
+introduced. Recheck catalog/service allocations before implementing; existing
+scene 8/protocol 0.20 suffice. Prior TL/BX/DR/PV completion remains historical.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

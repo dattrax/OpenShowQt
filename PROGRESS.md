@@ -11,6 +11,16 @@ archive is a current instruction.
 
 ## Current checkpoint
 
+**Next planned group: PT.1–PT.8, all TODO.** The
+[whole-item theme/reflow brief](docs/ui/presentation-theme-reflow-plan.md) moves
+theme application to left-hand song/passage rows and offers keep breaks or
+measured reflow. Library songs remember the chosen look by value for future
+services; applying replaces text/layout overrides and preserves words/media.
+The brief covers portable snapshots, explicit item precedence, offline/current-
+word reflow sources, eligibility, stale work and separate Library/service history.
+Next action: PT.1. This update changes planning docs only; no feature or new
+runtime verification is claimed, and completed groups below retain their evidence.
+
 **Edit canvas follow-up (BX.5, 2026-11-16): fixed and verified.** Sustained
 box drags could be stolen by Edit's parent Flickable; the earlier pointer matrix
 used one jump per drag and missed this. The canvas now keeps accepted box grabs,
