@@ -14,6 +14,7 @@
 
 #include <boost/json.hpp>
 
+#include "openshow/domain/reflowsource.h"
 #include "openshow/domain/themesnapshot.h"
 #include "openshow/scene/scene.h"
 
@@ -2889,6 +2890,35 @@ bool DocumentController::addScripturePassage(const QString& playlistId, const QS
                     return false;
                 }
             }
+            // Task PT.4: only the selected verses this Add used, with the
+            // reference/translation/attribution the lookup gave. Never a
+            // chapter cache, never a provider.
+            {
+                openshow::domain::ReflowSource source;
+                source.kind = openshow::domain::ReflowSourceKind::kScripture;
+                source.reference = reference.trimmed().toStdString();
+                source.translation = translation.trimmed().toStdString();
+                source.attribution = attribution.toStdString();
+                for (const SlideSpec& spec : boxes) {
+                    if (spec.lines.empty()) {
+                        continue;  // a wordless cue is not a source block
+                    }
+                    openshow::domain::ReflowSourceBlock block;
+                    block.label = !spec.notes.empty() ? spec.notes
+                                                      : source.reference;
+                    block.lines = spec.lines;
+                    source.blocks.push_back(std::move(block));
+                }
+                source.projectionFingerprint =
+                    openshow::domain::reflowFingerprint(
+                        openshow::domain::showTextProjection(fDocuments, created));
+                if (!fDocuments.setShowReflowSource(created, std::move(source),
+                                                    &error)) {
+                    fDocuments.removeShow(created, nullptr);
+                    created.clear();
+                    return false;
+                }
+            }
             if (fDocuments.addPlaylistEntry(target, created, std::string(), &error).empty()) {
                 fDocuments.removeShow(created, nullptr);
                 created.clear();
@@ -3060,6 +3090,33 @@ QString DocumentController::upsertCatalogSong(
                 return false;
             }
         }
+        // Task PT.4: capture the bounded source this preparation may later
+        // reflow — the stanzas actually used, in their authored order, with
+        // a fingerprint of the words now on the slides. A refresh replaces
+        // the words, so it recaptures rather than keeping a stale source.
+        {
+            openshow::domain::ReflowSource source;
+            source.kind = openshow::domain::ReflowSourceKind::kCatalogSong;
+            source.catalogItemId = itemId;
+            for (const SlideSpec& spec : specs) {
+                // A leading blank cue is a cue, not a block of words: it has
+                // no text for a reflow to read and the projection skips it
+                // too, so the source skips it for the same reason.
+                if (spec.lines.empty()) {
+                    continue;
+                }
+                openshow::domain::ReflowSourceBlock block;
+                block.label = !spec.label.empty() ? spec.label : spec.group;
+                block.lines = spec.lines;
+                source.blocks.push_back(std::move(block));
+            }
+            source.projectionFingerprint =
+                openshow::domain::reflowFingerprint(
+                    openshow::domain::showTextProjection(fDocuments, showId));
+            if (!fDocuments.setShowReflowSource(showId, std::move(source), &error)) {
+                return false;
+            }
+        }
         if (created && haveLibraryLook) {
             const openshow::domain::Id lookTheme =
                 fDocuments.ensureThemeFromSnapshot(libraryLook, &error);
@@ -3223,6 +3280,46 @@ QVariantMap DocumentController::boxStyleForSnapshot(const QString& snapshotJson)
     shadow.insert(QStringLiteral("blurSigma"), snapshot.shadow.blurSigma);
     style.insert(QStringLiteral("shadow"), shadow);
     return style;
+}
+
+QVariantMap DocumentController::reflowSourceInfo(const QString& showId) const {
+    QVariantMap out;
+    const openshow::domain::Show* show =
+        fDocuments.findShow(showId.toStdString());
+    out.insert(QStringLiteral("hasSource"),
+               show != nullptr && show->reflowSource.has_value());
+    if (show == nullptr || !show->reflowSource.has_value()) {
+        return out;
+    }
+    const openshow::domain::ReflowSource& source = *show->reflowSource;
+    const char* kind = "local-song";
+    if (source.kind == openshow::domain::ReflowSourceKind::kCatalogSong) {
+        kind = "catalog-song";
+    } else if (source.kind == openshow::domain::ReflowSourceKind::kScripture) {
+        kind = "scripture";
+    }
+    out.insert(QStringLiteral("kind"), QString::fromLatin1(kind));
+    out.insert(QStringLiteral("blockCount"),
+               static_cast<int>(source.blocks.size()));
+    out.insert(QStringLiteral("reference"),
+               QString::fromStdString(source.reference));
+    out.insert(QStringLiteral("translation"),
+               QString::fromStdString(source.translation));
+    out.insert(QStringLiteral("matches"),
+               openshow::domain::reflowSourceMatches(fDocuments,
+                                                     showId.toStdString(),
+                                                     source));
+    return out;
+}
+
+bool DocumentController::reflowSourceMatches(const QString& showId) const {
+    const openshow::domain::Show* show =
+        fDocuments.findShow(showId.toStdString());
+    if (show == nullptr || !show->reflowSource.has_value()) {
+        return false;
+    }
+    return openshow::domain::reflowSourceMatches(fDocuments, showId.toStdString(),
+                                                 *show->reflowSource);
 }
 
 QString DocumentController::showForCatalogItem(const QString& catalogItemId) const {

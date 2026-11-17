@@ -1,6 +1,7 @@
 add_library(openshow_domain STATIC
   documents.cpp
   history.cpp
+  reflowsource.cpp
   storage.cpp
   themesnapshot.cpp
   version.cpp

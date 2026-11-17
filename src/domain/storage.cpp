@@ -138,6 +138,10 @@ constexpr unsigned long long kServiceFormatTextLayout = 14;
 // every introducer so the earlier style/formats guards keep quoting their
 // own era.
 constexpr unsigned long long kServiceFormatAppliedTheme = 15;
+// Format 15 also carries the bounded reflow source (task PT.4). It shares
+// the version because both keys arrived in this build; a file with neither
+// is the same bytes a format-14 file had.
+constexpr unsigned long long kServiceFormatReflowSource = 15;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -400,6 +404,46 @@ bool safeOpaqueId(const std::string& id) {
         }
     }
     return true;
+}
+
+// Task PT.4: the bounded reflow source's wire shape. Kind is a closed set of
+// words, provenance keys are written only when they speak (a song has no
+// translation), and every block keeps its label and original-case lines.
+boost::json::object reflowSourceJson(const openshow::domain::ReflowSource& source) {
+    boost::json::object out;
+    const char* kind = "local-song";
+    if (source.kind == openshow::domain::ReflowSourceKind::kCatalogSong) {
+        kind = "catalog-song";
+    } else if (source.kind == openshow::domain::ReflowSourceKind::kScripture) {
+        kind = "scripture";
+    }
+    out.emplace("kind", kind);
+    out.emplace("fingerprint", source.projectionFingerprint);
+    if (!source.catalogItemId.empty()) {
+        out.emplace("catalogItemId", source.catalogItemId);
+    }
+    if (!source.reference.empty()) {
+        out.emplace("reference", source.reference);
+    }
+    if (!source.translation.empty()) {
+        out.emplace("translation", source.translation);
+    }
+    if (!source.attribution.empty()) {
+        out.emplace("attribution", source.attribution);
+    }
+    boost::json::array blocks;
+    for (const openshow::domain::ReflowSourceBlock& block : source.blocks) {
+        boost::json::object entry;
+        entry.emplace("label", block.label);
+        boost::json::array lines;
+        for (const std::string& line : block.lines) {
+            lines.emplace_back(line);
+        }
+        entry.emplace("lines", std::move(lines));
+        blocks.push_back(std::move(entry));
+    }
+    out.emplace("blocks", std::move(blocks));
+    return out;
 }
 
 // --- read-side field helpers ------------------------------------------------
@@ -929,6 +973,94 @@ bool wantArray(const boost::json::object& obj, const char* key,
     return true;
 }
 
+// The strict reader. Semantic limits (block/line counts, byte caps, the
+// fingerprint's shape, provenance requirements) are the domain's one
+// sentence, quoted by the caller after this shape check.
+bool wantReflowSource(const boost::json::object& obj, const char* key,
+                      std::optional<openshow::domain::ReflowSource>* out,
+                      std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;  // no source: a legacy or authored item
+    }
+    const std::string owner = "service.json: show 'reflowSource'";
+    if (!value->is_object()) {
+        fail(error, owner + " must be an object");
+        return false;
+    }
+    const boost::json::object& record = value->as_object();
+    for (const auto& entry : record) {
+        const std::string name(entry.key());
+        if (name != "kind" && name != "fingerprint" && name != "catalogItemId" &&
+            name != "reference" && name != "translation" && name != "attribution" &&
+            name != "blocks") {
+            fail(error, owner + " has no field '" + name + "'");
+            return false;
+        }
+    }
+    openshow::domain::ReflowSource source;
+    std::string kind;
+    if (!wantString(record, "kind", &kind, error) ||
+        !wantString(record, "fingerprint", &source.projectionFingerprint, error)) {
+        return false;
+    }
+    if (kind == "catalog-song") {
+        source.kind = openshow::domain::ReflowSourceKind::kCatalogSong;
+    } else if (kind == "local-song") {
+        source.kind = openshow::domain::ReflowSourceKind::kLocalSong;
+    } else if (kind == "scripture") {
+        source.kind = openshow::domain::ReflowSourceKind::kScripture;
+    } else {
+        fail(error, owner + " 'kind' must be \"catalog-song\", \"local-song\" or "
+                        "\"scripture\" (got '" + kind + "')");
+        return false;
+    }
+    if (!wantOptionalString(record, "catalogItemId", &source.catalogItemId, error) ||
+        !wantOptionalString(record, "reference", &source.reference, error) ||
+        !wantOptionalString(record, "translation", &source.translation, error) ||
+        !wantOptionalString(record, "attribution", &source.attribution, error)) {
+        return false;
+    }
+    const boost::json::array* blocks = nullptr;
+    if (!wantArray(record, "blocks", &blocks, error)) {
+        return false;
+    }
+    for (std::size_t index = 0; index < blocks->size(); ++index) {
+        const std::string blockOwner = owner + " block " + std::to_string(index);
+        if (!(*blocks)[index].is_object()) {
+            fail(error, blockOwner + " is not an object");
+            return false;
+        }
+        const boost::json::object& blockJson = (*blocks)[index].as_object();
+        for (const auto& entry : blockJson) {
+            const std::string name(entry.key());
+            if (name != "label" && name != "lines") {
+                fail(error, blockOwner + " has no field '" + name + "'");
+                return false;
+            }
+        }
+        openshow::domain::ReflowSourceBlock block;
+        if (!wantOptionalString(blockJson, "label", &block.label, error)) {
+            return false;
+        }
+        const boost::json::array* lines = nullptr;
+        if (!wantArray(blockJson, "lines", &lines, error)) {
+            return false;
+        }
+        for (const boost::json::value& line : *lines) {
+            if (!line.is_string()) {
+                fail(error, blockOwner + " has a line that is not a string");
+                return false;
+            }
+            block.lines.push_back(std::string(line.as_string()));
+        }
+        source.blocks.push_back(std::move(block));
+    }
+    *out = std::move(source);
+    return true;
+}
+
+
 // True when `candidate` sits at `root` or inside it, compared COMPONENT
 // by component (task 6.13b, review R8): a string prefix is not a
 // directory boundary, and "/tmp/pkg-evil" string-starts-with "/tmp/pkg".
@@ -999,6 +1131,11 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             scriptureJson.emplace("translation", show.scripture->translation);
             scriptureJson.emplace("attribution", show.scripture->attribution);
             entry.emplace("scripture", std::move(scriptureJson));
+        }
+        // Task PT.4: the bounded reflow source, written only when it
+        // speaks. A show that never used it saves byte-for-byte as before.
+        if (show.reflowSource.has_value()) {
+            entry.emplace("reflowSource", reflowSourceJson(*show.reflowSource));
         }
         // Format 10: the shared-catalog song this show was prepared from and
         // the reporting attribution copied at preparation time (SL.6). The
@@ -1542,6 +1679,29 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             if (!wantOptionalString(jsonShow, "appliedThemeId",
                                     &show.appliedThemeId, error)) {
                 return false;
+            }
+        }
+        // Format 15's bounded reflow source. An earlier file carrying the
+        // key is another build meaning something by it and is refused by
+        // name, the placement rule every era-guarded key follows.
+        if (jsonShow.contains("reflowSource")) {
+            if (format < kServiceFormatReflowSource) {
+                fail(error, "service.json: a \"reflowSource\" in a format " +
+                                std::to_string(format) +
+                                " file, where that key does not exist");
+                return false;
+            }
+            if (!wantReflowSource(jsonShow, "reflowSource", &show.reflowSource,
+                                  error)) {
+                return false;
+            }
+            if (show.reflowSource.has_value()) {
+                std::string why;
+                if (!openshow::domain::Documents::validReflowSource(
+                        *show.reflowSource, &why)) {
+                    fail(error, "service.json: show '" + show.id + "' " + why);
+                    return false;
+                }
             }
         }
         // Format 13's show audio layer. An earlier file carrying the key is

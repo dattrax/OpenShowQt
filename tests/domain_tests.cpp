@@ -5397,6 +5397,261 @@ void exerciseWholeItemTheme(const fs::path& tempRoot) {
           "the unrelated presentation is unchanged");
 }
 
+// Task PT.4: the bounded reflow source. The fingerprint is the usability
+// test, the projection is the words this service actually shows, the
+// fallback never consults a provider, and the source round-trips through
+// service 15 without changing any legacy byte.
+void exerciseReflowSource(const fs::path& tempRoot) {
+    using openshow::domain::ReflowSource;
+    using openshow::domain::ReflowSourceBlock;
+    using openshow::domain::ReflowSourceKind;
+    using openshow::domain::reflowFingerprint;
+    using openshow::domain::reflowSourceMatches;
+    using openshow::domain::showTextProjection;
+    using openshow::domain::sourceFromShowProjection;
+
+    std::vector<ReflowSourceBlock> blocks{
+        {"Verse 1", {"Morning light is breaking", "Every shadow gone"}},
+        {"Chorus", {"Sing, sing"}}};
+    const std::string fingerprint = reflowFingerprint(blocks);
+    check(fingerprint.size() == 16 &&
+              std::all_of(fingerprint.begin(), fingerprint.end(), [](char c) {
+                  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+              }),
+          "the fingerprint is 16 lowercase hex digits");
+    check(reflowFingerprint(blocks) == fingerprint,
+          "the fingerprint is deterministic");
+    {
+        std::vector<ReflowSourceBlock> edited = blocks;
+        edited[0].lines[1] = "Every shadow gone!";
+        check(reflowFingerprint(edited) != fingerprint,
+              "an edited word changes the fingerprint");
+        edited = blocks;
+        edited[0].lines[1] = "every shadow gone";
+        check(reflowFingerprint(edited) != fingerprint,
+              "case is preserved and significant");
+        edited = blocks;
+        edited[0].label = "Verse 2";
+        check(reflowFingerprint(edited) != fingerprint,
+              "a section label is part of the projection");
+        edited = blocks;
+        edited[0].lines.push_back("");
+        check(reflowFingerprint(edited) != fingerprint,
+              "an authored blank line is part of the projection");
+        const std::vector<ReflowSourceBlock> reordered{blocks[1], blocks[0]};
+        check(reflowFingerprint(reordered) != fingerprint,
+              "block order is part of the projection");
+    }
+
+    // The projection: one block per slide with primary text, section label
+    // from group (else notes); a wordless cue contributes nothing.
+    Documents docs;
+    std::string error;
+    const Id show = docs.createShow("Source song");
+    const Id first = docs.appendSlide(show);
+    const Id second = docs.appendSlide(show);
+    const Id blank = docs.appendSlide(show);
+    check(docs.setSlideLines(show, first, {"Alpha", "Beta"}) &&
+              docs.setSlideGroup(show, first, "Verse 1") &&
+              docs.setSlideLines(show, second, {"Gamma"}) &&
+              docs.setSlideGroup(show, second, "Chorus") &&
+              docs.setSlideNotes(show, second, "Chorus 1"),
+          "the show carries its words and sections");
+    const auto projection = showTextProjection(docs, show);
+    check(projection.size() == 2 && projection[0].label == "Verse 1" &&
+              projection[0].lines == std::vector<std::string>{"Alpha", "Beta"} &&
+              projection[1].label == "Chorus" &&
+              projection[1].lines == std::vector<std::string>{"Gamma"},
+          "the projection is the words on the slides, with their sections");
+    check(blank.empty() || true, "the wordless cue id is readable");
+
+    ReflowSource source;
+    source.kind = ReflowSourceKind::kCatalogSong;
+    source.catalogItemId = "item7";
+    source.blocks = blocks;
+    source.projectionFingerprint = reflowFingerprint(projection);
+    check(docs.setShowReflowSource(show, source, &error),
+          "the captured source stores on the show");
+    check(reflowSourceMatches(docs, show, source),
+          "a matching fingerprint makes the source usable");
+    check(!reflowSourceMatches(docs, show, ReflowSource{}),
+          "an empty fingerprint is never usable");
+
+    // A text edit invalidates; a style-only edit does not.
+    check(docs.setSlideLines(show, first, {"Alpha changed"}), "the words are edited");
+    check(!reflowSourceMatches(docs, show, source),
+          "a text edit stops the saved source matching");
+    check(docs.setSlideLines(show, first, {"Alpha", "Beta"}),
+          "the original words are restored");
+    check(reflowSourceMatches(docs, show, source),
+          "restoring the words restores the match");
+    openshow::domain::SlideCustomization styleOnly;
+    styleOnly.textColor = "#00ff00";
+    styleOnly.verticalAlign = "top";
+    check(docs.setSlideCustomizations(show, first, styleOnly),
+          "a style-only edit is applied");
+    check(reflowSourceMatches(docs, show, source),
+          "a style-only edit leaves the source usable");
+
+    // Undo restores wording and source together (one model snapshot).
+    {
+        openshow::domain::History history(&docs);
+        check(history.apply([&] {
+                  return docs.setSlideLines(show, second, {"Gamma changed"});
+              }),
+              "history records a text edit");
+        check(!reflowSourceMatches(docs, show, source),
+              "the edit invalidates the source");
+        check(history.undo(&error) && reflowSourceMatches(docs, show, source),
+              "undo restores the words and the matching source");
+        check(history.redo(&error) &&
+                  !reflowSourceMatches(docs, show, source),
+              "redo invalidates it again");
+        check(history.undo(&error), "the redo is undone again");
+    }
+
+    // The conservative fallback reads only what the service shows now.
+    Documents legacy;
+    const Id legacyShow = legacy.createShow("Legacy song");
+    const Id legacyFirst = legacy.appendSlide(legacyShow);
+    const Id legacySecond = legacy.appendSlide(legacyShow);
+    legacy.setSlideLines(legacyShow, legacyFirst, {"Old words"});
+    legacy.setSlideGroup(legacyShow, legacyFirst, "Verse 1");
+    legacy.setSlideLines(legacyShow, legacySecond, {"Old chorus"});
+    legacy.setSlideGroup(legacyShow, legacySecond, "Chorus");
+    const ReflowSource fallback = sourceFromShowProjection(legacy, legacyShow);
+    check(fallback.kind == ReflowSourceKind::kLocalSong && fallback.blocks.size() == 2 &&
+              fallback.blocks[0].label == "Verse 1" &&
+              fallback.blocks[0].lines == std::vector<std::string>{"Old words"} &&
+              reflowSourceMatches(legacy, legacyShow, fallback),
+          "a legacy song falls back to its current words and sections");
+
+    // Scripture: provenance and honest labels, no invented verse ranges.
+    const Id passage = legacy.createScriptureShow(
+        "1 Corinthians 1:1-6",
+        openshow::domain::ScriptureProvenance{"1 Corinthians 1:1-6", "NIV",
+                                             "Scripture quotations taken from NIV"},
+        &error);
+    check(!passage.empty(), "a passage show exists");
+    const Id verse = legacy.appendSlide(passage);
+    legacy.setSlideLines(passage, verse, {"Paul, called to be an apostle"});
+    legacy.setSlideNotes(passage, verse, "1 Corinthians 1:1");
+    const Id unlabelled = legacy.appendSlide(passage);
+    legacy.setSlideLines(passage, unlabelled, {"...grace and peace to you."});
+    const ReflowSource scripture = sourceFromShowProjection(legacy, passage);
+    check(scripture.kind == ReflowSourceKind::kScripture &&
+              scripture.reference == "1 Corinthians 1:1-6" &&
+              scripture.translation == "NIV" &&
+              scripture.attribution == "Scripture quotations taken from NIV",
+          "the scripture fallback carries the passage provenance");
+    check(scripture.blocks.size() == 2 &&
+              scripture.blocks[0].label == "1 Corinthians 1:1" &&
+              scripture.blocks[1].label == "1 Corinthians 1:1-6",
+          "structured labels survive and an unlabelled block names the passage");
+    check(reflowSourceMatches(legacy, passage, scripture),
+          "the scripture fallback matches its own projection");
+
+    // --- refusals name the rule and leave the show alone ---
+    const auto refusesSource = [&](ReflowSource bad, const char* needle,
+                                   const char* what) {
+        std::string why;
+        check(!Documents::validReflowSource(bad, &why) &&
+                  why.find(needle) != std::string::npos,
+              what);
+    };
+    {
+        ReflowSource bad = source;
+        bad.blocks.clear();
+        refusesSource(bad, "no blocks", "a source without blocks is refused");
+        bad = source;
+        bad.catalogItemId.clear();
+        refusesSource(bad, "item id", "a catalog source needs its item id");
+        bad = source;
+        bad.kind = ReflowSourceKind::kScripture;
+        bad.reference.clear();
+        refusesSource(bad, "reference", "a scripture source needs its reference");
+        bad = source;
+        bad.projectionFingerprint = "ABC";
+        refusesSource(bad, "fingerprint", "a malformed fingerprint is refused");
+        bad = source;
+        bad.blocks[0].lines.clear();
+        refusesSource(bad, "no lines", "a block without lines is refused");
+        bad = source;
+        bad.blocks[0].lines[0] = std::string(4097, 'x');
+        refusesSource(bad, "over 4000 bytes", "an over-long line is refused");
+        bad = source;
+        bad.blocks.assign(201, ReflowSourceBlock{"Verse", {"line"}});
+        refusesSource(bad, "more than 200 blocks", "the block budget is enforced");
+        bad = source;
+        bad.blocks.assign(1, ReflowSourceBlock{std::string(513, 'x'), {"line"}});
+        refusesSource(bad, "over-long label", "the label budget is enforced");
+    }
+    {
+        ReflowSource keeper = source;
+        std::string why;
+        ReflowSource bad = source;
+        bad.blocks.clear();
+        check(!docs.setShowReflowSource(show, bad, &why),
+              "the verb refuses an invalid source");
+        const openshow::domain::Show* still = docs.findShow(show);
+        check(still != nullptr && still->reflowSource.has_value() &&
+                  *still->reflowSource == keeper,
+              "the refusal left the stored source in place");
+        check(!docs.setShowReflowSource("show-does-not-exist", source, &why),
+              "an unknown show cannot store a source");
+        check(docs.setShowReflowSource(show, std::nullopt, &why) &&
+                  !docs.findShow(show)->reflowSource.has_value(),
+              "null clears the source");
+        docs.setShowReflowSource(show, source, &why);
+    }
+
+    // --- service 15 carries it, and earlier formats refuse the key ---
+    const fs::path dir = tempRoot / "reflow-source";
+    check(openshow::domain::saveService(docs, dir, &error),
+          "a service with a source saves");
+    Documents reloaded;
+    check(openshow::domain::loadService(&reloaded, dir, &error),
+          "the service reloads");
+    const openshow::domain::Show* back = reloaded.findShow(show);
+    check(back != nullptr && back->reflowSource.has_value() &&
+              *back->reflowSource == source,
+          "the bounded source round-trips through disk");
+    check(reflowSourceMatches(reloaded, show, *reloaded.findShow(show)->reflowSource),
+          "the reloaded source still matches the reloaded words");
+    const std::string manifest = readFile(dir / "service.json");
+    check(manifest.find("\"reflowSource\"") != std::string::npos &&
+              manifest.find("\"fingerprint\"") != std::string::npos,
+          "the manifest writes the source by name");
+    {
+        std::string legacyManifest = manifest;
+        check(replaceOnce(legacyManifest, "\"format\":15", "\"format\":14"),
+              "the manifest can be rewritten as format 14");
+        const fs::path legacyDir = tempRoot / "reflow-source-legacy";
+        std::filesystem::create_directories(legacyDir);
+        check(writeFile(legacyDir / "service.json", legacyManifest),
+              "the format-14 manifest is written");
+        Documents refused;
+        error.clear();
+        check(!openshow::domain::loadService(&refused, legacyDir, &error) &&
+                  error.find("reflowSource") != std::string::npos,
+              "a format-14 file naming reflowSource is refused by name");
+    }
+    {
+        std::string broken = manifest;
+        check(replaceOnce(broken, "\"fingerprint\":\"", "\"fingerprint\":\"x"),
+              "the fingerprint can be made malformed");
+        const fs::path brokenDir = tempRoot / "reflow-source-broken";
+        std::filesystem::create_directories(brokenDir);
+        check(writeFile(brokenDir / "service.json", broken),
+              "the malformed manifest is written");
+        Documents refused;
+        error.clear();
+        check(!openshow::domain::loadService(&refused, brokenDir, &error) &&
+                  error.find("fingerprint") != std::string::npos,
+              "a malformed stored source refuses naming its rule");
+    }
+}
+
 int main() {
     const std::string_view version = openshow::domain::applicationVersion();
     bool ok = check(!version.empty(), "applicationVersion is not empty");
@@ -5431,6 +5686,7 @@ int main() {
     exerciseBoxStorage(tempRoot);
     exerciseTextStyleStorage(tempRoot);
     exerciseWholeItemTheme(tempRoot);
+    exerciseReflowSource(tempRoot);
     exerciseTransitionStorage(tempRoot);
     exerciseForegroundThemeStorage(tempRoot);
     exerciseDefaultThemeFloor(tempRoot);

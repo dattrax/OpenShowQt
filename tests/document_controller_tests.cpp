@@ -4868,6 +4868,114 @@ void exerciseRememberedLookAcrossServices(const std::filesystem::path& root) {
     }
 }
 
+// Task PT.4: the adapter captures a bounded source at preparation/Add,
+// reports whether it still describes the words, and recaptures on an
+// explicit lyric refresh. Nothing is fetched at check time.
+void exerciseReflowSourceSurfaces(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    QVariantList plan;
+    plan.append(QVariantMap{{QStringLiteral("lines"),
+                             QStringList{QStringLiteral("Morning light"),
+                                         QStringLiteral("Every shadow gone")}},
+                            {QStringLiteral("group"), QStringLiteral("Verse 1")},
+                            {QStringLiteral("label"), QStringLiteral("Verse 1")}});
+    plan.append(QVariantMap{{QStringLiteral("lines"),
+                             QStringList{QStringLiteral("Sing, sing")}},
+                            {QStringLiteral("group"), QStringLiteral("Chorus")},
+                            {QStringLiteral("label"), QStringLiteral("Chorus")}});
+    const QString show = docs.upsertCatalogSong(
+        QStringLiteral("reflow-song"), QStringLiteral("Source song"), QString(),
+        QString(), QString(), plan, false);
+    check(!show.isEmpty(), "a song is prepared to carry a source");
+    QVariantMap info = docs.reflowSourceInfo(show);
+    check(info.value(QStringLiteral("hasSource")).toBool() &&
+              info.value(QStringLiteral("kind")).toString() ==
+                  QStringLiteral("catalog-song") &&
+              info.value(QStringLiteral("blockCount")).toInt() == 2 &&
+              info.value(QStringLiteral("matches")).toBool(),
+          "the prepared song captures two matching source blocks");
+    check(docs.reflowSourceMatches(show), "the accessor agrees with the row");
+
+    // A text edit invalidates; a style-only edit does not.
+    docs.setSlideText(QStringLiteral("Changed words"));
+    docs.flushText();
+    check(!docs.reflowSourceMatches(show),
+          "editing the words stops the captured source matching");
+    check(docs.customizeCurrentSlide(QStringLiteral("textColor"),
+                                     QStringLiteral("#00ff00")) &&
+              docs.upsertCatalogSong(QStringLiteral("reflow-song"),
+                                     QStringLiteral("Source song"), QString(), QString(),
+                                     QString(), plan, false) == show &&
+              docs.reflowSourceMatches(show),
+          "an explicit refresh recaptures the source for the new words");
+    check(docs.reflowSourceInfo(show).value(QStringLiteral("blockCount")).toInt() == 2,
+          "the refreshed source keeps the authored blocks");
+    check(docs.customizeCurrentSlide(QStringLiteral("fontSize"), 31.0) &&
+              docs.reflowSourceMatches(show),
+          "a style-only edit leaves the captured source usable");
+
+    // Scripture Add captures only the passage that Add used.
+    check(docs.createPlaylist(QStringLiteral("Today")), "a schedule exists");
+    QString playlist;
+    for (const QVariant& row : docs.playlists()) {
+        if (row.toMap().value(QStringLiteral("name")).toString() ==
+            QStringLiteral("Today")) {
+            playlist = row.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    check(!playlist.isEmpty(), "the schedule id is readable");
+    QVariantList verses;
+    verses.append(QVariantMap{
+        {QStringLiteral("lines"), QStringList{QStringLiteral("Paul, called to be an apostle")}},
+        {QStringLiteral("notes"), QStringLiteral("1 Corinthians 1:1")}});
+    verses.append(QVariantMap{
+        {QStringLiteral("lines"), QStringList{QStringLiteral("Grace and peace to you")}},
+        {QStringLiteral("notes"), QStringLiteral("1 Corinthians 1:3")}});
+    check(docs.addScripturePassage(playlist, QStringLiteral("1 Corinthians 1:1-6"),
+                                   QStringLiteral("NIV"),
+                                   QStringLiteral("Scripture quotations taken from NIV"),
+                                   verses),
+          "the selected verses are added");
+    QString passage;
+    for (const QVariant& entry : docs.playlistEntries()) {
+        if (entry.toMap().value(QStringLiteral("showId")).toString() != show &&
+            !entry.toMap().value(QStringLiteral("showId")).toString().isEmpty()) {
+            passage = entry.toMap().value(QStringLiteral("showId")).toString();
+        }
+    }
+    check(!passage.isEmpty(), "the passage show is on the schedule");
+    info = docs.reflowSourceInfo(passage);
+    check(info.value(QStringLiteral("hasSource")).toBool() &&
+              info.value(QStringLiteral("kind")).toString() ==
+                  QStringLiteral("scripture") &&
+              info.value(QStringLiteral("reference")).toString() ==
+                  QStringLiteral("1 Corinthians 1:1-6") &&
+              info.value(QStringLiteral("translation")).toString() ==
+                  QStringLiteral("NIV") &&
+              info.value(QStringLiteral("blockCount")).toInt() == 2 &&
+              info.value(QStringLiteral("matches")).toBool(),
+          "the passage captures only the selected verses and its provenance");
+    check(!docs.reflowSourceInfo(QStringLiteral("show-does-not-exist"))
+               .value(QStringLiteral("hasSource"))
+               .toBool(),
+          "a show without a source says so");
+    check(!docs.reflowSourceMatches(QStringLiteral("show-does-not-exist")),
+          "an unknown show has no usable source");
+
+    // Save/reopen keeps the source and its agreement with the words.
+    check(docs.save(), "the service saves");
+    DocumentController reopened(nullptr, root);
+    check(reopened.load(), "the service reloads");
+    check(reopened.reflowSourceMatches(show) &&
+              reopened.reflowSourceInfo(show).value(QStringLiteral("kind")).toString() ==
+                  QStringLiteral("catalog-song") &&
+              reopened.reflowSourceMatches(passage) &&
+              reopened.reflowSourceInfo(passage)
+                      .value(QStringLiteral("reference"))
+                      .toString() == QStringLiteral("1 Corinthians 1:1-6"),
+          "both captured sources survive save and reopen");
+}
+
 int main(int argc, char* argv[]) {
     const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() /
                                            ("openshow-docctrl-" + std::to_string(getpid()));
@@ -4900,6 +5008,7 @@ int main(int argc, char* argv[]) {
     exerciseThemeSampleViews(tempRoot / "sampleviews");
     exerciseWholeItemThemeSurfaces(tempRoot / "wholeitem");
     exerciseRememberedLookAcrossServices(tempRoot / "remembered");
+    exerciseReflowSourceSurfaces(tempRoot / "reflowsource");
     exerciseScripturePassage(tempRoot / "scripturepassage");
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");

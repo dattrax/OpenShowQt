@@ -34,6 +34,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <optional>
+
+#include "openshow/domain/reflowsource.h"
 #include <string>
 #include <vector>
 
@@ -669,6 +671,11 @@ struct Show {
     // the catalog is gone. Kept beside the link rather than inside it for
     // that reason — losing the catalog must not lose the attribution.
     std::optional<SongProvenance> song;
+    // Task PT.4: the bounded source a reflow may read, captured at
+    // preparation/Add and fingerprinted against this show's current words.
+    // Absent for authored decks and for services written before it existed;
+    // the conservative current-word source covers those.
+    std::optional<ReflowSource> reflowSource;
     // Task PT.3: the whole-item theme an explicit operator application put
     // on this presentation. When set, the theme chain is slide theme →
     // applied item theme → Default; the service current theme is excluded,
@@ -1002,6 +1009,15 @@ public:
     bool setShowSongReference(const Id& showId, const Id& catalogItemId,
                               const std::optional<SongProvenance>& song,
                               std::string* error = nullptr);
+    // Task PT.4: store (or clear, with nullopt) the bounded reflow source.
+    // An ordinary document edit: undo/redo and save/reopen carry it, and a
+    // text edit does not silently delete it — the fingerprint is what says
+    // whether it still describes the slides.
+    bool setShowReflowSource(const Id& showId, std::optional<ReflowSource> source,
+                             std::string* error = nullptr);
+    // Task PT.4: the one semantic sentence for a stored source, shared by
+    // the verb, the loader and the adapter, so the three cannot drift.
+    static bool validReflowSource(const ReflowSource& source, std::string* error);
     // The show prepared from a catalog item, or nullptr when none is linked
     // in this service (a component that asks "is this song already here?"
     // must never guess from a title).

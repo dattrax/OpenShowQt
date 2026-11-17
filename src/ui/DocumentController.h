@@ -487,6 +487,12 @@ public:
     // `songBoxStyle` returns), so a future-service Add measures the look it
     // will wear without first putting a throwaway theme in the service.
     Q_INVOKABLE QVariantMap boxStyleForSnapshot(const QString& snapshotJson) const;
+    // Task PT.4: the bounded reflow source, read for display and for the
+    // eligibility checks that follow. `matches` says whether the saved
+    // fingerprint still describes the words on the slides; a style-only
+    // edit leaves it true, any text/order/section edit makes it false.
+    Q_INVOKABLE QVariantMap reflowSourceInfo(const QString& showId) const;
+    Q_INVOKABLE bool reflowSourceMatches(const QString& showId) const;
     // The service show prepared from a catalog item, "" when none is linked.
     Q_INVOKABLE QString showForCatalogItem(const QString& catalogItemId) const;
     // Propagates a catalog rename to the linked show without re-laying the

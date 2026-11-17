@@ -11,7 +11,7 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Whole-item themes and reflow (2026-11-17): PT.1–PT.3 are DONE; PT.4–PT.8 are
+**Whole-item themes and reflow (2026-11-17): PT.1–PT.4 are DONE; PT.5–PT.8 are
 TODO.** The
 [whole-item theme/reflow brief](docs/ui/presentation-theme-reflow-plan.md) moves
 theme application to left-hand song/passage rows and offers keep breaks or
@@ -48,7 +48,15 @@ and media stay; a later per-slide Edit choice still wins. "Use service default"
 returns just that item to the legacy chain. Both verbs are one history entry,
 appearance and transition share the branch, and format-14 files naming the new
 key (or files applying an unknown theme) refuse by name.
-Next action: PT.4 (bounded reflow sources and projection provenance).
+PT.4 added the bounded reflow source. A show stores its source kind, ordered
+section/verse blocks with original-case lines, scripture provenance and a
+fingerprint of the text projection the slides currently show. Any word, break,
+order or section edit invalidates the match; style-only edits do not; undo/redo
+and save/reopen carry both. Song preparation/refresh and scripture Add capture
+their own source, and a conservative current-word fallback covers legacy or
+edited items without consulting the Library or a provider (unlabelled scripture
+blocks name the whole passage rather than guessing verses).
+Next action: PT.5 (bounded optional reflow against the future appearance).
 
 **Edit canvas follow-up (BX.5, 2026-11-16): fixed and verified.** Sustained
 box drags could be stolen by Edit's parent Flickable; the earlier pointer matrix

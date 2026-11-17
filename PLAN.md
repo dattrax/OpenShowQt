@@ -2191,14 +2191,14 @@ explicit Go. [Workflow, persistence, source preservation and acceptance](docs/ui
 | PT.1 | DONE | Share a validated portable theme-snapshot value/codec | Capture complete effective appearance, placement, contexts and movement without service IDs/media; reuse domain validation/limits, preserve Unicode/layout/effects and avoid a second style vocabulary |
 | PT.2 | DONE | Remember Library song snapshots and use them on future service preparation | Catalog 2 over 1; durable preference/history with unchanged canonical words; import/reuse local themes by full definition, not name; A→restart→B with colliding/deleted/edited A theme still uses the saved look; no implicit reflow on preference notification |
 | PT.3 | DONE | Add explicit whole-item theme assignment and scoped override replacement | Service 15 over 14, legacy pixels unchanged; explicit item choice wins over the current service theme, while deliberate later Edit overrides remain possible; appearance/transition agree; Apply only preserves IDs/breaks/words/media/background overrides and updates all occurrences of that show |
-| PT.4 | TODO | Preserve bounded song/selected-scripture reflow sources with projection provenance | Capture structured source at preparation/Add; save/reopen offline, detect text edits, never overwrite from a changed Library/provider; conservative current-word fallback for legacy/edited text, honest passage labels and preserved notes/sections |
+| PT.4 | DONE | Preserve bounded song/selected-scripture reflow sources with projection provenance | Capture structured source at preparation/Add; save/reopen offline, detect text edits, never overwrite from a changed Library/provider; conservative current-word fallback for legacy/edited text, honest passage labels and preserved notes/sections |
 | PT.5 | TODO | Prepare bounded optional reflow against the chosen item's future appearance | Use captured worker-measured style, source and generation; preserve section/verse policy and eligible common media/audio/leading blank; explain unsupported multi-box/mixed-media cases; cancellation/failure/stale replies leave everything unchanged |
 | PT.6 | TODO | Commit prepared item changes and remembered preferences with honest history/persistence | Prevalidate before durable catalog write, then publish one compound service edit; service undo restores theme/slides/media/IDs once, Library preference uses Library history; fault/refusal/reconnect tests prove no partial UI mutation or surprise Apply-only repagination; do not claim cross-store crash atomicity |
 | PT.7 | TODO | Move apply actions to left-hand item rows and add the keep/reflow dialog | Library/Service rows target explicit identities; show title/occurrence count, Apply only/Apply and reflow/Cancel and eligibility reasons; unprepared Library songs remember without entering the running order; remove central tile theme menu/header apply bypass; keyboard and no-worker paths work |
 | PT.8 | TODO | Close Library→service→reflow→Go→undo/save journeys and reconcile docs | Whole-item uniformity, current-word conservation, future-service saved looks, legacy scripture, override/media preservation, stale/failure paths and separate undo scopes verified; focused then desktop/headless/source guards pass, with skips/physical gates recorded separately |
 
 Order: PT.1 → PT.2/PT.3/PT.4 → PT.5 → PT.6 → PT.7 → PT.8; split any leaf
-exceeding two engineer-days. PT.1–PT.3 DONE; PT.4–PT.8 TODO. No global live
+exceeding two engineer-days. PT.1–PT.4 DONE; PT.5–PT.8 TODO. No global live
 theme library, automatic audience presentation, provider cache or arbitrary
 multi-object slide reflow is introduced. Recheck catalog/service allocations before implementing; existing
 scene 8/protocol 0.20 suffice. Prior TL/BX/DR/PV completion remains historical.
@@ -2275,6 +2275,39 @@ customization still winning, both occurrences of a twice-scheduled show, save/
 reopen format 15, and both refusals; `document_controller_tests` covers the
 adapter verbs, one-step undo/redo, inheritance after clearing, snapshot
 capture/measurement/apply-by-value and the creation-versus-refresh rule.
+
+PT.4 evidence (2026-11-17): `Show.reflowSource` is the bounded, ordered
+source a reflow may read (`reflowsource.h`): a closed kind (catalog song,
+local song, scripture), ordered blocks with section/verse labels and
+original-case lines, scripture reference/translation/attribution, and the
+catalog id for provenance only. Budgets (`kMaxReflowSourceBlocks` 200, 2000
+lines, 4000-byte lines, 512-char labels) are enforced by
+`Documents::validReflowSource`, the one sentence the verb, codec and loader
+share; every refusal names its rule and leaves the show unchanged.
+`reflowFingerprint` is a fixed, length-prefixed FNV-1a hash over labels and
+lines (16 lowercase hex digits, version-tagged), so an edit to any word,
+line break, line count, block order or section label changes it while a
+style-only edit cannot; `showTextProjection` is the ordered primary-text
+projection of the slides (one block per text-bearing slide, section label
+from `group` else `notes`, wordless cues contributing none) and
+`reflowSourceMatches` is the only usability test. Undo/redo carry wording
+and source together because History snapshots the model; save/reopen carries
+both in service 15's optional `reflowSource`, and a format-14 file naming the
+key (or a malformed/unknown-kind source) is refused by name.
+`sourceFromShowProjection` is the conservative fallback: current words,
+existing section order and authored breaks, never the Library or a provider;
+for scripture it keeps structured verse labels where the Add had them and
+otherwise labels blocks with the whole known passage reference rather than an
+invented verse range. `DocumentController::upsertCatalogSong` captures the
+stanzas actually used on create AND refresh (with the fingerprinted
+projection), `addScripturePassage` captures only the selected verses plus its
+provenance, and `reflowSourceInfo`/`reflowSourceMatches` expose the state to
+the coming UI. `domain_tests` covers determinism, case/order/label/blank-line
+sensitivity, projection extraction, match/invalidate/restore, undo/redo,
+legacy and scripture fallbacks, every budget refusal and the storage
+round-trip plus both refusals; `document_controller_tests` covers capture at
+Add, invalidation by text, recapture by refresh, style-only stability,
+scripture provenance, unknown shows and save/reopen.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

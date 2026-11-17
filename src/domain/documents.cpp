@@ -1461,6 +1461,92 @@ const TextContext* Documents::contextInChain(const std::vector<const Theme*>& ch
 // by the loader's era-gated read, and by the worker's parse of the optional
 // scene.present duration fields — so "10001" costs the same words at every
 // door and no door can accept what another would refuse.
+bool Documents::validReflowSource(const ReflowSource& source, std::string* error) {
+    // One sentence for the bounded source: the same budgets the codec, the
+    // loader and the capture paths quote.
+    const auto failSource = [error](const std::string& why) {
+        fail(error, "reflow source: " + why);
+        return false;
+    };
+    if (source.kind != ReflowSourceKind::kCatalogSong &&
+        source.kind != ReflowSourceKind::kLocalSong &&
+        source.kind != ReflowSourceKind::kScripture) {
+        return failSource("its kind is not one this build knows");
+    }
+    if (source.blocks.empty()) {
+        return failSource("it carries no blocks");
+    }
+    if (source.blocks.size() > kMaxReflowSourceBlocks) {
+        return failSource("it carries more than " +
+                          std::to_string(kMaxReflowSourceBlocks) + " blocks");
+    }
+    if (source.reference.size() > kMaxReflowSourceReferenceChars) {
+        return failSource("its reference is over " +
+                          std::to_string(kMaxReflowSourceReferenceChars) +
+                          " characters");
+    }
+    std::size_t lines = 0;
+    for (std::size_t i = 0; i < source.blocks.size(); ++i) {
+        const ReflowSourceBlock& block = source.blocks[i];
+        if (block.label.size() > kMaxReflowSourceLabelChars) {
+            return failSource("block " + std::to_string(i) +
+                              " has an over-long label");
+        }
+        if (block.lines.empty()) {
+            return failSource("block " + std::to_string(i) + " has no lines");
+        }
+        lines += block.lines.size();
+        for (const std::string& line : block.lines) {
+            if (line.size() > kMaxReflowSourceLineBytes) {
+                return failSource("block " + std::to_string(i) +
+                                  " has a line over " +
+                                  std::to_string(kMaxReflowSourceLineBytes) +
+                                  " bytes");
+            }
+        }
+    }
+    if (lines > kMaxReflowSourceLines) {
+        return failSource("it carries more than " +
+                          std::to_string(kMaxReflowSourceLines) + " lines");
+    }
+    if (source.kind == ReflowSourceKind::kCatalogSong &&
+        source.catalogItemId.empty()) {
+        return failSource("a catalog song source needs its item id");
+    }
+    if (source.kind == ReflowSourceKind::kScripture) {
+        if (source.reference.empty() || source.translation.empty()) {
+            return failSource("a scripture source needs its reference and "
+                              "translation");
+        }
+    }
+    const std::string& fingerprint = source.projectionFingerprint;
+    const bool fingerprintOk =
+        fingerprint.size() == 16 &&
+        std::all_of(fingerprint.begin(), fingerprint.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        });
+    if (!fingerprintOk) {
+        return failSource("its projection fingerprint is not 16 lowercase hex "
+                          "digits");
+    }
+    return true;
+}
+
+bool Documents::setShowReflowSource(const Id& showId,
+                                    std::optional<ReflowSource> source,
+                                    std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    if (source.has_value() && !validReflowSource(*source, error)) {
+        return false;
+    }
+    show->reflowSource = std::move(source);
+    return true;
+}
+
 bool Documents::validThemeSnapshot(const ThemeSnapshot& snapshot, std::string* error) {
     // One sentence for the portable look: the same fields a Theme answers
     // for, with the same limits, plus the catalog-side budgets this value
