@@ -54,6 +54,7 @@ struct MeasureRequest {
     std::vector<std::string> lines;
     double fontSize = 0.0;
     double width = 0.0;
+    double boxHeight = 0.0;  // 0 only for legacy callers asking about width alone
     double lineSpacing = 1.25;
     std::string fontFamily;
     // Task TS.3: the resolved style block — the same scene fields the
@@ -73,15 +74,12 @@ struct MeasureRequest {
 
 struct MeasureReply {
     std::string key;
-    double height = 0.0;
+    double height = 0.0;  // occupied height, including glyph/effect insets
     int lineCount = 0;
-    // Task TS.3: the worker's verdict on whether the block's FILL — the
-    // laid-out lines themselves, effects not folded in — stays inside the
-    // measured width (and height, if the ask carried one). Effects belong
-    // to the reply's bounds at the RPC seam, not to this verdict: a
-    // shadow's spill is the theme author's choice and no repagination
-    // shortens it, so folding it in would refuse every page of a shadowed
-    // theme. Absent (a pre-16 worker) means unknown, never "yes": the
+    // Whether the complete styled text stays inside the measured box.
+    // The worker reserves glyph overhang, outline and shadow space before
+    // wrapping, using the same content rectangle as rendering.
+    // Absent (a pre-16 worker) means unknown, never "yes": the
     // packer then judges with the height criterion alone, exactly as it
     // did before the verdict existed — the honest floor, not a claim.
     std::optional<bool> fits;

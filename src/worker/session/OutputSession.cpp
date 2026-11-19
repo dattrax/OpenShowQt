@@ -704,6 +704,7 @@ bool OutputSession::measureText(const MeasureBlock& block, float* heightOut,
     item.fontFamily = block.fontFamily;
     item.fontSize = block.fontSize;
     item.width = block.width;
+    item.height = block.boxHeight;
     item.lineSpacing = block.lineSpacing;
     item.fontWeight = block.fontWeight;
     item.fontStyle = block.fontStyle;
@@ -714,14 +715,19 @@ bool OutputSession::measureText(const MeasureBlock& block, float* heightOut,
     item.stroke = block.stroke;
     item.shadow = block.shadow;
     const SceneTextEngine::LaidOutItem laid =
-        fScene->textEngine().layout(item, 1.0f, static_cast<float>(block.width), error);
+        fScene->textEngine().layoutInBox(item, 1.0f, error);
+    const SceneTextEngine::TextPadding& padding = laid.padding;
     if (!laid.hasText && !block.lines.empty()) {
         return false;  // the display transform refused; `error` names why
     }
-    *heightOut = laid.height;
+    *heightOut = laid.hasText ? laid.height + padding.top + padding.bottom : 0.0f;
     *lineCountOut = laid.lineCount;
     if (inkOut != nullptr) {
         *inkOut = laid.ink;
+        if (!laid.ink.empty) {
+            inkOut->left += padding.left;
+            inkOut->right += padding.left;
+        }
         // Task TL.3: when the ask NAMED an anchor and supplied a box
         // height, the bounds are POSITIONED inside that box — an anchored
         // paragraph is no longer always centred, so a consumer adding its
@@ -729,27 +735,27 @@ bool OutputSession::measureText(const MeasureBlock& block, float* heightOut,
         // line count never move; only where the words sit. A v2-shaped ask
         // (no anchor) keeps the pre-TL.3 numbers exactly.
         if (block.verticalAlignSet && block.boxHeight > 0.0 && !laid.ink.empty) {
-            const float delta = SceneTextEngine::verticalOffset(
-                laid.verticalAlign, static_cast<float>(block.boxHeight), laid.height);
+            const float delta = padding.top + SceneTextEngine::verticalOffset(
+                laid.verticalAlign,
+                static_cast<float>(block.boxHeight) - padding.top - padding.bottom, laid.height);
             inkOut->top += delta;
             inkOut->bottom += delta;
         }
     }
     if (fitsOut != nullptr) {
-        // The FILL verdict: do the laid-out lines themselves stay inside
-        // the box. An enabled effect's spill is deliberately not folded
-        // in — it comes back in the bounds, and no repagination can fix
-        // it, so folding it in here would refuse every page of a theme
-        // that so much as shadows its text. This is the question a
-        // packer can act on, and it is the one this verdict answers.
+        // Judge the same padded, positioned ink that layoutScene paints.
+        // Reserving effects before wrapping lets repagination move words
+        // without clipping their outline/shadow or changing their size.
         bool fits = true;
-        if (laid.hasText && !laid.fillInk.empty) {
+        if (laid.hasText && !laid.ink.empty) {
             constexpr float kEps = 0.75f;
-            fits = laid.fillInk.left >= -kEps &&
-                   laid.fillInk.right <= static_cast<float>(block.width) + kEps &&
-                   (block.boxHeight <= 0.0 || laid.fillInk.bottom - laid.fillInk.top <=
-                                                 static_cast<float>(block.boxHeight) +
-                                                     2.0f * kEps);
+            const float height = block.boxHeight > 0.0
+                                     ? static_cast<float>(block.boxHeight) : *heightOut;
+            const float top = padding.top + SceneTextEngine::verticalOffset(
+                laid.verticalAlign, height - padding.top - padding.bottom, laid.height);
+            fits = padding.left + laid.ink.left >= -kEps &&
+                   padding.left + laid.ink.right <= static_cast<float>(block.width) + kEps &&
+                   top + laid.ink.top >= -kEps && top + laid.ink.bottom <= height + kEps;
         }
         *fitsOut = fits;
     }

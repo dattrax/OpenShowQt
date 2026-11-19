@@ -249,6 +249,7 @@ bool SongPlanner::measure(
         block.insert(QStringLiteral("lines"), lines);
         block.insert(QStringLiteral("fontSize"), request.fontSize);
         block.insert(QStringLiteral("width"), request.width);
+        block.insert(QStringLiteral("height"), request.boxHeight);
         block.insert(QStringLiteral("lineSpacing"), request.lineSpacing);
         if (!request.fontFamily.empty()) {
             block.insert(QStringLiteral("fontFamily"),

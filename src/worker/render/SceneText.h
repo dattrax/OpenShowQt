@@ -156,6 +156,17 @@ public:
         float bottom = 0.0f;
     };
 
+    struct TextPadding {
+        float left = 0.0f;
+        float top = 0.0f;
+        float right = 0.0f;
+        float bottom = 0.0f;
+    };
+
+    // Effects occupy space inside the authored text box. Measurement and
+    // painting use the same inset, so wrapping cannot approve spilling ink.
+    static TextPadding textPadding(const openshow::scene::SceneItem& item);
+
     // Task 6.17b makes the laid-out stack heterogeneous: an image entry
     // has no paragraph and no text; its box is where the picture is
     // stretched and assetPath names what to look up in the image cache.
@@ -171,6 +182,8 @@ public:
         float boxY = 0.0f;
         float boxWidth = 0.0f;
         float boxHeight = 0.0f;
+        TextPadding padding;
+        float glyphOverhang = 0.0f;
         // Task TL.3: where the paragraph sits inside the box — "top",
         // "center" or "bottom". It is carried so paragraphTop() can answer
         // from the LAID-OUT item alone, which is what keeps paint, ink
@@ -205,18 +218,12 @@ public:
         // would clip a styled slide the measurement called fitting.
         // Empty when the item draws nothing; never a font-size guess.
         InkRect ink;
-        // The line-metrics box BEFORE any effect growth — the fill's own
-        // extent, which is what `fits`-style verdicts about the WORDS
-        // judge. (The measurement seam answers "do these words fit" with
-        // this box and reports `ink` as the pixel truth; an enabled
-        // effect's spill past the box is the author's choice, visible on
-        // the canvas, and no amount of moving words fixes it, so it must
-        // not poison a packer's verdict — see OutputSession::measureText.)
+        // Line metrics unioned with the shaped glyph bounds, before
+        // effects. Used to reserve overhang that tight leading, accents
+        // and italic glyphs can paint beyond the paragraph's line boxes.
         InkRect fillInk;
         // layoutScene's verdict: the whole visual extent (fill AND any
-        // enabled effect) inside the authored box. The shrink loop keeps
-        // its pre-TS.3 height criterion — old scenes keep their exact
-        // sizes — so this is the honest overflow report, and for a
+        // enabled effect) inside the authored box. For a
         // "fixed" item it is the ONLY fit answer the pipeline gives.
         bool fits = true;
     };
@@ -235,6 +242,7 @@ public:
     // RELATIVE to this point — the layout cache's consumer (the test, the
     // measurement) computes the absolute extent from the same arithmetic
     // the drawing uses, never a copy that could drift.
+    static float paragraphLeft(const LaidOutItem& item);
     static float paragraphTop(const LaidOutItem& item);
 
     // Task TL.3: the DISPLAY transform. `allCaps` uppercases each authored
@@ -259,6 +267,8 @@ public:
     // transform cannot be bounded.
     LaidOutItem layout(const openshow::scene::SceneItem& item, float scale, float maxWidth,
                        std::string* error = nullptr) const;
+    LaidOutItem layoutInBox(const openshow::scene::SceneItem& item, float scale,
+                            std::string* error = nullptr) const;
 
     // A whole scene's text: each item laid out inside its own box and
     // shrunk (FreeShow's per-item shrinkToFit) until it fits that box's

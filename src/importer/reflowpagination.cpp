@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <string_view>
 
 #include "openshow/catalog/catalog.h"
 #include "openshow/importer/scripturepagination.h"
@@ -34,6 +35,15 @@ std::string trimmed(const std::string& text) {
         --end;
     }
     return text.substr(begin, end - begin);
+}
+
+std::string sectionLabel(const std::string& label) {
+    std::string name = trimmed(label);
+    constexpr std::string_view suffix = " (cont.)";
+    while (name.ends_with(suffix)) {
+        name = trimmed(name.substr(0, name.size() - suffix.size()));
+    }
+    return name;
 }
 
 // The word sequence, with every whitespace run collapsed. Used both for
@@ -94,8 +104,21 @@ ReflowPaginationOutcome paginateReflow(const ReflowPaginationInput& input,
         if (!hasWords(input.blocks[i].lines)) {
             continue;
         }
+        auto block = input.blocks[i];
+        if (input.policy == ReflowPolicy::kSectionStartsNewSlide) {
+            block.label = sectionLabel(block.label);
+            // A paginated source can contain several fragments of one
+            // verse/chorus. Reassemble that consecutive section occurrence
+            // before fitting, without moving a later returning chorus.
+            if (!block.label.empty() && !blocks.empty() &&
+                blocks.back().label == block.label) {
+                blocks.back().lines.insert(blocks.back().lines.end(),
+                                            block.lines.begin(), block.lines.end());
+                continue;
+            }
+        }
         sourceIndex.push_back(i);
-        blocks.push_back(input.blocks[i]);
+        blocks.push_back(std::move(block));
     }
     if (blocks.empty()) {
         outcome.error = "the item has no words to reflow";
@@ -121,6 +144,7 @@ ReflowPaginationOutcome paginateReflow(const ReflowPaginationInput& input,
             ReflowSlide out;
             out.lines = slide.lines;
             out.label = slide.label;
+            out.sectionLabel = song.stanzas[slide.stanzaIndex].label;
             out.blockIndex = sourceIndex[std::min(slide.stanzaIndex, sourceIndex.size() - 1)];
             out.startsContinued = slide.startsContinued;
             outcome.slides.push_back(std::move(out));

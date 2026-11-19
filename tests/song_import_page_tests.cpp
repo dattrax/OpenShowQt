@@ -203,6 +203,17 @@ int main(int argc, char** argv) {
             }
         }
         check(!caps.isEmpty() && docs.useThemeAsCurrent(caps) &&
+                  docs.editTheme(caps, QStringLiteral("Caps"), QStringLiteral("#ffffff"),
+                      QStringLiteral("#000000"), QString(), QStringLiteral("Sans"),
+                      80.0, QStringLiteral("center"), 1.6) &&
+                  docs.setThemePlacement(caps, 200, 150, 1200, 700) &&
+                  docs.setThemeTextStyleField(caps, QStringLiteral("fitMode"), QStringLiteral("fixed")) &&
+                  docs.setThemeTextStyleField(caps, QStringLiteral("strokeEnabled"), true) &&
+                  docs.setThemeTextStyleField(caps, QStringLiteral("strokeWidth"), 24.0) &&
+                  docs.setThemeTextStyleField(caps, QStringLiteral("shadowEnabled"), true) &&
+                  docs.setThemeTextStyleField(caps, QStringLiteral("shadowOffsetX"), 40.0) &&
+                  docs.setThemeTextStyleField(caps, QStringLiteral("shadowOffsetY"), 30.0) &&
+                  docs.setThemeTextStyleField(caps, QStringLiteral("shadowBlurSigma"), 10.0) &&
                   docs.setThemeTextStyleField(caps, QStringLiteral("allCaps"), true) &&
                   docs.setThemeTextStyleField(caps, QStringLiteral("verticalAlign"),
                                               QStringLiteral("top")),
@@ -218,6 +229,35 @@ int main(int argc, char** argv) {
         check(songImport.previewKey(0) != keyBeforeLayout,
               "the re-measured plan is a new generation, not the old one re-labelled");
         check(songImport.canAdd(), "and Add wakes on the new plan");
+        const QVariantMap style = docs.songBoxStyle();
+        QVariantList asks;
+        for (const QVariant& slide : songImport.slides()) {
+            QVariantMap request = style;
+            request.insert(QStringLiteral("key"), QString::number(asks.size()));
+            request.insert(QStringLiteral("lines"), slide.toMap().value(QStringLiteral("lines")));
+            request.insert(QStringLiteral("width"), style.value(QStringLiteral("boxWidth")));
+            request.insert(QStringLiteral("height"), style.value(QStringLiteral("boxHeight")));
+            asks.append(request);
+        }
+        qint64 requestId = 0;
+        bool answered = false;
+        const auto measured = QObject::connect(&worker, &openshow::ui::WorkerController::textMeasured,
+            [&answered, &requestId, &asks, &style](qint64 id, const QVariantList& replies) {
+                if (id != requestId) return;
+                answered = true;
+                check(replies.size() == asks.size(), "every styled import slide is measured");
+                for (const QVariant& reply : replies) {
+                    const QVariantMap row = reply.toMap();
+                    check(row.value(QStringLiteral("fits")).toBool() &&
+                              row.value(QStringLiteral("height")).toDouble() <=
+                                  style.value(QStringLiteral("boxHeight")).toDouble(),
+                          "imported capitals, outline and shadow fit at the chosen size");
+                }
+            });
+        requestId = worker.measureText(asks);
+        check(requestId != 0 && waitFor([&] { return answered; }),
+              "the real renderer verifies the styled import slides");
+        QObject::disconnect(measured);
     }
 
     if (addButton) {

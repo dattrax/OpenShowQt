@@ -480,6 +480,7 @@ void testTheCacheKeyCoversTheWholeQuestion() {
         {"a shadow opacity", [](MeasureRequest& r) { r.shadow.opacity = 0.25; }},
         {"a new family", [](MeasureRequest& r) { r.fontFamily = "Lora"; }},
         {"another width", [](MeasureRequest& r) { r.width = 801.0; }},
+        {"another box height", [](MeasureRequest& r) { r.boxHeight = 600.0; }},
         {"another size", [](MeasureRequest& r) { r.fontSize = 41.0; }},
         {"another spacing", [](MeasureRequest& r) { r.lineSpacing = 1.5; }},
         {"one more line", [](MeasureRequest& r) { r.lines.push_back(""); }},

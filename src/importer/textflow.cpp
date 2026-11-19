@@ -177,6 +177,7 @@ public:
         request.lines = lines;
         request.fontSize = fontSize;
         request.width = style.boxWidth;
+        request.boxHeight = style.boxHeight;
         request.lineSpacing = style.lineSpacing;
         request.fontFamily = style.fontFamily;
         request.fontWeight = style.fontWeight;
@@ -211,7 +212,7 @@ template <typename BuildFn>
 bool largestFitting(Measurer& measurer, std::size_t n, const FlowStyle& style, double available,
                     const BuildFn& candidate, std::size_t* out) {
     // TS.3's fit criterion, in one place: the measured HEIGHT must clear
-    // the room AND the worker's FILL verdict must not have said no — a
+    // the room AND the worker's styled-ink verdict must not have said no — a
     // word too long for the width wraps to a line that overhangs the box,
     // and no re-paging fixes it, so that candidate does not suit. A
     // `fits` the answer does not carry (a pre-16 worker, which also has
@@ -457,6 +458,7 @@ std::string measureCacheKey(const MeasureRequest& request) {
     };
     putNumber(request.fontSize);
     putNumber(request.width);
+    putNumber(request.boxHeight);
     putNumber(request.lineSpacing);
     putString(request.fontFamily);
     putNumber(request.fontWeight);

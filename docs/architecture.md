@@ -368,7 +368,17 @@ that guard before the store grows rather than drawing truncated text or
 allocating past the wire's limits. `text.measure` enters the same path: an ask
 that named an anchor and supplied a box height gets POSITIONED bounds while the
 intrinsic height and line count never move, and a v2-shaped ask keeps the
-pre-TL numbers.
+pre-TL anchor convention.
+
+Text fitting also reserves space **inside** the authored box for outlines,
+shadows and glyph overhang. `layoutInBox` is shared by measurement and painting;
+it wraps at the available width and reports occupied height including those
+insets. Bounds include the actual shaped glyph outlines as well as line metrics,
+so tight line spacing cannot disguise visible letters outside the line box.
+Import and reflow pass the actual box height through the worker adapter and
+cache it with the complete measurement question. Reflow resolves the selected
+snapshot through the target's named context (including a Bible box or inset),
+so the box and typography measured are the ones the committed slides render.
 
 Planning measures the type the audience will wear. `FlowStyle` and
 `MeasureRequest` carry the pair, the packer forwards it, and both the

@@ -3269,6 +3269,8 @@ void scenarioTextLayoutGate() {
         return;
     }
     check(v3.layoutMeasureSupported(), "layout gate: the hello named text.measure.v3");
+    caps.insert(QStringLiteral("height"), 400.0);
+    caps.insert(QStringLiteral("verticalAlign"), QStringLiteral("center"));
     const qint64 laidId = v3.measureText({caps});
     check(laidId != 0 && waitUntil([&v3RowsId, laidId] { return v3RowsId == laidId; }),
           "layout gate: the caps ask reaches the peer that claimed to measure it");
@@ -3284,6 +3286,9 @@ void scenarioTextLayoutGate() {
                 .as_array()[0].as_object();
         check(sent.at("allCaps").as_bool(),
               "layout gate: the caps answer arrives on the wire as sent");
+        check(sent.at("height").to_number<double>() == 400.0 &&
+                  sent.at("verticalAlign").as_string() == "center",
+              "layout gate: box height and an explicit centre anchor reach the measurer");
     }
 }
 

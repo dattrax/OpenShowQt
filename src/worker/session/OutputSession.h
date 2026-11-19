@@ -398,11 +398,9 @@ public:
     // only when there is no renderer — the reply must be an honest failure,
     // never a guessed height. TS.3's optional outs carry the VISUAL extent
     // (authored units, relative to the paragraph's top-left) and the box
-    // verdict: the extent is the laid-out runs' own metrics grown by the
-    // enabled effects, never a font-size guess, while `fits` judges the
-    // FILL alone against the box — the question word movement answers. An
-    // effect's spill is reported in the extent, not decided in the verdict
-    // (a shadow no repagination can shorten must not refuse every page).
+    // verdict. Height includes the insets reserved for glyph overhang and
+    // enabled effects; `fits` judges the whole styled text against the
+    // same padded rectangle that rendering uses, without shrinking.
     bool measureText(const MeasureBlock& block, float* heightOut, int* lineCountOut,
                      std::string* error, SceneTextEngine::InkRect* inkOut = nullptr,
                      bool* fitsOut = nullptr);

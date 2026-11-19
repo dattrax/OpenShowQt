@@ -560,21 +560,22 @@ int main(int argc, char* argv[]) {
               "an offset blur shadow unions the offset copy grown by its blur support — "
               "and nothing further");
 
-        // The fits verdict is about the FILL; the bounds carry the spill.
-        // Words that fit stay "fits" even when the stroke's outer half
-        // hangs past the box — moving words cannot shorten a pen. The
-        // box here is the fill's natural width plus a hair: the centred
-        // lines stay inside it (verdict: fits) while the pen's outer
-        // half clearly crosses the edge (bounds: past width).
+        // A box that barely held the fill now wraps earlier to reserve
+        // the outline, and reports its full occupied height to the packer.
         {
             const double naturalWidth = bare.right - bare.left;  // centred at 800
             boost::json::object tight = block("spill", {"Edged words"}, 40.0, naturalWidth + 5.0);
             tight["stroke"] = boost::json::object{
                 {"enabled", true}, {"color", std::uint64_t(0xFFFFFF)}, {"width", 20.0}};
             const Measured spilled = measureOne(fd, nextId, tight, &error);
-            check(spilled.ok && spilled.fits == 1 && spilled.right > naturalWidth + 5.0,
-                  "a stroke whose outer edge passes the box still measures fits — "
-                  "the spill is reported in the bounds, not decided in the verdict");
+            check(spilled.ok && spilled.fits == 1 && spilled.lineCount > bare.lineCount &&
+                      spilled.left >= -0.75 && spilled.right <= naturalWidth + 5.75 &&
+                      spilled.height > bare.height + 20.0,
+                  "measurement reserves outline space before wrapping and reports its height");
+            tight["height"] = bare.height + 20.0;
+            const Measured shallow = measureOne(fd, nextId, tight, &error);
+            check(shallow.ok && shallow.fits == 0,
+                  "styled text that wraps past the actual box height is refused");
         }
 
         // A word wider than the box does not overflow it: the layout
@@ -719,6 +720,17 @@ int main(int argc, char* argv[]) {
 
         // Task TL.3: an ask that NAMES an anchor and supplies a box height
         // gets POSITIONED bounds; the intrinsic height never moves.
+        boost::json::object tightLeading = block("tight-leading", {"Áfjgy"}, 120.0, 900.0, 0.5);
+        tightLeading["height"] = 60.0;
+        tightLeading["verticalAlign"] = "top";
+        const Measured overhang = measureOne(fd, nextId, tightLeading, &error);
+        check(overhang.ok && overhang.height > 60.0 && overhang.fits == 0,
+              "tight leading cannot hide glyph ink outside a short line box");
+        tightLeading["height"] = 240.0;
+        const Measured contained = measureOne(fd, nextId, tightLeading, &error);
+        check(contained.ok && contained.fits == 1 && contained.top >= -0.75 &&
+                  contained.bottom <= 240.75,
+              "the same glyphs fit a taller box without shrinking or clipping");
         boost::json::object topBox = block("p1", {"Positioned"}, 40.0, 800.0);
         topBox["height"] = 400.0;
         topBox["verticalAlign"] = "top";

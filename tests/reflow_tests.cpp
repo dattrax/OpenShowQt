@@ -127,6 +127,39 @@ void testGreedyPassagePolicy() {
           "the passage plan preserves every word in order");
 }
 
+void testSongSectionsReassembleBeforeFitting() {
+    ReflowPaginationInput input;
+    input.policy = ReflowPolicy::kSectionStartsNewSlide;
+    input.style = styleFor(40.0, 1.25, 1000.0);
+    input.blocks = {{"Verse 1", {"First", "Second"}},
+                    {"Verse 1 (cont.)", {"Third"}},
+                    {"Chorus", {"Sing"}}, {"Chorus (cont.)", {"Again"}},
+                    {"Verse 2", {"New words"}},
+                    {"Chorus", {"Sing"}}, {"Chorus", {"Again"}}};
+    const auto roomy = openshow::importer::paginateReflow(input, measurer());
+    check(roomy.ok && roomy.slides.size() == 4,
+          "old slide fragments recombine into one roomy slide per section occurrence");
+    if (!roomy.ok || roomy.slides.size() != 4) return;
+    check(roomy.slides[0].lines == std::vector<std::string>{"First", "Second", "Third"} &&
+              roomy.slides[0].label == "Verse 1" && roomy.slides[0].blockIndex == 0 &&
+              roomy.slides[1].lines == std::vector<std::string>{"Sing", "Again"} &&
+              roomy.slides[1].blockIndex == 2 && roomy.slides[2].label == "Verse 2" &&
+              roomy.slides[3].lines == std::vector<std::string>{"Sing", "Again"} &&
+              roomy.slides[3].blockIndex == 5,
+          "joining fragments preserves section identity, repeated choruses and running order");
+    input.style.boxHeight = 100.0;
+    const auto tight = openshow::importer::paginateReflow(input, measurer());
+    check(tight.ok && tight.slides.size() == 5 &&
+              tight.slides[0].lines == std::vector<std::string>{"First", "Second"} &&
+              tight.slides[1].lines == std::vector<std::string>{"Third"} &&
+              tight.slides[1].label == "Verse 1 (cont.)" &&
+              tight.slides[1].startsContinued,
+          "the complete reconstructed verse is split again using the new fitting");
+    check(reflowWordsPreserved(input.blocks, roomy.slides) &&
+              reflowWordsPreserved(input.blocks, tight.slides),
+          "section reconstruction never loses or duplicates words");
+}
+
 void testSplittingAndContinuation() {
     ReflowPaginationInput input;
     // Two lines fit (2 * 40 * 1.25 = 100 <= 100).
@@ -233,6 +266,7 @@ void testRefusalsAndNoLoss() {
 int main() {
     testSectionPolicy();
     testGreedyPassagePolicy();
+    testSongSectionsReassembleBeforeFitting();
     testSplittingAndContinuation();
     testCaptionReservation();
     testRefusalsAndNoLoss();

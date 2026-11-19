@@ -162,7 +162,8 @@ bool ReflowPlanner::prepare(const QString& showId, const QString& snapshotJson) 
 
     // The future appearance comes from the portable look's own numbers, so
     // the box the plan is measured against is the box the new slides wear.
-    const QVariantMap styleMap = fDocuments->boxStyleForSnapshot(snapshotJson);
+    const QVariantMap styleMap = fDocuments->boxStyleForSnapshot(
+        snapshotJson, QString::fromStdString(check.textContext));
     if (styleMap.isEmpty()) {
         return refuse(QStringLiteral("the chosen look has no usable box to measure"));
     }
@@ -255,9 +256,8 @@ QVariantMap ReflowPlanner::plan() const {
         // Songs keep their section identity on the slide's GROUP; a passage
         // has no song sections, so its verse labels stay in notes only.
         std::string group;
-        if (fEligibility.sectionStartsNewSlide &&
-            slide.blockIndex < fInput.blocks.size()) {
-            group = fInput.blocks[slide.blockIndex].label;
+        if (fEligibility.sectionStartsNewSlide) {
+            group = slide.sectionLabel;
         }
         row.insert(QStringLiteral("group"), QString::fromStdString(group));
         slides.push_back(row);
@@ -366,6 +366,7 @@ bool ReflowPlanner::measure(
         block.insert(QStringLiteral("lines"), lines);
         block.insert(QStringLiteral("fontSize"), request.fontSize);
         block.insert(QStringLiteral("width"), request.width);
+        block.insert(QStringLiteral("height"), request.boxHeight);
         block.insert(QStringLiteral("lineSpacing"), request.lineSpacing);
         if (!request.fontFamily.empty()) {
             block.insert(QStringLiteral("fontFamily"),

@@ -517,7 +517,8 @@ public:
     // The measurement style a portable snapshot implies (the same shape
     // `songBoxStyle` returns), so a future-service Add measures the look it
     // will wear without first putting a throwaway theme in the service.
-    Q_INVOKABLE QVariantMap boxStyleForSnapshot(const QString& snapshotJson) const;
+    Q_INVOKABLE QVariantMap boxStyleForSnapshot(const QString& snapshotJson,
+                                               const QString& context = QString()) const;
     // Task PT.4: the bounded reflow source, read for display and for the
     // eligibility checks that follow. `matches` says whether the saved
     // fingerprint still describes the words on the slides; a style-only

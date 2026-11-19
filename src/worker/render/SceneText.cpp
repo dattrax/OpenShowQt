@@ -28,6 +28,7 @@
 #include "include/core/SkColor.h"
 #include "include/core/SkData.h"
 #include "include/core/SkFontStyle.h"
+#include "include/core/SkFont.h"
 #include "include/core/SkFontMgr.h"
 #include "include/core/SkImage.h"
 #include "include/core/SkMaskFilter.h"
@@ -624,6 +625,35 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Scen
                 ink.bottom = std::max(ink.bottom, bottom);
             }
         }
+        // Height overrides alter the line metrics, not the glyph outlines.
+        // Include the actual shaped glyph bounds too: tight leading,
+        // accents and italic overhang can otherwise paint outside a box
+        // whose line metrics claim to fit. visit() walks the same runs
+        // used for painting, including fallback faces and capitals.
+        out.paragraph->visit([&ink, &out](int, const skia::textlayout::Paragraph::VisitorInfo* run) {
+            if (run == nullptr || run->count <= 0) return;
+            std::vector<SkRect> bounds(static_cast<std::size_t>(run->count));
+            std::vector<SkScalar> advances(bounds.size());
+            run->font.getWidthsBounds({run->glyphs, static_cast<std::size_t>(run->count)},
+                                     {advances.data(), advances.size()},
+                                     {bounds.data(), bounds.size()}, nullptr);
+            for (int i = 0; i < run->count; ++i) {
+                SkRect rect = bounds[static_cast<std::size_t>(i)];
+                if (rect.isEmpty() || !rect.isFinite()) continue;
+                out.glyphOverhang = std::max({out.glyphOverhang, -rect.left(),
+                    rect.right() - advances[static_cast<std::size_t>(i)]});
+                rect.offset(run->origin.x() + run->positions[i].x(),
+                            run->origin.y() + run->positions[i].y());
+                if (ink.empty) {
+                    ink = {false, rect.left(), rect.top(), rect.right(), rect.bottom()};
+                } else {
+                    ink.left = std::min(ink.left, rect.left());
+                    ink.top = std::min(ink.top, rect.top());
+                    ink.right = std::max(ink.right, rect.right());
+                    ink.bottom = std::max(ink.bottom, rect.bottom());
+                }
+            }
+        });
         // The metrics box as such, before any effect grew it: the fill's
         // own extent, kept for verdicts about the WORDS (see the header).
         out.fillInk = ink;
@@ -635,7 +665,7 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Scen
                 ink.right += half;
                 ink.bottom += half;
             }
-            if (item.shadow.enabled) {
+            if (item.shadow.enabled && item.shadow.opacity > 0.0) {
                 const float dx = static_cast<float>(authored(item.shadow.offsetX, -256.0, 256.0,
                                                              0.0));
                 const float dy = static_cast<float>(authored(item.shadow.offsetY, -256.0, 256.0,
@@ -651,6 +681,64 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Scen
         out.ink = ink;
     }
     return out;
+}
+
+SceneTextEngine::TextPadding SceneTextEngine::textPadding(
+    const openshow::scene::SceneItem& item) {
+    const float stroke = item.stroke.enabled
+                             ? static_cast<float>(authored(item.stroke.width, 0.0, 32.0, 0.0)) * 0.5f
+                             : 0.0f;
+    TextPadding padding{stroke, stroke, stroke, stroke};
+    if (item.shadow.enabled && item.shadow.opacity > 0.0) {
+        const float grow = static_cast<float>(authored(item.shadow.blurSigma, 0.0, 64.0, 0.0)) * 3.1f;
+        const float dx = static_cast<float>(authored(item.shadow.offsetX, -256.0, 256.0, 0.0));
+        const float dy = static_cast<float>(authored(item.shadow.offsetY, -256.0, 256.0, 0.0));
+        // Match the ink bound's conservative union of the outlined fill
+        // and its offset, blurred copy.
+        padding.left += std::max(0.0f, grow - dx);
+        padding.right += std::max(0.0f, grow + dx);
+        padding.top += std::max(0.0f, grow - dy);
+        padding.bottom += std::max(0.0f, grow + dy);
+    }
+    // Keep the glyphs centred when a centred box already has room. The
+    // larger reach on either side is reserved on both sides; anchors and
+    // wrapping then share that same safe content rectangle.
+    padding.left = padding.right = std::max(padding.left, padding.right);
+    padding.top = padding.bottom = std::max(padding.top, padding.bottom);
+    return padding;
+}
+
+SceneTextEngine::LaidOutItem SceneTextEngine::layoutInBox(
+    const openshow::scene::SceneItem& item, float scale, std::string* error) const {
+    const float width = std::max(1.0f, static_cast<float>(item.width));
+    const TextPadding effects = textPadding(item);
+    TextPadding padding = effects;
+    for (int pass = 0;; ++pass) {
+        const float contentWidth = std::max(1.0f, width - padding.left - padding.right);
+        LaidOutItem laid = layout(item, scale, contentWidth, error);
+        // Reserve actual glyph overhang as well as effects. Width changes
+        // may wrap a different glyph onto an edge, so re-shape until the
+        // inset settles. The cap leaves an honest overflow verdict if an
+        // exceptional font never settles.
+        // Reserve glyph overhang independently of alignment, so measuring
+        // centred words and painting them left/right aligned wrap alike.
+        const float overhang = laid.glyphOverhang;
+        const float wanted = std::max(padding.left, effects.left + overhang);
+        if (wanted > padding.left + 0.01f && pass < 3) {
+            padding.left = padding.right = wanted;
+            continue;
+        }
+        const float vertical = laid.fillInk.empty ? 0.0f :
+            std::max({0.0f, -laid.fillInk.top, laid.fillInk.bottom - laid.height});
+        padding.top += vertical;
+        padding.bottom += vertical;
+        laid.padding = padding;
+        laid.boxX = static_cast<float>(item.x);
+        laid.boxY = static_cast<float>(item.y);
+        laid.boxWidth = width;
+        laid.boxHeight = std::max(1.0f, static_cast<float>(item.height));
+        return laid;
+    }
 }
 
 float SceneTextEngine::verticalOffset(const std::string& verticalAlign, float boxHeight,
@@ -669,12 +757,18 @@ float SceneTextEngine::verticalOffset(const std::string& verticalAlign, float bo
     return free * 0.5f;  // "center", and the safe read of anything else
 }
 
+float SceneTextEngine::paragraphLeft(const LaidOutItem& item) {
+    return item.boxX + item.padding.left;
+}
+
 float SceneTextEngine::paragraphTop(const LaidOutItem& item) {
     // The block sits at the resolved vertical anchor (task TL.3), defaulting
     // to the box's vertical middle — a taller-than-box block's top rides up
     // over the box edge rather than clipping at the bottom, which is what
     // drawLayout has always done and what TS.3's bounds are relative to.
-    return item.boxY + verticalOffset(item.verticalAlign, item.boxHeight, item.height);
+    return item.boxY + item.padding.top +
+           verticalOffset(item.verticalAlign,
+                          item.boxHeight - item.padding.top - item.padding.bottom, item.height);
 }
 
 namespace {
@@ -688,8 +782,9 @@ bool inkInsideBox(const openshow::worker::SceneTextEngine::LaidOutItem& item) {
     }
     constexpr float kEps = 0.75f;
     const float top = openshow::worker::SceneTextEngine::paragraphTop(item);
-    return item.boxX + item.ink.left >= item.boxX - kEps &&
-           item.boxX + item.ink.right <= item.boxX + item.boxWidth + kEps &&
+    const float left = openshow::worker::SceneTextEngine::paragraphLeft(item);
+    return left + item.ink.left >= item.boxX - kEps &&
+           left + item.ink.right <= item.boxX + item.boxWidth + kEps &&
            top + item.ink.top >= item.boxY - kEps &&
            top + item.ink.bottom <= item.boxY + item.boxHeight + kEps;
 }
@@ -741,15 +836,13 @@ SceneTextEngine::SceneLayout SceneTextEngine::layoutScene(
         const float minScale = base > 0.0f ? kSceneMinFontSize / base : 1.0f;
         float scale = 1.0f;
         for (int pass = 0;; ++pass) {
-            LaidOutItem laid = layout(item, scale, boxWidth, error);
-            laid.boxX = boxX;
-            laid.boxY = boxY;
-            laid.boxWidth = boxWidth;
-            laid.boxHeight = boxHeight;
-            const bool fits = !laid.hasText || laid.height <= boxHeight;
+            LaidOutItem laid = layoutInBox(item, scale, error);
+            const float contentHeight =
+                std::max(0.0f, boxHeight - laid.padding.top - laid.padding.bottom);
+            const bool fits = !laid.hasText || laid.height <= contentHeight;
             const float next = fits || pass >= 3 || fixed
                                    ? scale
-                                   : std::max(scale * boxHeight / laid.height, minScale);
+                                   : std::max(scale * contentHeight / laid.height, minScale);
             const bool keep = next >= scale || fixed;  // done, floor, or no shrink at all
             scale = next;
             if (keep) {
@@ -973,7 +1066,7 @@ void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
             if (item.isImage) {
                 drawImageItem(item, 255);
             } else if (textItems && item.paragraph && item.hasText) {
-                item.paragraph->paint(canvas, item.boxX, centerY(item));
+                item.paragraph->paint(canvas, paragraphLeft(item), centerY(item));
             }
         }
         return;
@@ -985,7 +1078,7 @@ void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
         } else if (textItems && item.paragraph && item.hasText) {
             painter.setStroke(item.strokeEnabled ? item.strokeColor : 0u,
                               item.strokeEnabled ? item.strokeWidth : 0.0f);
-            item.paragraph->paint(&painter, item.boxX, centerY(item));
+            item.paragraph->paint(&painter, paragraphLeft(item), centerY(item));
         }
     }
 }

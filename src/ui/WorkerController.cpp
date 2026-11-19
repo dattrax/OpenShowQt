@@ -188,13 +188,23 @@ bool attachMeasureStyle(const QVariantMap& block, boost::json::object* jsonBlock
     // worker measured and is left OFF the wire (absence means exactly that),
     // so a legacy ask keeps its byte-identical shape.
     const QVariant anchor = block.value(QStringLiteral("verticalAlign"));
+    const bool hasHeight = block.contains(QStringLiteral("height"));
+    if (hasHeight) {
+        double height = 0.0;
+        if (!measureNumberInRange(block, QStringLiteral("height"), 1.0, 65536.0, &height)) {
+            *why = QStringLiteral("height must be between 1 and 65536");
+            return false;
+        }
+        (*jsonBlock)["height"] = height;
+        *deviates = true;
+    }
     if (anchor.isValid() && !anchor.toString().isEmpty()) {
         const QString name = anchor.toString();
         if (!openshow::domain::isVerticalAlignName(name.toStdString())) {
             *why = QStringLiteral("verticalAlign must be \"top\", \"center\" or \"bottom\"");
             return false;
         }
-        if (name != QLatin1String(openshow::domain::kDefaultVerticalAlign)) {
+        if (hasHeight || name != QLatin1String(openshow::domain::kDefaultVerticalAlign)) {
             (*jsonBlock)["verticalAlign"] = name.toStdString();
             *layoutDeviates = true;
         }

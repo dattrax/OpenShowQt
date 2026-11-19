@@ -10,8 +10,10 @@
  *
  * Two policies, because the content kinds have two:
  *
- *   - A song section never shares a slide with another section
- *     (`paginateSong`'s rule, unchanged).
+ *   - Consecutive song fragments with the same section name are joined
+ *     before fitting; generated continuation suffixes do not create a
+ *     new section. A later returning chorus keeps its running-order place.
+ *     Each complete section is then paginated separately.
  *   - Scripture blocks pack greedily, exactly as the import packs verses,
  *     with a caption reservation measured in caption type when the source
  *     carries a reference/attribution.
@@ -59,6 +61,7 @@ struct ReflowSlide {
     std::string label;               // goes in notes, never on the slide
     std::size_t blockIndex = 0;      // the authored block it starts in
     bool startsContinued = false;    // opens on a split block's tail
+    std::string sectionLabel;        // song group, without generated continuation text
 };
 
 struct ReflowPaginationOutcome {

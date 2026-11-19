@@ -4704,6 +4704,32 @@ void exerciseWholeItemThemeSurfaces(const std::filesystem::path& root) {
           "the remembered look supplies the measurement style it will wear");
     check(docs.boxStyleForSnapshot(QStringLiteral("{}")).isEmpty(),
           "a partial snapshot is not measured");
+    check(docs.applyThemeContext(item, QStringLiteral("scripture"), QVariantMap{
+              {QStringLiteral("fontSize"), 90.0}, {QStringLiteral("inset"), 60.0},
+              {QStringLiteral("verticalAlign"), QStringLiteral("bottom")},
+              {QStringLiteral("allCaps"), false}}),
+          "the item theme has an inset Bible context");
+    const QVariantMap reading = docs.boxStyleForSnapshot(
+        docs.themeSnapshotJson(item), QStringLiteral("scripture"));
+    check(reading.value(QStringLiteral("boxWidth")).toDouble() == 1480.0 &&
+              reading.value(QStringLiteral("boxHeight")).toDouble() == 680.0 &&
+              reading.value(QStringLiteral("fontSize")).toDouble() == 90.0 &&
+              reading.value(QStringLiteral("verticalAlign")).toString() ==
+                  QStringLiteral("bottom") &&
+              !reading.value(QStringLiteral("allCaps")).toBool(),
+          "snapshot measurements apply context insets and typography through the resolver");
+    docs.undo();
+    check(docs.applyThemeContext(QStringLiteral("default"), QStringLiteral("scripture"),
+                                QVariantMap{{QStringLiteral("fontSize"), 88.0},
+                                            {QStringLiteral("inset"), 40.0}}),
+          "the Default floor supplies an inherited Bible context");
+    const QVariantMap inheritedReading = docs.boxStyleForSnapshot(
+        snapshot, QStringLiteral("scripture"));
+    check(inheritedReading.value(QStringLiteral("fontSize")).toDouble() == 88.0 &&
+              inheritedReading.value(QStringLiteral("boxWidth")).toDouble() == 1520.0 &&
+              inheritedReading.value(QStringLiteral("boxHeight")).toDouble() == 720.0,
+          "snapshot measurements retain the same inherited Default context as committed slides");
+    docs.undo();
     check(docs.applyRememberedTheme(showId, QStringLiteral("{bad")).isEmpty() &&
               docs.status().contains(QStringLiteral("not usable")),
           "a malformed remembered look is refused");

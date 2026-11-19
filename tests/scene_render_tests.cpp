@@ -1278,6 +1278,68 @@ void testTextStyleFacesAndEffectsRender() {
 // the same box; the paragraph origin moves by the free space, every drawn
 // pixel stays inside the item's own ink rect, and the three pictures are
 // genuinely different.
+void testStyledTextStaysInsideItsBox() {
+    worker::SceneTextEngine engine;
+    std::string error;
+    if (!check(engine.create(&error), "styled-box engine: " + error)) return;
+    // Tight line spacing changes the line box, not the glyphs' outline.
+    // A fit verdict must not call visible overhang contained.
+    {
+        scene::Scene tight = singleItemScene({"Áfjgy"}, 120.0);
+        auto& item = tight.items[0];
+        item.x = 400;
+        item.y = 250;
+        item.width = 900;
+        item.height = 60;
+        item.lineSpacing = 0.5;
+        item.fitMode = "fixed";
+        item.verticalAlign = "top";
+        Frame frame;
+        if (check(renderFixture(tight, "tight-leading", &frame, &error),
+                  "tight-leading fixture renders: " + error)) {
+            const Ink pixels = measureInk(frame);
+            const bool inside = pixels.top >= item.y * kScale - 2 &&
+                                pixels.bottom <= (item.y + item.height) * kScale + 2;
+            check(inside || !engine.layoutScene(tight).items[0].fits,
+                  "tight leading cannot report fits when the letters cross the box");
+        }
+    }
+    for (const char* anchor : {"top", "center", "bottom"}) {
+        for (const char* align : {"left", "center", "right"}) {
+            scene::Scene subject = singleItemScene(
+                {"Morning light", "Morning light", "Morning light"}, 80.0);
+            auto& item = subject.items[0];
+            item.x = 400.0;
+            item.y = 250.0;
+            item.width = 900.0;
+            item.height = 500.0;
+            item.lineSpacing = 1.25;
+            item.align = align;
+            item.verticalAlign = anchor;
+            item.fitMode = "fixed";
+            item.stroke = {true, "#ffffff", 24.0};
+            item.shadow = {true, "#00ffff", 1.0, 40.0, 30.0, 10.0};
+            const auto layout = engine.layoutScene(subject);
+            check(layout.items.size() == 1 && layout.items[0].fits &&
+                      layout.items[0].fontSize == 80.0f,
+                  "styled text fits at the chosen size for every alignment");
+            Frame frame;
+            const std::string name = std::string("contained-") + anchor + "-" + align;
+            if (!check(renderFixture(subject, name, &frame, &error), name + ": " + error))
+                continue;
+            const Ink pixels = measureInk(frame);
+            check(pixels.count > 0 && pixels.left >= item.x * kScale - 2 &&
+                      pixels.right <= (item.x + item.width) * kScale + 2 &&
+                      pixels.top >= item.y * kScale - 2 &&
+                      pixels.bottom <= (item.y + item.height) * kScale + 2,
+                  name + ": letters, outline and shadow all stay inside the text box");
+            item.lines.push_back("Morning light");
+            check(!engine.layoutScene(subject).items[0].fits,
+                  "a fourth line that leaves no room for its effects reports overflow");
+        }
+    }
+}
+
 void testVerticalAlignmentRenders() {
     const auto sceneFor = [](const char* anchor) {
         scene::Scene subject = singleItemScene({"First line", "Second line"}, 120.0);
@@ -1448,6 +1510,8 @@ void testInkBoundsContainEveryEffectPixel() {
         const auto layout = engine.layoutScene(*rows[i].scene);
         const worker::SceneTextEngine::LaidOutItem& item = layout.items[0];
         saved[i].ink = item.ink;
+        saved[i].ink.left += item.padding.left;
+        saved[i].ink.right += item.padding.left;
         saved[i].boxX = item.boxX;
         saved[i].top = worker::SceneTextEngine::paragraphTop(item);
     }
@@ -4069,6 +4133,7 @@ int main() {
     testThemeTextContextsRender();
     testTypographyAlignsAndSpaces();
     testTextStyleFacesAndEffectsRender();
+    testStyledTextStaysInsideItsBox();
     testVerticalAlignmentRenders();
     testAllCapsRenders();
     testInkBoundsContainEveryEffectPixel();

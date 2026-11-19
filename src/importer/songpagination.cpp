@@ -72,6 +72,7 @@ private:
         request.lines = lines;
         request.fontSize = fStyle.fontSize;
         request.width = fStyle.boxWidth;
+        request.boxHeight = fStyle.boxHeight;
         request.lineSpacing = fStyle.lineSpacing;
         request.fontFamily = fStyle.fontFamily;
         request.fontWeight = fStyle.fontWeight;

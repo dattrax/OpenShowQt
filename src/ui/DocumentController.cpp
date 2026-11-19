@@ -1957,21 +1957,9 @@ bool compileSongFixture(const openshow::domain::Documents& documents,
     return compileFixture(documents, lines, nullptr, scene, nullptr);
 }
 
-}  // namespace
-
-QVariantMap DocumentController::fixtureBoxStyle(bool scripture) const {
-    // One word is enough: the primary box's rectangle and typography are
-    // the chain's answer regardless of the words, and this compiles the
-    // same first text item a generated slide's words would fill.
-    openshow::scene::Scene scene;
-    std::string contextName;
+QVariantMap boxStyleForScene(const openshow::scene::Scene& scene,
+                             const std::string& contextName) {
     QVariantMap style;
-    const bool compiled = scripture
-                              ? compileScriptureFixture(fDocuments, {"a"}, &scene, &contextName)
-                              : compileSongFixture(fDocuments, {"a"}, &scene);
-    if (!compiled) {
-        return style;
-    }
     style.insert(QStringLiteral("context"), QString::fromStdString(contextName));
     for (const openshow::scene::SceneItem& item : scene.items) {
         if (item.isImage) {
@@ -2014,6 +2002,23 @@ QVariantMap DocumentController::fixtureBoxStyle(bool scripture) const {
         return style;
     }
     return style;  // no text box at all: the importer refuses with its own sentence
+}
+
+}  // namespace
+
+QVariantMap DocumentController::fixtureBoxStyle(bool scripture) const {
+    // One word is enough: the primary box's rectangle and typography are
+    // the chain's answer regardless of the words, and this compiles the
+    // same first text item a generated slide's words would fill.
+    openshow::scene::Scene scene;
+    std::string contextName;
+    const bool compiled = scripture
+                              ? compileScriptureFixture(fDocuments, {"a"}, &scene, &contextName)
+                              : compileSongFixture(fDocuments, {"a"}, &scene);
+    if (!compiled) {
+        return {};
+    }
+    return boxStyleForScene(scene, contextName);
 }
 
 QVariantMap DocumentController::scriptureBoxStyle() const {
@@ -3116,7 +3121,7 @@ QString DocumentController::upsertCatalogSong(
                     continue;
                 }
                 openshow::domain::ReflowSourceBlock block;
-                block.label = !spec.label.empty() ? spec.label : spec.group;
+                block.label = !spec.group.empty() ? spec.group : spec.label;
                 block.lines = spec.lines;
                 source.blocks.push_back(std::move(block));
             }
@@ -3407,6 +3412,12 @@ bool DocumentController::commitReflowPlan(const QString& showId,
     const QString context = plan.value(QStringLiteral("textContext")).toString();
     std::string error;
     const std::string target = showId.toStdString();
+    std::optional<openshow::domain::ReflowSource> retainedSource;
+    const auto* existing = fDocuments.findShow(target);
+    if (existing != nullptr && existing->reflowSource.has_value() &&
+        openshow::domain::reflowSourceMatches(fDocuments, target, *existing->reflowSource)) {
+        retainedSource = existing->reflowSource;
+    }
     const bool ok = edit([&] {
         // The look first: the new slides and the item assignment are one
         // transaction, so the words never land without the appearance the
@@ -3471,7 +3482,18 @@ bool DocumentController::commitReflowPlan(const QString& showId,
             }
         }
         // The item wears the look the plan was measured against.
-        return fDocuments.applyWholeItemTheme(target, theme, &error);
+        if (!fDocuments.applyWholeItemTheme(target, theme, &error)) {
+            return false;
+        }
+        // A new pagination still describes the same captured section words.
+        // Keep that source usable when the operator changes the fitting
+        // again; an edited/stale source is never resurrected here.
+        if (retainedSource.has_value()) {
+            retainedSource->projectionFingerprint = openshow::domain::reflowFingerprint(
+                openshow::domain::showTextProjection(fDocuments, target));
+            return fDocuments.setShowReflowSource(target, *retainedSource, &error);
+        }
+        return true;
     });
     if (!ok) {
         setStatus(QStringLiteral("reflow: %1").arg(QString::fromStdString(error)));
@@ -3491,8 +3513,8 @@ QString DocumentController::themeSnapshotJson(const QString& themeId) {
         boost::json::serialize(openshow::domain::themeSnapshotToJson(snapshot)));
 }
 
-QVariantMap DocumentController::boxStyleForSnapshot(const QString& snapshotJson) const {
-    QVariantMap style;
+QVariantMap DocumentController::boxStyleForSnapshot(const QString& snapshotJson,
+                                                    const QString& context) const {
     boost::system::error_code parseError;
     const boost::json::value parsed =
         boost::json::parse(snapshotJson.toStdString(), parseError);
@@ -3500,41 +3522,24 @@ QVariantMap DocumentController::boxStyleForSnapshot(const QString& snapshotJson)
     std::string error;
     if (parseError ||
         !openshow::domain::themeSnapshotFromJson(parsed, &snapshot, &error)) {
-        return style;
+        return {};
     }
-    // The same shape songBoxStyle returns, from the value instead of a
-    // compiled fixture: the planner measures the future look before the
-    // service holds a theme for it.
-    const openshow::domain::BoxRect box =
-        snapshot.placement.value_or(openshow::domain::BoxRect{160.0, 100.0, 1600.0, 880.0});
-    style.insert(QStringLiteral("context"), QString());
-    style.insert(QStringLiteral("boxWidth"), box.width);
-    style.insert(QStringLiteral("boxHeight"), box.height);
-    style.insert(QStringLiteral("fontSize"), snapshot.fontSize);
-    style.insert(QStringLiteral("lineSpacing"), snapshot.lineSpacing);
-    style.insert(QStringLiteral("fontFamily"), QString::fromStdString(snapshot.fontFamily));
-    style.insert(QStringLiteral("fontWeight"), snapshot.fontWeight);
-    style.insert(QStringLiteral("fontStyle"), QString::fromStdString(snapshot.fontStyle));
-    style.insert(QStringLiteral("fontUnderline"), snapshot.fontUnderline);
-    style.insert(QStringLiteral("fitMode"), QString::fromStdString(snapshot.fitMode));
-    style.insert(QStringLiteral("minFontSize"), snapshot.minFontSize);
-    style.insert(QStringLiteral("verticalAlign"),
-                 QString::fromStdString(snapshot.verticalAlign));
-    style.insert(QStringLiteral("allCaps"), snapshot.allCaps);
-    QVariantMap stroke;
-    stroke.insert(QStringLiteral("enabled"), snapshot.stroke.enabled);
-    stroke.insert(QStringLiteral("color"), QString::fromStdString(snapshot.stroke.color));
-    stroke.insert(QStringLiteral("width"), snapshot.stroke.width);
-    style.insert(QStringLiteral("stroke"), stroke);
-    QVariantMap shadow;
-    shadow.insert(QStringLiteral("enabled"), snapshot.shadow.enabled);
-    shadow.insert(QStringLiteral("color"), QString::fromStdString(snapshot.shadow.color));
-    shadow.insert(QStringLiteral("opacity"), snapshot.shadow.opacity);
-    shadow.insert(QStringLiteral("offsetX"), snapshot.shadow.offsetX);
-    shadow.insert(QStringLiteral("offsetY"), snapshot.shadow.offsetY);
-    shadow.insert(QStringLiteral("blurSigma"), snapshot.shadow.blurSigma);
-    style.insert(QStringLiteral("shadow"), shadow);
-    return style;
+    // Materialise only in a service copy. The normal resolver then
+    // answers context typography, explicit boxes and inherited insets just
+    // as the committed slides will. Replace the current theme but retain
+    // the same Default floor, including any context inherited from it.
+    openshow::domain::Documents fixture = fDocuments;
+    const auto theme = fixture.ensureThemeFromSnapshot(snapshot, &error);
+    if (theme.empty() || !fixture.setCurrentTheme(theme, &error)) {
+        return {};
+    }
+    openshow::scene::Scene scene;
+    std::string resolvedContext;
+    if (!compileFixture(fixture, {"a"}, context.toStdString().c_str(),
+                        &scene, &resolvedContext)) {
+        return {};
+    }
+    return boxStyleForScene(scene, resolvedContext);
 }
 
 QVariantMap DocumentController::reflowSourceInfo(const QString& showId) const {

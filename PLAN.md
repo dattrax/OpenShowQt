@@ -17,6 +17,8 @@ Direct box manipulation and geometry cleanup:
 [2026-11-16 brief](docs/ui/box-manipulation-plan.md), tasks **BX** below.
 Whole-item theme application, remembered Library looks and optional reflow:
 [implementation brief](docs/ui/presentation-theme-reflow-plan.md), tasks **PT** below.
+WYSIWYG Edit workspace, slide drag/drop and insertion: **EW.1–EW.10** below
+(planned 2026-11-19; includes the agent implementation runbook).
 
 ## Goal and reference
 
@@ -152,6 +154,8 @@ remain **7.3**. Do not use old machine paths as current dependency configuration
    The implementation runbook below is an intentional exception for unfinished
    TV/TS/TR/CS work: retain actionable steps until delivered, then move detailed
    implementation evidence to history and keep the completed ledger concise.
+   Retain the unfinished EW implementation runbook below until EW.10 closes;
+   it contains the requested instructions for parallel agents.
 
 ## Work breakdown
 
@@ -2197,6 +2201,8 @@ explicit Go. [Workflow, persistence, source preservation and acceptance](docs/ui
 | PT.7 | DONE | Move apply actions to left-hand item rows and add the keep/reflow dialog | Library/Service rows target explicit identities; show title/occurrence count, Apply only/Apply and reflow/Cancel and eligibility reasons; unprepared Library songs remember without entering the running order; remove central tile theme menu/header apply bypass; keyboard and no-worker paths work |
 | PT.8 | DONE | Close Library→service→reflow→Go→undo/save journeys and reconcile docs | Whole-item uniformity, current-word conservation, future-service saved looks, legacy scripture, override/media preservation, stale/failure paths and separate undo scopes verified; focused then desktop/headless/source guards pass, with skips/physical gates recorded separately |
 | PT.9 | DONE | Correct apply-dialog sizing and ambiguous snapshot copies | Centre the dialog in the window and contain every action; compare resolved looks so applying a local theme reuses it; creation/rename refuse an existing trimmed name; generated/imported/load/recovered labels remain unique; updated All caps survives measured reflow, preview compilation and reopen; retain transaction refusal messages |
+| PT.10 | DONE | Keep imported and reflowed text inside its measured box | Share glyph/effect insets between measurement and rendering; account for actual shaped glyph overhang at tight leading; forward/cache box height; resolve the target Bible context before reflow; pixel and real-worker regressions preserve words and chosen size |
+| PT.11 | DONE | Reassemble song sections before reflow | Join consecutive verse/chorus fragments before fitting; remove generated continuation suffixes from section identity; preserve returning choruses and current words; keep a valid captured source usable across reflow and reopen so authored lines can be restored |
 
 Order: PT.1 → PT.2/PT.3/PT.4 → PT.5 → PT.6 → PT.7 → PT.8; split any leaf
 exceeding two engineer-days. PT.1–PT.8 DONE. No global live
@@ -2459,6 +2465,205 @@ behaviour. Documentation reconciled: `docs/architecture.md` gains the PT
 model/interaction section and no longer describes the removed tile/header
 apply surfaces; the PT brief's planning-only banner now records the
 implementation; this ledger and `PROGRESS.md` close the group.
+
+### WYSIWYG Edit workspace, slide ordering and insertion (EW)
+
+User request (2026-11-19): edit words directly on the slide instead of using
+the text field below it; reorder slides by dragging their thumbnails; insert
+a new slide at the chosen position. This section plans the work; every EW
+task starts **TODO**. Implement when this group is taken up.
+
+#### Starting points and scope
+
+- `EditPage.qml` currently puts `slideTextEditor` below `EditCanvas` and asks
+  for Selection previews on a 250 ms timer. `EditCanvas.qml` overlays move/
+  resize handles on worker pixels; its gesture surface currently owns box
+  body drags. Preserve that geometry/preview architecture while adding text
+  interaction, rather than positioning a separately laid-out Qt text field
+  over the picture and calling it WYSIWYG.
+- `EditorSlideRail.qml` already shows only the selected presentation, uses
+  bounded worker thumbnails, and appends through `docs.addSlide()`. Domain
+  `Documents::moveSlide` and `insertSlide` already exist and have tests.
+  Expose those operations through undoable, identity-based controller verbs;
+  no second slide list or persistence owner is needed.
+- `SceneTextEngine::layoutScene`/`layoutInBox` own actual wrapping, shrink,
+  glyph overhang, outline/shadow insets, alignment, font fallback and All caps.
+  `text.measure` returns fitting measurements, not an editable caret model.
+  A new bounded editor layout/hit-test contract is needed for accurate input.
+- This is plain-text editing of existing editable text boxes with existing
+  box/slide style controls. Text inside rasterized PowerPoint pages remains
+  an image; adding a new editable text slide still works. Rich-text runs,
+  cross-presentation moves, bulk/section dragging and automatic repagination
+  while typing are separate future work.
+
+#### Required operator behaviour
+
+1. **Edit in place.** One click selects a box; double-click or Enter while a
+   selected text box owns canvas focus enters text editing. Double-click
+   places the caret at the clicked text position; keyboard entry resumes the
+   remembered caret, else the end. Preserve F2's existing output-control
+   meaning rather than assigning it a second shortcut owner. While editing, dragging
+   selects text and arrows move the caret; move/resize handles return after
+   leaving text mode. Enter inserts a line break. Escape first cancels IME
+   composition/active drag, then leaves text mode with committed words kept;
+   it must not clear or restore audience output. Offer an accessible **Edit
+   text** context action and explicit Done/focus-exit path as well.
+2. **Show the actual result.** Keep worker-rendered text as the visible words;
+   paint only editing chrome (caret, selection, IME decoration) in the UI.
+   Use the exact rendered font/fit/insets and fitted 1920×1080 coordinate
+   transform, including fractional DPI. Original-case words remain the source
+   when All caps is enabled; even expansions such as `ß` → `SS` must select
+   and edit the correct authored characters. Remove the persistent bottom
+   text field only after this path passes acceptance; a source-text fallback
+   may remain in an explicit drawer/action for disconnected or unsupported
+   workers, labelled as source editing rather than WYSIWYG.
+3. **Reorder within the current presentation.** Drag a thumbnail using a
+   visible grab handle. Show a ghost and an insertion gap before/between/after
+   cards; edge autoscroll is bounded. Dropping moves that slide once and keeps
+   the selected slide selected by ID. Escape, outside drop, no-op drop or a
+   stale/deleted source makes no structural edit. Provide Move up/down in the
+   row context menu and keyboard equivalents when the rail owns focus.
+4. **Insert where requested.** The rail footer becomes **Insert slide**
+   (after the selected slide; position zero for an empty presentation).
+   Row context menus offer **Insert before** and **Insert after**. Create one
+   fresh slide with one empty editable text box, select/reveal it and enter
+   text mode when available. Inherit the anchor's section/group, text context
+   and background/fit; inherit the presentation's theme normally. Do not copy
+   its words, notes, foreground items or per-slide style overrides. With no
+   anchor, use normal document defaults. Inserting alongside a leading blank
+   cue obeys the requested position; never silently move or recreate that cue.
+5. **Keep document and output truth.** Text bursts, a completed move and an
+   insertion are separate undoable actions; no-op gestures add no history.
+   Flush pending committed text to its captured show/slide/box IDs before
+   navigation or structural edits. All occurrences referencing this same show
+   see its edited order; editing a service song does not rewrite canonical
+   Library lyrics. Preserve slide IDs/media/notes/groups on moves. Existing
+   reflow fingerprint checks must reject stale sources after text/order edits;
+   do not automatically reflow or resurrect old words. Edit preview, insert
+   and reorder never issue Go/present or alter the audience's current scene.
+
+#### Task ledger and dependencies
+
+Aim for 0.5–2 engineer-days per leaf. If the renderer/input spike shows a leaf
+exceeds that, split it before implementation rather than hiding extra work in
+a nominally completed task. Owners below are roles for the agent runbook.
+
+| ID | Status | Owner | Depends on | Work and acceptance |
+|---|---|---|---|---|
+| EW.1 | TODO | Coordinator | Current PT fixes reviewed as the implementation baseline | Freeze interaction states, target IDs, insertion/move semantics, API ownership and focused fixtures. Confirm existing shortcuts; specify drag/no-op conversion and text/IME/undo lifetimes. Record the agreed interfaces before parallel implementation. |
+| EW.2 | TODO | Renderer | EW.1 | Prove worker-layout-based caret/selection/hit testing on a real rendered text box. Demonstrate wrap, actual shrink, effect/glyph insets, All caps index mapping and fractional scaling. Select a viable Qt native-input bridge; an approximate overlaid TextArea does not pass this gate. |
+| EW.3 | TODO | Renderer | EW.2 | Implement a capability-gated, bounded read-only editor layout/hit-test RPC and worker adapter. Correlate scene/item identity and draft/layout generations; reject malformed, oversized, stale and unsupported requests. Queries do not prepare/present audience scenes or change document/history state. |
+| EW.4 | TODO | Inline editor | EW.1, EW.3 contract | Implement the text session and native input bridge: identity-bound draft, caret/selection, clipboard, grapheme/word navigation, multiline input, IME preedit/commit and one document undo owner. Test selection changes, deletion of the target, undo/redo, save, page leave and reconnect without lost or retargeted text. |
+| EW.5 | TODO | Inline editor | EW.3, EW.4 | Integrate text mode into EditCanvas/EditPage; arbitrate text selection versus box gestures, render caret/selection from worker geometry and enlarge the canvas by retiring the bottom field. Text, preview and chrome must describe the same draft; preserve inspector and box manipulation. |
+| EW.6 | TODO | Slide controls | EW.1 | Add controller move/insert commands over existing domain verbs, using explicit show/slide/anchor IDs and validated final destinations. Preserve selection by ID across moves/undo; select the fresh slide on insert. One structural history entry; refusals/no-ops mutate nothing. Round-trip and reflow-source invalidation tests pass. |
+| EW.7 | TODO | Slide controls | EW.6 | Add real drag/drop, insertion markers, ghost, cancellation, keyboard/context move alternatives and bounded autoscroll to EditorSlideRail. Verify both directions and every endpoint with actual pointer drags in a scrolled/virtualized rail, including model changes during a drag. |
+| EW.8 | TODO | Slide controls | EW.6; EW.5 for final focus handoff | Add footer/context insertion before/after and empty-list insertion. Verify first/middle/last positions, inherited context/theme/background, fresh IDs, empty text, selection/reveal and single undo. Until inline editing lands, use the existing text-entry path for intermediate acceptance. |
+| EW.9 | TODO | Coordinator + owners | EW.5, EW.7, EW.8 | Integrate focus/shortcut/accessibility and preview lifecycle. A custom input item must join Main/ShortcutMap's typing gate explicitly. Verify Escape priority, native text Delete/paste, rail move keys, inspector edits, hidden-page silence and stale preview/layout replies after navigation/restart. |
+| EW.10 | TODO | Coordinator | EW.9 | Run the complete editing journey and affected suites, inspect captures at all target widths/scales, record measured latency and output isolation, reconcile docs/PROGRESS and leave a reviewable change set. Close only after every earlier acceptance passes; physical output gates remain separately recorded. |
+
+#### Agent implementation instructions
+
+Use one coordinator and up to three implementation agents after EW.1:
+
+- **Renderer agent:** EW.2–EW.3. Own new worker editor-layout code, the relevant
+  `SceneText`/session/RPC/protocol additions and worker fixtures. Keep the worker
+  Qt-free and use public SkParagraph/Skia APIs. Resolve caret/selection from the
+  same shaped layout and `layoutInBox` origins as rendering, not a second font
+  measurement. Supply editor-agent fixtures and the frozen wire/value types.
+- **Inline editor agent:** EW.4–EW.5. Own new frontend text-session/input/overlay
+  components plus `EditPage.qml` and `EditCanvas.qml`. Start input/session tests
+  against the EW.1/EW.3 contract while the renderer works; final visual acceptance
+  requires the real worker. Use existing inspector/style controls and preserve
+  the tested box drag/resize behaviour outside text mode.
+- **Slide-controls agent:** EW.6–EW.8. Own `EditorSlideRail.qml` and focused slide
+  action/model tests. Reuse the domain move/insert operations and existing
+  thumbnail lane. This track can proceed alongside the renderer spike after
+  EW.1; final insertion-to-text focus integration waits for EW.5.
+- **Coordinator:** own shared edits to `DocumentController.*`, `Main.qml`,
+  `ShortcutMap.qml`, settings shortcut help, `CMakeLists.txt`/test registration,
+  `PLAN.md` and `PROGRESS.md`. Integrate the small agreed adapter patches for
+  the other agents; do not let multiple agents concurrently rewrite these
+  files. Prefer focused new helper/test files over growing shared files further.
+
+Each agent reads this group, current PROGRESS and relevant local instructions,
+then records its exact files, dependencies and acceptance before editing.
+The PT.10/PT.11 fixes form this group's baseline: verify their Git state and
+agree a shared baseline before isolated branches/worktrees. Preserve unrelated
+pending work; do not reset/stash or commit/push it incidentally during EW.
+Coordinate any ownership change
+before touching another agent's files. A handoff must include API/schema changes,
+files changed, tests actually run, known gaps and the next integration step.
+Use stubs only in tests, and keep incomplete production UI paths disabled.
+
+#### Contracts the agents must settle in EW.1–EW.3
+
+- **Identity and indexing:** commands capture show/slide/box IDs, not the live
+  cursor or a delegate's changing index. `moveSlide` takes the final position
+  after removal; translate the visible insertion gap exactly once. Reject a
+  different presentation, vanished anchor or stale document generation. Define
+  stable selection and a deterministic fallback when undo removes a fresh slide.
+- **Scene/item mapping:** current compiled SceneItems have no domain box ID.
+  Freeze an item-index-to-box-ID map for each exact compiled scene revision,
+  or agree a versioned editor-only mapping. Never attach a reply for item index
+  0 to whichever box happens to be selected when it arrives.
+- **Text and Unicode:** explicitly map Qt UTF-16/source offsets, wire UTF-8 and
+  SkParagraph/display offsets. Preserve authored newlines and original case;
+  handle grapheme boundaries, ligatures, combining marks, emoji, RTL/bidi and
+  All caps expansion. Cursor hit testing, selection rects, line/word movement
+  and IME candidate-window coordinates must agree with displayed glyphs.
+- **Input/history:** separate preedit from committed text and short-latency
+  preview updates from undo grouping. Pin each typing burst to its original
+  IDs; flush/cancel deterministically on slide/box change, insert/move, save,
+  undo/redo and page leave. Native input must not create an independent undo
+  stack that disagrees with document history. Cancelled IME preedit creates no
+  persistent edit; completed typing remains on leaving text mode.
+- **Asynchronous layout:** agree bounded requests/replies, named capability,
+  rejection paths and cache/queue limits before adding RPC fields. Use latest
+  draft/revision wins and matching Selection-frame ownership for geometry;
+  late replies cannot move a caret or repaint another slide. Request only the
+  needed caret/hit/selection geometry rather than unbounded glyph dumps. Keep
+  shaping/layout work off the audience frame loop and the Qt event loop.
+- **Latency/recovery:** record baseline and aim for p95 keystroke-to-matching
+  off-air pixels/caret within 150 ms on the development machine, without an
+  unbounded request queue or audience/audio regression. Replace the current
+  250 ms editor debounce where required; do not mask stale text with invented
+  caret positions. On worker loss retain the committed draft, clear stale
+  geometry and expose the source-edit fallback until matching layout returns.
+
+#### Acceptance and completion checklist
+
+- **Controller/domain:** move up/down/start/end/no-op, insert before/after and
+  empty presentation, stale/wrong IDs, source/anchor removal during a gesture,
+  current-slide identity, pending-text flush, one undo/redo per structural edit,
+  full media/notes/group preservation, save/reopen and autosave recovery.
+- **Rendered editing:** click-to-caret, text drag selection, multiline paste,
+  cut/copy/Delete, word/line navigation, IME composition, undo/redo, multiple
+  overlapping text/image boxes, theme versus per-slide styles, fixed/shrink fit,
+  Bible contexts, glyph/effect insets, All caps (`ß`), accented/combining text,
+  emoji and RTL. Check caret/selection against actual worker pixels, not just
+  against a mocked rectangle or Qt's own font metrics.
+- **Real UI gestures:** rail drags in both directions, all insertion positions,
+  long-list autoscroll, cancellation and no-op, resizes and model replacement
+  mid-drag; return of focus after insert and context menus. Run at widths
+  1000/1380/1680 and scale factors 1/1.5/2; keyboard alternatives must work.
+- **Whole journey:** edit a verse on canvas → insert/type a slide → reorder it
+  → undo/redo → save/reopen. Preserve repeated song sections, item theme,
+  backgrounds and source-word order. Editing a currently live item must leave
+  audience pixels/published revision unchanged until explicit Go; subsequent
+  navigation follows the new slide order. Repeat with worker disconnect and a
+  pending layout reply; changing pages must retire editing/thumbnail ownership.
+- **Checks/evidence:** build UI, worker and affected tests; run relevant domain,
+  document controller, protocol/worker adapter, renderer, workspace/control-set,
+  preview-selection and UI-load suites plus new focused editor/rail fixtures.
+  Run tests requiring a display/socket with the necessary local access; record
+  skips separately. Capture the integrated Edit layout and measure the latency
+  target. `git diff --check` must pass. Update architecture/shortcut help and
+  the current handoff; do not claim this plan itself implements the feature.
+
+Execution order: EW.1 → {EW.2 → EW.3 → EW.4 → EW.5,
+EW.6 → [EW.7 and EW.8]} → EW.9 → EW.10. The inline agent may develop
+against the frozen contract in parallel, but EW.4/EW.5 cannot be accepted before
+the real renderer path passes. Insertion's final text-focus handoff joins EW.5.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

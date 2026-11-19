@@ -143,14 +143,11 @@ namespace openshow::protocol {
 // fontStyle, fitMode, minFontSize and the whole stroke/shadow effect
 // records — and every answer grows a visual "bounds" (the laid-out runs'
 // extents grown by the enabled effects, authored units relative to the
-// paragraph's paint origin) plus a "fits" verdict. The two divide the
-// honest way: "fits" judges the FILL — the laid-out lines inside the
-// box, the one question repagination can answer — and "bounds" carries
-// where any pixel may land, so a consumer with its own region (a safe
-// area, a test's canvas) judges the effect spill from the same numbers
-// the drawing uses. Additive the way minor
-// 14 was: v1 payloads still measure exactly what they always measured, and
-// a v1 reader ignores the two new keys. The capability "text.measure.v2"
+// paragraph's paint origin) plus a "fits" verdict. Rendering and
+// measurement reserve glyph overhang, stroke and shadow space inside
+// the box before wrapping. Height includes that space, and "fits" judges
+// the complete styled text (including its position when height is given).
+// A v1 reader ignores the two additive keys. The capability "text.measure.v2"
 // names a worker that HONOURS the style keys — and that is load-bearing:
 // a pre-16 worker ignores unknown block keys silently, so a styled ask
 // sent to it would come back answered in the WRONG typography, the one

@@ -1,6 +1,6 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-11-16 (Europe/London).
+Updated: 2026-11-19 (Europe/London).
 
 This file is the CURRENT handoff. Earlier checkpoint narratives — the media
 library, the type/effects review, the CS/TV/TS/TR series and the M6 milestones —
@@ -10,6 +10,47 @@ git history is the authority for what each of those commits did. Nothing in the
 archive is a current instruction.
 
 ## Current checkpoint
+
+**Reflow section reconstruction (2026-11-19): corrected.** Reflow previously
+treated each stored slide fragment as a new stanza, retaining old pagination;
+its saved source also became stale after the first reflow. It now joins
+consecutive fragments of each named verse/chorus before measuring and splitting
+again. Generated `(cont.)` suffixes are excluded from section identity, and
+repeated choruses separated by other sections retain their order and words.
+New song preparation captures group identity before continuation notes. A
+successful reflow updates the fingerprint of an already-valid source in the
+same service edit, so later fitting changes can restore authored lyric lines;
+edited/stale sources remain excluded. Legacy/current-word fallback also joins
+its consecutive section fragments. Regressions cover larger/smaller boxes,
+repeated fitting changes, original lines/words, repeated choruses, save/reopen
+and the leading cue. UI rebuilt; reflow, document controller, theme apply,
+UI-load and real-worker planner checks passed **5/5**.
+
+**Import/reflow text fitting (2026-11-19): corrected.** Measurement used line
+metrics alone and deliberately ignored effect spill; tight line spacing could
+therefore approve visible glyph overhang, while outlines and shadows crossed
+the box. `SceneTextEngine::layoutInBox` now shares wrapping/insets between
+measurement and painting, including shaped glyph bounds and space for enabled
+effects. It preserves the chosen size when paginating and can produce more
+slides. Import/reflow send the real box height through `WorkerController`,
+including an explicit centre anchor, and height participates in measurement
+cache identity. Bible reflow now resolves the chosen snapshot's target context
+(typography, box or inset) rather than measuring its Songs view.
+
+Regression coverage checks rendered pixels at all nine alignment combinations,
+tight-leading glyph overhang, a styled clipboard import, height forwarding and
+cache identity, and a passage whose Bible box is smaller than its Songs box.
+The latter remeasures the committed slides and verifies every original-case
+word is retained. Preview/theme selection is unchanged, as requested. Restart
+the rebuilt application and use Reflow text on existing imported items to
+regenerate their breaks with the corrected measurements.
+
+UI/worker and affected test builds passed. Focused ctest checks passed **15/15**
+(67.26 s), including rendered-pixel containment, real-worker song/Bible import
+and reflow, worker adapter/protocol, pagination, domain and UI load. The final
+Default-context inheritance correction passed document-controller, UI-load and
+real-worker reflow checks again (4.18/8.02/1.17 s). `git diff --check` passed.
+These are targeted checks; no new full-suite or physical-projector claim is made.
 
 **Dialog wording (2026-11-17): simplified.** Apply theme now offers **Keep slide
 breaks**, **Reflow text** and Cancel. Remove the normal explanation paragraphs

@@ -115,6 +115,177 @@ QString themeIdNamed(openshow::ui::DocumentController& docs, const QString& name
     return QString();
 }
 
+void exerciseSongSectionReassembly(openshow::ui::WorkerController& worker,
+                                   const std::filesystem::path& root) {
+    openshow::ui::DocumentController docs(nullptr, root);
+    check(docs.createBlankTheme(QStringLiteral("Roomy sections")) &&
+              docs.createBlankTheme(QStringLiteral("Tight sections")),
+          "section reassembly themes exist");
+    const QString roomy = themeIdNamed(docs, QStringLiteral("Roomy sections"));
+    const QString tight = themeIdNamed(docs, QStringLiteral("Tight sections"));
+    check(docs.editTheme(roomy, QStringLiteral("Roomy sections"), QStringLiteral("#ffffff"),
+              QStringLiteral("#000000"), QString(), QStringLiteral("Sans"), 48,
+              QStringLiteral("center"), 1.3) &&
+              docs.setThemePlacement(roomy, 100, 80, 1720, 920) &&
+              docs.editTheme(tight, QStringLiteral("Tight sections"), QStringLiteral("#ffffff"),
+              QStringLiteral("#000000"), QString(), QStringLiteral("Sans"), 72,
+              QStringLiteral("center"), 1.3) &&
+              docs.setThemePlacement(tight, 500, 300, 600, 190),
+          "section fitting can grow and shrink");
+    const QString roomyLook = docs.themeSnapshotJson(roomy);
+    const QString tightLook = docs.themeSnapshotJson(tight);
+    QVariantList fragments{QVariantMap{{QStringLiteral("lines"), QStringList{}},
+                                      {QStringLiteral("blank"), true}}};
+    const auto add = [&fragments](const char* group, const char* word, bool continued = false) {
+        const QString section = QString::fromLatin1(group);
+        fragments.append(QVariantMap{{QStringLiteral("lines"), QStringList{QString::fromLatin1(word)}},
+            {QStringLiteral("group"), section},
+            {QStringLiteral("label"), section + (continued ? QStringLiteral(" (cont.)") : QString())}});
+    };
+    constexpr const char* authoredLine = "Original authored lyric line with several words to split";
+    add("Verse 1", authoredLine); add("Verse 1", "Second", true);
+    add("Verse 1", "Third", true); add("Verse 1", "Fourth", true);
+    add("Chorus", "Sing"); add("Chorus", "Again", true);
+    add("Verse 2", "New words");
+    add("Chorus", "Sing"); add("Chorus", "Again", true);
+    const QString show = docs.upsertCatalogSong(QStringLiteral("section-fragments"),
+        QStringLiteral("Section fragments"), QString(), QString(), QString(), fragments, false);
+    check(!show.isEmpty(), "a song begins with paginated section fragments");
+    const QString cue = docs.slidesOf(show).front().toMap().value(QStringLiteral("id")).toString();
+    const auto prepare = [&worker, &show](openshow::ui::DocumentController& document,
+                                         const QString& look) {
+        openshow::ui::ReflowPlanner planner(&document, &worker);
+        Reply reply;
+        QObject::connect(&planner, &openshow::ui::ReflowPlanner::prepared,
+            [&reply](bool ok, const QString& error) { reply = {true, ok, error}; });
+        check(planner.prepare(show, look), "section reassembly preparation starts");
+        waitForReply(planner, &reply);
+        check(reply.ok, "the complete sections are measured");
+        return planner.plan();
+    };
+    const auto roomyPlan = prepare(docs, roomyLook);
+    const QStringList expectedWords = wordsOf(fragments);
+    check(roomyPlan.value(QStringLiteral("slideCount")).toInt() == 4 &&
+              wordsOf(roomyPlan.value(QStringLiteral("slides")).toList()) == expectedWords,
+          "fragments recombine into four section occurrences without losing or repeating words");
+    check(docs.commitReflowPlan(show, roomyLook, roomyPlan), "the recombined song commits");
+    const auto tightPlan = prepare(docs, tightLook);
+    check(tightPlan.value(QStringLiteral("slideCount")).toInt() > 4 &&
+              docs.commitReflowPlan(show, tightLook, tightPlan),
+          "the complete sections split again for a tighter fitting");
+    check(docs.reflowSourceMatches(show), "reflow retains a usable captured section source");
+    const auto roundTrip = prepare(docs, roomyLook);
+    check(roundTrip.value(QStringLiteral("slideCount")).toInt() == 4 &&
+              !roundTrip.value(QStringLiteral("usedFallback")).toBool() &&
+              roundTrip.value(QStringLiteral("slides")).toList().front().toMap()
+                  .value(QStringLiteral("lines")).toList().front().toString() ==
+                      QString::fromLatin1(authoredLine) &&
+              wordsOf(roundTrip.value(QStringLiteral("slides")).toList()) == expectedWords,
+          "changing fitting back restores the complete sections from the retained source");
+    check(docs.save(), "the tightly paginated song saves");
+    openshow::ui::DocumentController reopened(nullptr, root);
+    check(reopened.load() && reopened.reflowSourceMatches(show),
+          "section source and its updated fingerprint survive reopen");
+    check(reopened.forgetReflowSource(show), "the legacy case has no captured source");
+    const auto fallback = prepare(reopened, roomyLook);
+    check(fallback.value(QStringLiteral("slideCount")).toInt() == 4 &&
+              fallback.value(QStringLiteral("usedFallback")).toBool() &&
+              wordsOf(fallback.value(QStringLiteral("slides")).toList()) == expectedWords,
+          "legacy slide fragments also reconstruct each section before fitting");
+    check(reopened.commitReflowPlan(show, roomyLook, fallback) &&
+              reopened.slidesOf(show).front().toMap().value(QStringLiteral("id")).toString() == cue,
+          "reassembling legacy sections preserves the leading cue");
+}
+
+void exerciseScriptureContext(openshow::ui::WorkerController& worker,
+                              const std::filesystem::path& root) {
+    openshow::ui::DocumentController docs(nullptr, root);
+    check(docs.createBlankTheme(QStringLiteral("Different views")), "context fixture theme exists");
+    const QString theme = themeIdNamed(docs, QStringLiteral("Different views"));
+    check(docs.editTheme(theme, QStringLiteral("Different views"), QStringLiteral("#ffffff"),
+                         QStringLiteral("#000000"), QString(), QStringLiteral("Sans"),
+                         40.0, QStringLiteral("center"), 1.25) &&
+              docs.setThemePlacement(theme, 100, 80, 1700, 900) &&
+              docs.applyThemeContext(theme, QStringLiteral("scripture"), QVariantMap{
+                  {QStringLiteral("fontSize"), 80.0},
+                  {QStringLiteral("lineSpacing"), 1.3},
+                  {QStringLiteral("allCaps"), true},
+                  {QStringLiteral("verticalAlign"), QStringLiteral("bottom")},
+                  {QStringLiteral("box"), QVariantMap{{QStringLiteral("x"), 300.0},
+                      {QStringLiteral("y"), 200.0}, {QStringLiteral("width"), 650.0},
+                      {QStringLiteral("height"), 270.0}}}}),
+          "the Bible view has a smaller box and larger capitalised text than Songs");
+    const QString snapshot = docs.themeSnapshotJson(theme);
+    const QVariantMap style = docs.boxStyleForSnapshot(snapshot, QStringLiteral("scripture"));
+    check(style.value(QStringLiteral("boxWidth")).toDouble() == 650.0 &&
+              style.value(QStringLiteral("boxHeight")).toDouble() == 270.0 &&
+              style.value(QStringLiteral("fontSize")).toDouble() == 80.0 &&
+              style.value(QStringLiteral("allCaps")).toBool(),
+          "snapshot measurement resolves the Bible view before planning");
+    check(docs.createPlaylist(QStringLiteral("Context passage")), "context fixture schedule exists");
+    const QString words = QStringLiteral("Morning light fills the room and every shadow fades. ")
+                              .repeated(4).trimmed();
+    check(docs.addScripturePassage(docs.currentPlaylistId(), QStringLiteral("Test 1:1"),
+              QStringLiteral("Test"), QString(), QVariantList{QVariantMap{
+                  {QStringLiteral("lines"), QStringList{words}},
+                  {QStringLiteral("notes"), QStringLiteral("Test 1:1")}}}),
+          "a long passage is added for context reflow");
+    QString show;
+    for (const auto& id : docs.documents().showIds()) {
+        if (docs.documents().findShow(id)->name == "Test 1:1") show = QString::fromStdString(id);
+    }
+    openshow::ui::ReflowPlanner planner(&docs, &worker);
+    Reply prepared;
+    QObject::connect(&planner, &openshow::ui::ReflowPlanner::prepared,
+                     [&prepared](bool ok, const QString& error) {
+                         prepared = {true, ok, error};
+                     });
+    check(planner.prepare(show, snapshot), "Bible-context reflow starts");
+    waitForReply(planner, &prepared);
+    check(prepared.ok && planner.plan().value(QStringLiteral("slides")).toList().size() > 1,
+          "Bible-context reflow splits words that would fit in the song box");
+    if (!prepared.ok || !check(docs.commitReflowPlan(show, snapshot, planner.plan()),
+                              "the context plan commits")) return;
+    QVariantList asks;
+    QStringList actualWords;
+    for (const QVariant& row : docs.slidesOf(show)) {
+        const QString id = row.toMap().value(QStringLiteral("id")).toString();
+        const auto scene = boost::json::parse(docs.sceneJsonForSlide(id).toStdString());
+        const auto& item = scene.as_object().at("items").as_array().front().as_object();
+        QStringList lines;
+        for (const auto& line : item.at("lines").as_array())
+            lines.append(QString::fromStdString(std::string(line.as_string())));
+        actualWords.append(lines.join(QLatin1Char(' ')));
+        asks.append(QVariantMap{{QStringLiteral("key"), id}, {QStringLiteral("lines"), lines},
+            {QStringLiteral("fontFamily"), QString::fromStdString(std::string(item.at("fontFamily").as_string()))},
+            {QStringLiteral("fontSize"), item.at("fontSize").to_number<double>()},
+            {QStringLiteral("width"), item.at("width").to_number<double>()},
+            {QStringLiteral("height"), item.at("height").to_number<double>()},
+            {QStringLiteral("lineSpacing"), item.at("lineSpacing").to_number<double>()},
+            {QStringLiteral("verticalAlign"), QStringLiteral("bottom")},
+            {QStringLiteral("allCaps"), true}});
+    }
+    check(actualWords.join(QLatin1Char(' ')).simplified() == words.simplified(),
+          "context reflow preserves every original-case word in order");
+    bool answered = false;
+    qint64 request = 0;
+    const auto connection = QObject::connect(&worker, &openshow::ui::WorkerController::textMeasured,
+        [&answered, &request, &asks](qint64 id, const QVariantList& replies) {
+            if (id != request) return;
+            answered = true;
+            check(replies.size() == asks.size(), "every committed passage slide is measured");
+            for (const auto& reply : replies)
+                check(reply.toMap().value(QStringLiteral("fits")).toBool(),
+                      "every committed passage slide fits its actual rendered Bible box");
+        });
+    request = worker.measureText(asks);
+    QElapsedTimer timer;
+    timer.start();
+    while (!answered && timer.elapsed() < 15000) QTest::qWait(20);
+    QObject::disconnect(connection);
+    check(request != 0 && answered, "the renderer verifies the committed context slides");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -633,6 +804,8 @@ int main(int argc, char** argv) {
               "PT.8: Library undo restores its earlier look without changing the service");
     }
 
+    exerciseSongSectionReassembly(worker, root / "section-reassembly");
+    exerciseScriptureContext(worker, root / "scripture-context");
     worker.shutdownNow();
     if (gFailed > 0) {
         std::fprintf(stderr, "reflow_planner_tests: %d failure(s)\n", gFailed);
