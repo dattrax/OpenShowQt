@@ -963,7 +963,8 @@ public:
     static Theme defaultTheme();
     // Seed the Default theme when the service does not carry its id, so a
     // file hand-edited into its absence still opens on a look. An existing
-    // theme with that id, whatever its author put in it, is left alone.
+    // theme with that id keeps its appearance. Also disambiguate duplicate
+    // theme labels from older builds without changing IDs or assignments.
     // Idempotent.
     void ensureDefaultTheme();
 
@@ -1112,7 +1113,8 @@ public:
     // statement about the background, so every caller states it); fontSize
     // must be finite and >= 0; align one of "left"/"center"/"right";
     // lineSpacing a finite line-box multiplier in 0.25..8. Returns the new
-    // theme's Id, or "" on failure.
+    // theme's Id, or "" on failure. Creation and renaming both refuse an
+    // existing name after trimming, without changing the document.
     Id createTheme(const std::string& name, const std::string& textColor,
                    const std::string& backgroundColor,
                    const std::string& backgroundGradient, const std::string& fontFamily,
@@ -1120,6 +1122,9 @@ public:
                    std::string* error = nullptr);
     bool removeTheme(const Id& themeId, std::string* error = nullptr);
     bool renameTheme(const Id& themeId, const std::string& name, std::string* error = nullptr);
+    // Suggest a free label for generated New/Duplicate/import operations.
+    // Explicitly entered names still go through createTheme/renameTheme.
+    std::string availableThemeName(const std::string& name) const;
     bool updateTheme(const Id& themeId, const std::string& textColor,
                      const std::string& backgroundColor,
                      const std::string& backgroundGradient, const std::string& fontFamily,

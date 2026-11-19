@@ -24,10 +24,13 @@ Go, including when the edited item is currently live.
    cursor or an unrelated multi-selection. Offer the same action on the keyboard
    context menu; keep target identity while the dialog is open.
 2. Pick a theme and show the target title. For an existing service presentation,
-   offer **Apply only**, **Apply and reflow**, and **Cancel**. Apply only is the
-   safe default and keeps all current slide boundaries. State that the operation
-   replaces text formatting/placement for the whole item and, for a linked song,
-   also remembers the chosen look in the Library.
+   offer **Keep slide breaks**, **Reflow text**, and **Cancel**. Both apply the
+   theme; the first keeps all current slide boundaries. Use these action labels
+   instead of explanatory paragraphs. For a linked song, retain only the short
+   note that its look is also remembered in the Library. Show repeated-entry
+   scope only when more than one service entry is affected, and explain why
+   reflow is unavailable only when blocked. In the implementation notes below,
+   “Apply only” and “Apply and reflow” name these two existing operations.
 3. Apply and reflow measures the current words against the selected theme,
    preserving semantic section/verse boundaries. Show preparation/progress and
    allow cancellation before commit. Failure leaves the existing theme, slides
@@ -104,8 +107,14 @@ scene and measurement types. Recheck allocation before implementation.
   Snapshot changes increment record/content revisions and retain canonical lyrics.
 - Remember a look by value, never by source theme name/ID. Materialise it as an
   ordinary service-local theme when used in a service. Reuse a full-definition
-  fingerprint match, not a same-name match; otherwise mint a fresh local ID.
-  Do not overwrite a different existing theme named Brun, Default, etc.
+  match of the resolved appearance (including inherited contexts/movement),
+  not a sparse-record or same-name match; prefer the chosen local name among
+  equivalent looks. Otherwise mint a fresh local ID and a unique display name
+  such as Brun (2). Do not overwrite a different existing theme named Brun,
+  Default, etc. Explicit creation and Rename refuse an existing trimmed name
+  without mutation. New/Duplicate/import suggest a free label before creation.
+  Loading or recovering an older service disambiguates duplicate labels while
+  preserving every theme ID, assignment and appearance.
 - A local theme edit can change shows using that local definition as today, but
   it cannot alter the Library snapshot. Only another explicit item application
   replaces the remembered look. Adding the song to a new service uses the stored

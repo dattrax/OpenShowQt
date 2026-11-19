@@ -2196,12 +2196,36 @@ explicit Go. [Workflow, persistence, source preservation and acceptance](docs/ui
 | PT.6 | DONE | Commit prepared item changes and remembered preferences with honest history/persistence | Prevalidate before durable catalog write, then publish one compound service edit; service undo restores theme/slides/media/IDs once, Library preference uses Library history; fault/refusal/reconnect tests prove no partial UI mutation or surprise Apply-only repagination; do not claim cross-store crash atomicity |
 | PT.7 | DONE | Move apply actions to left-hand item rows and add the keep/reflow dialog | Library/Service rows target explicit identities; show title/occurrence count, Apply only/Apply and reflow/Cancel and eligibility reasons; unprepared Library songs remember without entering the running order; remove central tile theme menu/header apply bypass; keyboard and no-worker paths work |
 | PT.8 | DONE | Close Library→service→reflow→Go→undo/save journeys and reconcile docs | Whole-item uniformity, current-word conservation, future-service saved looks, legacy scripture, override/media preservation, stale/failure paths and separate undo scopes verified; focused then desktop/headless/source guards pass, with skips/physical gates recorded separately |
+| PT.9 | DONE | Correct apply-dialog sizing and ambiguous snapshot copies | Centre the dialog in the window and contain every action; compare resolved looks so applying a local theme reuses it; creation/rename refuse an existing trimmed name; generated/imported/load/recovered labels remain unique; updated All caps survives measured reflow, preview compilation and reopen; retain transaction refusal messages |
 
 Order: PT.1 → PT.2/PT.3/PT.4 → PT.5 → PT.6 → PT.7 → PT.8; split any leaf
 exceeding two engineer-days. PT.1–PT.8 DONE. No global live
 theme library, automatic audience presentation, provider cache or arbitrary
 multi-object slide reflow is introduced. Recheck catalog/service allocations before implementing; existing
 scene 8/protocol 0.20 suffice. Prior TL/BX/DR/PV completion remains historical.
+
+PT.9 follow-up evidence (2026-11-17): regression checks reproduced the sidebar-
+width dialog overflow and sparse-versus-resolved snapshot comparison. The dialog
+now centres in the window and sizes for its actions; transaction refusals retain
+their message. Effective snapshot comparison reuses the selected local theme,
+including inherited context/movement fields. Different looks receive unique
+labels for generated New/Duplicate/import actions and load/autosave recovery,
+retaining IDs/assignments; explicit creation and Rename refuse an existing
+trimmed name without mutation. Six focused checks passed: domain, document
+controller, apply transaction, workspace (62.42 s), UI load and real-worker reflow
+(1.03 s, local display/socket access). The workspace also passed at scale 1.5,
+including dialog geometry at 1000/1380/1680 widths. Real-worker reflow verifies an
+updated All caps look, original-case words, no extra theme, preview compilation,
+separate undo scopes and save/reopen. `openshow-ui` was rebuilt and
+`git diff --check` passed. Prior full-suite totals below are historical; no new
+full-suite or physical-projector claim is made.
+
+Dialog-copy follow-up: the visible actions are **Keep slide breaks** and
+**Reflow text** under Apply theme. Remove the normal explanatory paragraphs and
+single-occurrence count. Retain only a brief Library/future-use note, repeated-
+entry scope when needed, progress and actionable reflow/error messages.
+Rebuilt UI and existing workspace/UI-load/real-worker reflow checks passed
+3/3 (63.17/8.02/1.04 s); `git diff --check` passed.
 
 PT.1 evidence (2026-11-17): `openshow::domain::ThemeSnapshot`
 (`themesnapshot.h`) is the portable remembered look. Its fields are the

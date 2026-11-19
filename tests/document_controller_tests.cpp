@@ -2862,6 +2862,15 @@ void exercisePlacementSurfaces(const std::filesystem::path& root) {
     // Duplicate carries the placement, and "wear what this slide draws"
     // snapshots WHERE it draws as well as what.
     check(docs.duplicateTheme(house), "the theme is duplicated");
+    const QVariantList beforeNameCollision = docs.themes();
+    check(!docs.createBlankTheme(QStringLiteral(" House ")) &&
+              docs.status().contains(QStringLiteral("already exists")) &&
+              docs.themes() == beforeNameCollision,
+          "the controller refuses creation with an existing trimmed name");
+    check(docs.duplicateTheme(house) &&
+              docs.themes().last().toMap().value(QStringLiteral("name")).toString() ==
+                  QStringLiteral("House copy (2)"),
+          "repeated Duplicate generates a free name before creating the theme");
     QString copy;
     for (const QVariant& theme : docs.themes()) {
         if (theme.toMap().value(QStringLiteral("name")).toString() ==
@@ -4855,16 +4864,19 @@ void exerciseRememberedLookAcrossServices(const std::filesystem::path& root) {
               "service B wears the remembered look, not its colliding local Brun");
         int bruns = 0;
         QStringList families;
+        QStringList themeNames;
         for (const QVariant& theme : docs.themes()) {
             const QVariantMap row = theme.toMap();
+            themeNames.append(row.value(QStringLiteral("name")).toString());
+            families.append(row.value(QStringLiteral("fontFamily")).toString());
             if (row.value(QStringLiteral("name")).toString() == QStringLiteral("Brun")) {
                 ++bruns;
-                families.append(row.value(QStringLiteral("fontFamily")).toString());
             }
         }
-        check(bruns == 2 && families.contains(QStringLiteral("Noto Serif")) &&
+        check(bruns == 1 && themeNames.contains(QStringLiteral("Brun (2)")) &&
+                  families.contains(QStringLiteral("Noto Serif")) &&
                   families.contains(QStringLiteral("B Sans")),
-              "the colliding local theme is preserved beside a new remembered one");
+              "the colliding local theme is preserved beside a distinctly named remembered one");
     }
 }
 

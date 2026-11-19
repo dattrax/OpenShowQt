@@ -943,7 +943,7 @@ Item {
                 Button {
                     objectName: "themeEditorNew"
                     text: "New"
-                    onClicked: docs.createBlankTheme("New theme")
+                    onClicked: docs.createBlankTheme(docs.availableThemeName("New theme"))
                 }
                 Button {
                     objectName: "themeEditorDuplicate"

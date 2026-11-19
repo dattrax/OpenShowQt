@@ -153,11 +153,11 @@ bool ReflowPlanner::prepare(const QString& showId, const QString& snapshotJson) 
     }
     if (fWorker == nullptr || !fWorker->isConnected()) {
         return refuse(QStringLiteral(
-            "reflow needs the measuring output — Apply only still works without it"));
+            "Reflow needs a connected renderer. You can still keep the existing slide breaks."));
     }
     if (!fWorker->textMeasureSupported()) {
         return refuse(QStringLiteral(
-            "the connected output cannot measure text — Apply only still works"));
+            "The connected renderer cannot reflow text. You can still keep the existing slide breaks."));
     }
 
     // The future appearance comes from the portable look's own numbers, so

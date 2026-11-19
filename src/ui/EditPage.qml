@@ -400,7 +400,8 @@ Flickable {
                 // Forks what the slide draws now — customizations and all —
                 // into a fresh theme worn by this slide alone.
                 onClicked: docs.createThemeFromCurrent(
-                               (docs.currentTheme.name || "Theme") + " fork")
+                               docs.availableThemeName(
+                                   (docs.currentTheme.name || "Theme") + " fork"))
             }
             PanelButton {
                 objectName: "themeDefaultButton"

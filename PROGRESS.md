@@ -11,6 +11,40 @@ archive is a current instruction.
 
 ## Current checkpoint
 
+**Dialog wording (2026-11-17): simplified.** Apply theme now offers **Keep slide
+breaks**, **Reflow text** and Cancel. Remove the normal explanation paragraphs
+and single-occurrence count; retain a short Library/future-use note, repeated-
+entry scope only when needed, and progress/refusal messages. Renderer refusals
+use the same slide-break wording. UI rebuilt; existing workspace, UI-load and
+real-worker reflow checks passed **3/3** (63.17/8.02/1.04 s).
+
+**Apply-theme corrections (PT.9, 2026-11-17): fixed and verified.** The dialog
+was bounded by the narrow sidebar while its children overflowed. Snapshot reuse
+compared sparse themes with resolved values, creating same-named copies; the
+reported service then reapplied an older copy with All caps off. The dialog now
+centres in the window and fits its actions. Resolved-look matching reuses the
+chosen local theme; different looks get unique labels, including old duplicates
+on load/autosave recovery, without changing IDs or assignments. Rename refuses
+collisions. Explicit creation also refuses an existing trimmed name without
+mutation; generated New/Duplicate/import operations suggest a free name before
+creation. Post-measurement transaction errors remain visible.
+
+Name-prohibition follow-up: duplicate trimmed creation and Rename are refused
+without mutation; repeated Duplicate chooses a free label. The rebuilt UI and
+six focused checks passed again (document controller 4.20 s, workspace 63.08 s,
+UI load 8.03 s, real-worker reflow 1.04 s, domain and apply transaction).
+
+Build of the UI and affected tests passed. Focused ctest checks passed **6/6**:
+domain, document controller, apply transaction, workspace (62.42 s), UI load and
+real-worker reflow (1.03 s with local display/socket access; the sandboxed worker
+run could not open its display). The workspace also passed at scale 1.5, with
+dialog bounds/actions checked at 1000/1380/1680 widths. Reflow verifies updated
+All caps, preserved source words, no copied theme, compiled preview and
+save/reopen. `git diff --check` passed. Restart the rebuilt application and
+explicitly apply the original Brun to replace the older remembered look; its
+copy will have a distinct label. Audience still changes on Go. These are focused
+checks; earlier full-suite totals below remain historical evidence.
+
 **Whole-item themes and reflow (2026-11-17): PT.1–PT.8 are DONE.**
 The group is closed; docs are reconciled and the desktop/headless suites plus
 the scale-1.5 workspace run pass. The

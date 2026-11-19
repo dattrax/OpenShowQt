@@ -1662,6 +1662,10 @@ bool DocumentController::useThemeAsCurrent(const QString& themeId) {
     return true;
 }
 
+QString DocumentController::availableThemeName(const QString& name) const {
+    return QString::fromStdString(fDocuments.availableThemeName(name.toStdString()));
+}
+
 bool DocumentController::createBlankTheme(const QString& name) {
     flushText();
     std::string error;
@@ -1698,7 +1702,8 @@ bool DocumentController::duplicateTheme(const QString& themeId) {
             // including a vector of contexts, is how that luck ends.)
             const openshow::domain::Theme source = *original;
             const openshow::domain::Id copy = fDocuments.createTheme(
-                source.name + " copy", source.textColor, source.backgroundColor,
+                fDocuments.availableThemeName(source.name + " copy"),
+                source.textColor, source.backgroundColor,
                 source.backgroundGradient, source.fontFamily, source.fontSize, source.align,
                 source.lineSpacing, &error);
             if (copy.empty()) {

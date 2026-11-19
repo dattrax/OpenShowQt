@@ -7,8 +7,8 @@ import QtQuick.Layouts
 // captured when the dialog opens and every action uses it — a later cursor
 // move cannot retarget the apply.
 //
-// Apply only is the safe default and keeps every current slide break. Apply
-// and reflow measures the item's OWN words against the chosen look and is
+// Keep slide breaks applies without pagination. Reflow text measures the
+// item's OWN words against the chosen look and is
 // offered only when the item is structurally eligible; the reason is shown
 // rather than hidden. An unprepared Library song only needs Remember theme:
 // it has no service breaks yet, and applying must not create a hidden
@@ -18,7 +18,10 @@ Dialog {
     objectName: "applyThemeDialog"
     modal: true
     title: "Apply theme"
-    width: Math.min(520, (parent ? parent.width : 520) - 40)
+    parent: Overlay.overlay
+    anchors.centerIn: parent
+    width: Math.min(Math.max(600, actions.implicitWidth + leftPadding + rightPadding),
+                    parent ? parent.width - 32 : 600)
     closePolicy: Popup.CloseOnEscape
     padding: 16
 
@@ -42,14 +45,8 @@ Dialog {
     readonly property bool canReflow:
         !dialog.rememberOnly && dialog.targetShowId !== "" &&
         dialog.eligibility.eligible === true
-    readonly property string eligibilityText: {
-        if (dialog.rememberOnly)
-            return "This song is not in the service yet. The chosen look is remembered for its next Add; nothing is added to the running order."
-        if (dialog.eligibility.eligible === true)
-            return "Apply and reflow re-paginates the words this item already holds."
-        return "Reflow unavailable: " + (dialog.eligibility.reason || "this item's structure")
-               + ". Apply only still works."
-    }
+    readonly property string eligibilityText:
+        "Cannot reflow: " + (dialog.eligibility.reason || "this item's layout")
 
     function chooseDefaultTheme() {
         const applied = dialog.targetShowId !== ""
@@ -139,13 +136,12 @@ Dialog {
                 dialog.notice = error
                 return
             }
-            if (!applySession.applyReflow(dialog.targetShowId,
-                                          dialog.preparedSnapshot,
-                                          reflow.plan(),
-                                          dialog.catalogItemId,
-                                          dialog.catalogItemId !== "")) {
-                dialog.notice = applySession.lastError
-            }
+            // applied() below owns both success and refusal messages.
+            applySession.applyReflow(dialog.targetShowId,
+                                     dialog.preparedSnapshot,
+                                     reflow.plan(),
+                                     dialog.catalogItemId,
+                                     dialog.catalogItemId !== "")
         }
     }
     Connections {
@@ -172,12 +168,10 @@ Dialog {
         }
         Label {
             objectName: "applyThemeTargetLine"
-            text: dialog.rememberOnly
-                  ? "Not in this service"
-                  : (dialog.occurrenceCount === 1
-                     ? "1 occurrence in the running order"
-                     : dialog.occurrenceCount + " occurrences in the running order")
+            visible: !dialog.rememberOnly && dialog.occurrenceCount > 1
+            text: "Applies to all " + dialog.occurrenceCount + " service entries."
             color: "#b0b0b0"
+            wrapMode: Text.WordWrap
             Layout.fillWidth: true
         }
         RowLayout {
@@ -194,16 +188,18 @@ Dialog {
         }
         Label {
             objectName: "applyThemeExplanation"
+            visible: dialog.rememberOnly || dialog.catalogItemId !== ""
             text: dialog.rememberOnly
-                  ? "The chosen look is remembered in the Library for this song's next Add."
-                  : "Replaces text formatting and placement for the whole item; words, media and notes stay."
+                  ? "Used the next time you add this song."
+                  : "Also remembered in the Library."
             wrapMode: Text.WordWrap
             color: "#b0b0b0"
             Layout.fillWidth: true
         }
         Label {
             objectName: "applyThemeEligibility"
-            text: dialog.preparing ? "Measuring the words\u2026" : dialog.eligibilityText
+            visible: dialog.preparing || (!dialog.rememberOnly && !dialog.canReflow)
+            text: dialog.preparing ? "Reflowing text\u2026" : dialog.eligibilityText
             wrapMode: Text.WordWrap
             color: dialog.canReflow || dialog.rememberOnly ? "#9fd3a8" : "#e0b060"
             Layout.fillWidth: true
@@ -218,11 +214,13 @@ Dialog {
         }
 
         RowLayout {
+            id: actions
             Layout.fillWidth: true
             spacing: 8
             Button {
                 objectName: "applyThemeOnlyButton"
-                text: "Apply only"
+                text: "Keep slide breaks"
+                visible: !dialog.rememberOnly
                 enabled: !dialog.preparing && !dialog.rememberOnly
                 onClicked: {
                     const snapshot = dialog.chosenSnapshot()
@@ -238,7 +236,8 @@ Dialog {
             }
             Button {
                 objectName: "applyThemeReflowButton"
-                text: "Apply and reflow"
+                text: "Reflow text"
+                visible: !dialog.rememberOnly
                 enabled: dialog.canReflow && !dialog.preparing
                 onClicked: {
                     const snapshot = dialog.chosenSnapshot()

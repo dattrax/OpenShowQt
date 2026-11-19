@@ -337,7 +337,7 @@ int main(int argc, char** argv) {
                              refused.error = error;
                          });
         check(!offline.prepare(show, roomyJson) && refused.fired && !refused.ok &&
-                  refused.error.contains(QStringLiteral("measuring output")),
+                  refused.error.contains(QStringLiteral("connected renderer")),
               "reflow refuses without a measuring worker");
     }
 
@@ -467,6 +467,16 @@ int main(int argc, char** argv) {
         check(mediaKept, "PT.8: the common background survives Apply only");
 
         // Reflow, then Go: the compiled scene carries the same words.
+        const QString previousRememberedLook = library.itemThemeSnapshot(item);
+        const QString chosenTheme = serviceB.showInfo(showB)
+                                        .value(QStringLiteral("appliedThemeId"))
+                                        .toString();
+        const auto themeCountBefore = serviceB.themes().size();
+        check(serviceB.setThemeTextStyleField(chosenTheme, QStringLiteral("allCaps"), true),
+              "the selected local theme is changed to All caps before reflow");
+        snapshot = serviceB.themeSnapshotJson(chosenTheme);
+        check(serviceB.boxStyleForSnapshot(snapshot).value(QStringLiteral("allCaps")).toBool(),
+              "reflow measures the updated All caps look");
         openshow::ui::ReflowPlanner journeyPlanner(&serviceB, &worker);
         Reply prepared;
         QObject::connect(&journeyPlanner, &openshow::ui::ReflowPlanner::prepared,
@@ -494,6 +504,11 @@ int main(int argc, char** argv) {
         const QString scene = serviceB.sceneJsonForSlide(firstSlideId);
         check(!scene.isEmpty() && scene.contains(QStringLiteral("Journey verse one")),
               "PT.8: the reflowed slide compiles with its words");
+        check(serviceB.themes().size() == themeCountBefore &&
+                  serviceB.showInfo(showB).value(QStringLiteral("appliedThemeId"))
+                          .toString() == chosenTheme &&
+                  scene.contains(QStringLiteral("\"allCaps\":true")),
+              "reflow renders All caps using the chosen local theme without creating a copy");
         serviceB.selectSong(showB);
         serviceB.selectSlide(0);
         const bool wasLive = worker.wordsOnAir();
@@ -525,6 +540,9 @@ int main(int argc, char** argv) {
                       .value(QStringLiteral("value"))
                       .toString() == QStringLiteral("#ffeeaa"),
               "PT.8: the reopened item still wears the chosen look");
+        check(reopened.slideAppearance().value(QStringLiteral("allCaps"))
+                      .toMap().value(QStringLiteral("value")).toBool(),
+              "the updated All caps look survives save and reopen");
 
         // Legacy scripture: an Add captures its own source, so the legacy
         // path is a captured source dropped again — the eligibility then
@@ -609,8 +627,10 @@ int main(int argc, char** argv) {
         check(!library.itemThemeSnapshot(item).isEmpty(),
               "PT.8: the service undo leaves the Library preference");
         library.undo();
-        check(library.itemThemeSnapshot(item).isEmpty(),
-              "PT.8: the Library undo is its own scope");
+        check(library.itemThemeSnapshot(item) == previousRememberedLook &&
+                  undoService.showInfo(showB).value(QStringLiteral("appliedThemeId"))
+                          .toString() != QString(),
+              "PT.8: Library undo restores its earlier look without changing the service");
     }
 
     worker.shutdownNow();

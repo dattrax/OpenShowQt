@@ -389,6 +389,7 @@ public:
     // Creates a theme wearing whatever the current slide draws now
     // (resolved theme or built-in defaults) and overrides only that slide.
     Q_INVOKABLE bool createThemeFromCurrent(const QString& name);
+    Q_INVOKABLE QString availableThemeName(const QString& name) const;
 
     // --- theme service (task TH.4, themes plan) ---
 

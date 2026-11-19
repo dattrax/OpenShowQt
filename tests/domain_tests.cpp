@@ -4987,6 +4987,59 @@ void exerciseShowAudio(const fs::path& tempRoot) {
 // effective appearance (including contexts and movement) against the chosen
 // theme's normal Default floor, the codec is strict and deterministic, and
 // no service identity or media path travels.
+void exerciseThemeNames(const fs::path& root) {
+    Documents docs;
+    std::string error;
+    const Id first = docs.createTheme("Brun", "#fff", "", "", "", 40, "center", 1.0);
+    const auto beforeCollision = docs.themeIds();
+    check(docs.createTheme(" Brun ", "#ff0", "", "", "", 40, "center", 1.0,
+                           &error).empty() &&
+              error.find("already exists") != std::string::npos &&
+              docs.themeIds() == beforeCollision,
+          "creating a duplicate trimmed name is refused without changing themes");
+    const Id second = docs.createTheme(docs.availableThemeName("Brun"), "#ff0", "", "", "",
+                                        40, "center", 1.0);
+    const Id third = docs.createTheme(docs.availableThemeName("Brun"), "#f00", "", "", "",
+                                       40, "center", 1.0);
+    check(docs.findTheme(first)->name == "Brun" &&
+              docs.findTheme(second)->name == "Brun (2)" &&
+              docs.findTheme(third)->name == "Brun (3)",
+          "generated theme labels are available and distinct before creation");
+    check(!docs.renameTheme(second, " Brun ", &error) &&
+              docs.findTheme(second)->name == "Brun (2)" &&
+              docs.renameTheme(first, " Brun ", &error),
+          "rename refuses a duplicate trimmed name but accepts the theme's own name");
+    const Id show = docs.createShow("Remembered song");
+    const Id slide = docs.appendSlide(show);
+    docs.setSlideLines(show, slide, {"Original case"});
+    docs.applyWholeItemTheme(show, second);
+    check(openshow::domain::saveService(docs, root, &error),
+          "the duplicate-name migration fixture saves");
+    auto manifest = boost::json::parse(readFile(root / "service.json")).as_object();
+    for (auto& row : manifest["themes"].as_array()) {
+        if (row.as_object()["id"].as_string() == second)
+            row.as_object()["name"] = "Brun";  // what the older build wrote
+    }
+    writeFile(root / "service.json", boost::json::serialize(manifest));
+    Documents restored;
+    check(openshow::domain::loadService(&restored, root, &error),
+          "a service with old duplicate labels still loads");
+    check(restored.findTheme(first)->name == "Brun" &&
+              restored.findTheme(second)->name == "Brun (2)" &&
+              restored.findTheme(third)->name == "Brun (3)" &&
+              restored.findShow(show)->appliedThemeId == second &&
+              restored.appearanceForSlide(show, slide).textColor == "#ff0",
+          "loading disambiguates labels while retaining theme IDs, assignments and looks");
+    Documents recovered;
+    openshow::domain::Autosave autosave(root);
+    check(autosave.recover(&recovered, &error) && sameService(recovered, restored),
+          "autosave recovery also repairs old duplicate labels without changing the look");
+    check(openshow::domain::saveService(restored, root, &error) &&
+              openshow::domain::loadService(&docs, root, &error) &&
+              sameService(docs, restored),
+          "repaired names survive save and reopen unchanged");
+}
+
 void exerciseThemeSnapshot() {
     using openshow::domain::BoxRect;
     using openshow::domain::TextContext;
@@ -5181,6 +5234,8 @@ void exerciseThemeSnapshot() {
     // different same-named look is never touched.
     const Id materialised = docs.ensureThemeFromSnapshot(snapshot, &error);
     check(!materialised.empty(), "a remembered look materialises as a local theme");
+    check(materialised == theme,
+          "a resolved snapshot reuses its sparse source theme, including inherited contexts");
     ThemeSnapshot reread;
     check(!materialised.empty() && docs.themeSnapshotFor(materialised, &reread, &error) &&
               reread == snapshot,
@@ -5188,8 +5243,13 @@ void exerciseThemeSnapshot() {
     check(docs.ensureThemeFromSnapshot(snapshot, &error) == materialised,
           "the same look is reused rather than duplicated");
     const Id impostor = docs.createTheme(
-        snapshot.name, "#00ff00", "#000000", "", "Other", 20.0, "center", 1.0, &error);
-    check(!impostor.empty(), "a same-named theme with another look exists");
+        docs.availableThemeName(snapshot.name), "#00ff00", "#000000", "", "Other",
+        20.0, "center", 1.0, &error);
+    check(!impostor.empty(), "a distinctly named theme with another look exists");
+    check(docs.findTheme(impostor)->name != docs.findTheme(materialised)->name,
+          "different looks get distinct display names");
+    check(!docs.renameTheme(impostor, docs.findTheme(materialised)->name, &error),
+          "renaming cannot make two theme labels identical");
     const Id again = docs.ensureThemeFromSnapshot(snapshot, &error);
     check(again == materialised && again != impostor,
           "a same-name different look is neither reused nor overwritten");
@@ -5857,6 +5917,7 @@ int main() {
                                            ("openshow-domain-tests-" + std::to_string(getpid()));
     std::filesystem::remove_all(tempRoot);
     exercisePersistence(tempRoot);
+    exerciseThemeNames(tempRoot / "duplicate-theme-names");
     exerciseDeckPageAssets(tempRoot / "deck-pages");
     exerciseBoxStorage(tempRoot);
     exerciseTextStyleStorage(tempRoot);

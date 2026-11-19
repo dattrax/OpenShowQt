@@ -2919,6 +2919,9 @@ bool ServiceCodec::load(Documents* documents, const std::filesystem::path& direc
         asset.sourcePath = file.string();
     }
 
+    // Both explicit loads and autosave recovery need the seeded floor and
+    // unambiguous labels from services written by older builds.
+    loaded.ensureDefaultTheme();
     *documents = std::move(loaded);
     // A deck imported before the deck-page tag existed stored its pages as
     // ordinary pictures. Recognise them on every read — loadService() and
@@ -2944,10 +2947,6 @@ bool loadService(Documents* documents, const std::filesystem::path& directory,
     if (!ServiceCodec::load(documents, directory, error)) {
         return false;
     }
-    // A service written before the Default theme existed — or hand-edited
-    // into its absence — opens on the embedded one (amendment 2026-11-02).
-    // After decoding, so the loader's wholesale rebuild cannot drop it.
-    documents->ensureDefaultTheme();
     return true;
 }
 

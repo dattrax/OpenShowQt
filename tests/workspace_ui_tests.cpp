@@ -4747,6 +4747,34 @@ int main(int argc, char** argv) {
         QTest::qWait(40);
         auto* applyOnly = findNamed(window->contentItem(), "applyThemeOnlyButton");
         auto* applyReflow = findNamed(window->contentItem(), "applyThemeReflowButton");
+        const auto checkApplyDialogGeometry = [&] {
+            auto* content = dialog->property("contentItem").value<QQuickItem*>();
+            check(content != nullptr, "the apply dialog has visible content");
+            if (!content)
+                return;
+            const QRectF bounds(content->mapToScene(QPointF(0, 0)), content->size());
+            check(bounds.left() >= 0 && bounds.right() <= window->width() &&
+                      bounds.top() >= 0 && bounds.bottom() <= window->height(),
+                  "the apply dialog fits in the application window");
+            for (auto* button : {applyOnly, applyReflow,
+                                findNamed(window->contentItem(), "applyThemeCancelButton")}) {
+                if (!button || !button->isVisible())
+                    continue;
+                const QRectF rect(button->mapToScene(QPointF(0, 0)), button->size());
+                check(bounds.contains(rect),
+                      "every apply action fits inside the dialog content");
+            }
+            check(dialog->property("width").toDouble() >= 560,
+                  "the apply dialog is sized for its actions, independently of the sidebar");
+        };
+        const QSize dialogWindowSize = window->size();
+        for (const QSize& size : {QSize(1000, 650), QSize(1680, 900), QSize(1380, 800)}) {
+            window->resize(size);
+            QTest::qWait(60);
+            checkApplyDialogGeometry();
+        }
+        window->resize(dialogWindowSize);
+        QTest::qWait(60);
         check(applyOnly && applyOnly->property("enabled").toBool(),
               "Apply only is the safe default and is available");
         clickAt(applyOnly, applyOnly->width() / 2, applyOnly->height() / 2);
@@ -4781,6 +4809,12 @@ int main(int argc, char** argv) {
                    .toString().isEmpty(),
               "redo puts it back");
 
+        check(docs.showInfo(dialogShow).value(QStringLiteral("appliedThemeId"))
+                      .toString() == loud,
+              "applying a local theme keeps its identity instead of making a snapshot copy");
+        check(docs.setThemeTextStyleField(loud, QStringLiteral("allCaps"), true),
+              "the chosen theme is updated to All caps");
+
         // --- Apply and reflow with no measuring worker ---------------------
         // The workspace test runs off air: the button is available for an
         // eligible item, preparing refuses honestly, and nothing changes.
@@ -4792,6 +4826,9 @@ int main(int argc, char** argv) {
               "the row menu reopens for the reflow leg");
         check(dialog && waitFor([&] { return dialog->property("visible").toBool(); }),
               "the dialog opens for the reflow leg");
+        check(picker && picker->property("currentValue").toString() == loud,
+              "reopening selects the updated local theme");
+        checkApplyDialogGeometry();
         const QVariantList slidesBeforeReflow = docs.slidesOf(dialogShow);
         if (picker)
             picker->setProperty("currentIndex", loudIndex);
@@ -4803,11 +4840,24 @@ int main(int argc, char** argv) {
         check(waitFor([&] {
                   return notice && notice->property("visible").toBool() &&
                          notice->property("text").toString().contains(
-                             QStringLiteral("measuring output"));
+                             QStringLiteral("connected renderer"));
               }),
-              "with no worker the reflow refuses naming the measuring output");
+              "with no worker the reflow explains that it needs a connected renderer");
         check(docs.slidesOf(dialogShow).size() == slidesBeforeReflow.size(),
               "the refused reflow changes no slide");
+        // A plan can also be refused after measurement (for example, after
+        // a document change). Keep the transaction's sentence visible;
+        // reading a non-QML lastError member used to erase that message.
+        dialog->setProperty("preparedSnapshot", docs.themeSnapshotJson(loud));
+        dialog->setProperty("preparing", true);
+        QMetaObject::invokeMethod(&reflow, "prepared", Q_ARG(bool, true),
+                                  Q_ARG(QString, QString()));
+        check(waitFor([&] {
+                  return notice && notice->property("visible").toBool() &&
+                         notice->property("text").toString().contains(
+                             QStringLiteral("no prepared reflow plan"));
+              }) && dialog->property("visible").toBool(),
+              "a transaction refusal stays visible in the open apply dialog");
         closeMenu("applyThemeDialog");
         if (auto* popup = window->findChild<QObject*>("applyThemeDialog"))
             QMetaObject::invokeMethod(popup, "close");

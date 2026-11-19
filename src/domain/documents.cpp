@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <set>
 
 namespace openshow::domain {
 
@@ -778,10 +779,32 @@ Theme Documents::defaultTheme() {
 }
 
 void Documents::ensureDefaultTheme() {
-    if (findTheme(kDefaultThemeId) != nullptr) {
-        return;
+    if (findTheme(kDefaultThemeId) == nullptr) {
+        fThemes.push_back(defaultTheme());
     }
-    fThemes.push_back(defaultTheme());
+    // Older builds could materialise several different looks under the
+    // same label. Keep every ID/reference and appearance; only disambiguate
+    // later labels. Reserve all existing labels before choosing suffixes.
+    std::set<std::string> seen;
+    for (Theme& theme : fThemes) {
+        const std::string clean = trimmed(theme.name);
+        theme.name = seen.insert(clean).second ? clean : availableThemeName(clean);
+        seen.insert(theme.name);
+    }
+}
+
+std::string Documents::availableThemeName(const std::string& name) const {
+    const std::string clean = trimmed(name);
+    const auto used = [&](const std::string& candidate) {
+        return std::any_of(fThemes.begin(), fThemes.end(), [&](const Theme& theme) {
+            return theme.name == candidate;
+        });
+    };
+    std::string candidate = clean;
+    for (std::size_t suffix = 2; used(candidate); ++suffix) {
+        candidate = clean + " (" + std::to_string(suffix) + ")";
+    }
+    return candidate;
 }
 
 Id Documents::createTheme(const std::string& name, const std::string& textColor,
@@ -792,6 +815,10 @@ Id Documents::createTheme(const std::string& name, const std::string& textColor,
     const std::string clean = trimmed(name);
     if (clean.empty()) {
         fail(error, "a theme needs a name");
+        return {};
+    }
+    if (availableThemeName(clean) != clean) {
+        fail(error, "a theme named '" + clean + "' already exists");
         return {};
     }
     if (!validColor(textColor, error) || (!backgroundColor.empty() && !validColor(backgroundColor, nullptr))) {
@@ -874,6 +901,12 @@ bool Documents::renameTheme(const Id& themeId, const std::string& name, std::str
     const std::string clean = trimmed(name);
     if (clean.empty()) {
         fail(error, "a theme needs a name");
+        return false;
+    }
+    if (std::any_of(fThemes.begin(), fThemes.end(), [&](const Theme& other) {
+            return other.id != themeId && other.name == clean;
+        })) {
+        fail(error, "a theme named '" + clean + "' already exists");
         return false;
     }
     theme->name = clean;
@@ -1712,61 +1745,39 @@ Id Documents::ensureThemeFromSnapshot(const ThemeSnapshot& snapshot,
     if (!validThemeSnapshot(snapshot, error)) {
         return {};
     }
-    // Full-definition match, never a name match: the same remembered look
-    // reused twice in one service is one theme, even if an operator renamed
-    // it; a different look that happens to share the display name is not.
-    const auto sameContext = [](const TextContext& context, const TextContext& wanted,
-                                const Theme& theme) {
-        if (context.name != wanted.name) {
+    // Compare effective looks, not sparse records against resolved values.
+    // In particular, inherited context fields and movement must not turn
+    // applying a local theme into a frozen, same-named copy of that theme.
+    // Names do not define equality, but prefer the chosen local name when
+    // several themes happen to resolve to the same appearance.
+    ThemeSnapshot wanted = snapshot;
+    const auto orderContexts = [](ThemeSnapshot& look) {
+        std::sort(look.contexts.begin(), look.contexts.end(),
+                  [](const TextContext& a, const TextContext& b) {
+                      return a.name < b.name;
+                  });
+    };
+    orderContexts(wanted);
+    const auto sameLook = [&](const Theme& theme) {
+        ThemeSnapshot effective;
+        if (!themeSnapshotFor(theme.id, &effective, nullptr)) {
             return false;
         }
-        const auto sameString = [](const std::optional<std::string>& own,
-                                   const std::optional<std::string>& want) {
-            return own.value_or("") == want.value_or("");
-        };
-        return sameString(context.fontFamily, wanted.fontFamily) &&
-               context.fontSize.value_or(0.0) == wanted.fontSize.value_or(0.0) &&
-               context.lineSpacing.value_or(theme.lineSpacing) ==
-                   wanted.lineSpacing.value_or(theme.lineSpacing) &&
-               sameString(context.align, wanted.align) &&
-               context.box == wanted.box && context.inset == wanted.inset &&
-               sameString(context.verticalAlign, wanted.verticalAlign) &&
-               context.allCaps.value_or(false) == wanted.allCaps.value_or(false) &&
-               context.transition.value_or(TransitionOptions::defaults()) ==
-                   wanted.transition.value_or(TransitionOptions::defaults());
+        effective.name = wanted.name;
+        orderContexts(effective);
+        return effective == wanted;
     };
-    const auto sameLook = [&](const Theme& theme) {
-        return theme.textColor == snapshot.textColor &&
-               theme.fontFamily == snapshot.fontFamily &&
-               theme.fontSize == snapshot.fontSize && theme.align == snapshot.align &&
-               theme.lineSpacing == snapshot.lineSpacing &&
-               theme.fontWeight.value_or(kDefaultFontWeight) == snapshot.fontWeight &&
-               theme.fontStyle.value_or("normal") == snapshot.fontStyle &&
-               theme.fontUnderline.value_or(false) == snapshot.fontUnderline &&
-               theme.fitMode.value_or("shrink") == snapshot.fitMode &&
-               theme.minFontSize.value_or(kDefaultMinFontSize) ==
-                   snapshot.minFontSize &&
-               theme.verticalAlign.value_or(kDefaultVerticalAlign) ==
-                   snapshot.verticalAlign &&
-               theme.allCaps.value_or(false) == snapshot.allCaps &&
-               theme.stroke.value_or(TextStroke{}) == snapshot.stroke &&
-               theme.shadow.value_or(TextShadow{}) == snapshot.shadow &&
-               theme.placement == snapshot.placement &&
-               theme.transition.value_or(TransitionOptions::defaults()) ==
-                   snapshot.transition &&
-               theme.contexts.size() == snapshot.contexts.size() &&
-               std::equal(snapshot.contexts.begin(), snapshot.contexts.end(),
-                          theme.contexts.begin(),
-                          [&](const TextContext& wanted, const TextContext& own) {
-                              return sameContext(own, wanted, theme);
-                          });
-    };
+    for (const Theme& theme : fThemes) {
+        if (theme.name == snapshot.name && sameLook(theme)) {
+            return theme.id;
+        }
+    }
     for (const Theme& theme : fThemes) {
         if (sameLook(theme)) {
             return theme.id;
         }
     }
-    const Id id = createTheme(snapshot.name, snapshot.textColor, "", "",
+    const Id id = createTheme(availableThemeName(snapshot.name), snapshot.textColor, "", "",
                               snapshot.fontFamily, snapshot.fontSize, snapshot.align,
                               snapshot.lineSpacing, error);
     if (id.empty()) {
