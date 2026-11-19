@@ -786,6 +786,11 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         fTextLayoutCapable = textLayoutCapable;
         fTextMeasureV3Capable = measureV3Capable;
         fTextEditorCapable = editorCapable;
+        // The hello's status line was announced before these names were read;
+        // re-announce so a page bound to a capability (the Edit page's
+        // in-place mode) sees the negotiated answer without waiting for the
+        // first status poll.
+        emit stateChanged();
         fTransitionOptionsCapable = transitionOptionsCapable;
         fFontListCapable = fontListCapable;
         fFontListState = fontListCapable ? QStringLiteral("idle")
