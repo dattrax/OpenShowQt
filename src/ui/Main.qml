@@ -51,6 +51,7 @@ Window {
     // Page Up/Down dead after Edit). Release whatever the leaving page held,
     // then let the window take focus back so the presenter gates are live.
     onPageChanged: {
+        if (editPage && editPage.textEditing) editPage.endTextEditing()
         const held = activeFocusItem
         if (held) held.focus = false
         // TV.2: releasing is not enough when the Themes page is involved.
@@ -112,6 +113,7 @@ Window {
         editorSlideListFocused: editorSlideRail.activeFocus
         boxSelected: editPage.boxSelected
         slideDragging: editorSlideRail.dragActive
+        textEditing: editPage.boxSelected && editPage.textEditing
         currentBox: docs.currentBox
         slideCount: docs.slides.length
         cueCount: showPage.cueRows.length
@@ -127,6 +129,7 @@ Window {
                                                    : worker.clearAll()
         onDeselectBoxRequested: editPage.boxSelected = false
         onSlideDragCancelRequested: editorSlideRail.cancelDrag()
+        onExitTextEditingRequested: editPage.endTextEditing()
         onClearBackgroundRequested: worker.clearBackground()
         onClearWordsRequested: worker.clearSlide()
         onDuplicateSlideRequested: docs.duplicateCurrentSlide()
@@ -149,7 +152,7 @@ Window {
         onClearAllRequested: worker.clearAll()
         onUndoRequested: leftDock.libraryListFocused ? leftDock.undoLibrary() : docs.undo()
         onRedoRequested: leftDock.libraryListFocused ? leftDock.redoLibrary() : docs.redo()
-        onSaveRequested: docs.save()
+        onSaveRequested: { editPage.endTextEditing(); docs.save() }
         onCopyRequested: docs.copyCurrentSlide()
         onCutRequested: docs.cutCurrentSlide()
         onPasteRequested: docs.pasteSlide()

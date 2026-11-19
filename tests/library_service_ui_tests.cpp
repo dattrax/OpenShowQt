@@ -243,6 +243,188 @@ int main(int argc, char** argv) {
     docs.addSlide();
     docs.setSlideText("Synthetic presentation words");
     docs.flushText();
+
+    // --- EW.4/EW.5: in-place editing against the real worker ---------------
+    {
+        window->setProperty("page", "edit");
+        QTest::qWait(120);
+        docs.selectSlide(0);
+        QTest::qWait(80);
+        auto* canvas = findNamed(window->contentItem(), "editCanvas");
+        auto* sourceDrawer = findNamed(window->contentItem(), "slideTextEditor");
+        check(worker.textEditorSupported(),
+              "the real worker offers text.editor for in-place editing");
+        check(canvas && sourceDrawer && !sourceDrawer->isVisible(),
+              "the bottom field is an explicit drawer and stays closed on a capable worker");
+        check(canvas && !canvas->property("textMode").toBool(),
+              "Edit opens in box mode, not text mode");
+        const auto box = docs.currentSlideBoxes().at(0).toMap();
+        const double zoom = canvas->property("zoom").toDouble();
+        const double stageX =
+            (canvas->width() - canvas->property("stageWidth").toDouble()) / 2.0;
+        const double stageY =
+            (canvas->height() - canvas->property("stageHeight").toDouble()) / 2.0;
+        auto boxPoint = [&](double fx, double fy) {
+            return canvas->mapToScene(QPointF(
+                stageX + (box.value("x").toDouble()
+                          + box.value("width").toDouble() * fx) * zoom,
+                stageY + (box.value("y").toDouble()
+                          + box.value("height").toDouble() * fy) * zoom)).toPoint();
+        };
+        const QString originalWords = docs.currentSlideText();
+        QTest::mouseDClick(window, Qt::LeftButton, Qt::NoModifier, boxPoint(0.5, 0.5));
+        QTest::qWait(120);
+        auto* inlineEditor = window->findChild<QObject*>("inlineTextEditor");
+        auto* inlineInput = window->findChild<QQuickItem*>("inlineTextInput");
+        check(canvas->property("textMode").toBool() && inlineEditor
+                  && inlineEditor->property("active").toBool(),
+              "double-clicking a text box enters in-place editing");
+        check(inlineInput && window->activeFocusItem() == inlineInput,
+              "the native text input owns the keyboard while editing");
+        check(waitFor([&] {
+                  return inlineEditor->property("geometryFresh").toBool();
+              }),
+              "the worker's caret geometry arrives for the draft");
+        check(inlineEditor->property("caretRect").toRectF().height() > 1.0,
+              "the caret has the worker's real line height");
+        auto* done = findNamed(window->contentItem(), "inlineEditorDone");
+        check(done && done->isVisible(), "the explicit Done control is offered");
+        // Typing edits the draft; the document keeps the emitted words after
+        // the controller's own debounce, and the caret chrome follows.
+        QTest::keyClick(window, Qt::Key_X);
+        check(waitFor([&] {
+                  return docs.currentSlideText().contains(QStringLiteral("x")) &&
+                      docs.currentSlideText().length() == originalWords.length() + 1;
+              }, 1500),
+              "typing reaches the document's debounced text path");
+        check(inlineEditor->property("caretRect").toRectF().width() >= 1.0 &&
+                  !std::isnan(inlineEditor->property("caretRect").toRectF().x()),
+              "the caret follows the draft with a real position");
+        const QString afterTyping = docs.currentSlideText();
+        // Pointer selection uses the worker's hit test, not Qt's metrics.
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, boxPoint(0.45, 0.5));
+        QTest::mouseMove(window, boxPoint(0.60, 0.5), 20);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, boxPoint(0.60, 0.5));
+        check(waitFor([&] {
+                  return inlineEditor->property("selectionRects").toList().size() > 0;
+              }),
+              "dragging selects through the worker's hit test and paints its rects");
+        check(inlineInput->property("selectionStart").toInt()
+                  != inlineInput->property("selectionEnd").toInt(),
+              "the native input carries the selected range");
+        // Enter is an authored line break, not a commit or a new slide.
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(60);
+        check(inlineEditor->property("draft").toString().contains(QStringLiteral("\n")),
+              "Enter inserts a line break into the draft");
+        check(canvas->property("textMode").toBool(),
+              "Enter while editing never leaves text mode");
+        // Escape leaves the mode with the committed words kept. The line
+        // break and the typed letter are separate bursts, so each is one
+        // undo and nothing else moves.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTest::qWait(80);
+        check(!canvas->property("textMode").toBool(),
+              "Escape leaves in-place editing");
+        check(!sourceDrawer->isVisible(),
+              "leaving text mode does not resurrect the source drawer");
+        check(docs.currentSlideText().contains(QStringLiteral("\n")),
+              "the committed words survive leaving the mode");
+        docs.undo();
+        check(docs.currentSlideText() == afterTyping,
+              "one undo takes the line break away and leaves the typed letter");
+        docs.undo();
+        check(docs.currentSlideText() == originalWords,
+              "the next undo takes the typed burst away");
+        // Enter on a selected text box is the keyboard way in; F2 keeps its
+        // output meaning and never enters text mode.
+        auto* gesture = findNamed(canvas, "editGestureArea");
+        if (gesture) gesture->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_F2);
+        QTest::qWait(40);
+        check(!canvas->property("textMode").toBool(),
+              "F2 keeps its output meaning and does not enter text mode");
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(80);
+        check(canvas->property("textMode").toBool(),
+              "Enter on a selected text box enters in-place editing");
+        // The caret resumes where it was left (the remembered caret), not at
+        // a default the document could not know.
+        const int resumed = inlineInput->property("cursorPosition").toInt();
+        check(resumed > 0, "keyboard entry resumes the remembered caret");
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTest::qWait(40);
+        check(!canvas->property("textMode").toBool(), "Escape returns to box mode");
+        // The explicit Done control is the other honest exit.
+        if (gesture) gesture->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(80);
+        auto* doneAgain = findNamed(window->contentItem(), "inlineEditorDone");
+        if (doneAgain) QMetaObject::invokeMethod(doneAgain, "clicked");
+        QTest::qWait(60);
+        check(!canvas->property("textMode").toBool(),
+              "Done leaves in-place editing with the words kept");
+        // The source drawer is still an explicit action on a capable worker.
+        auto* sourceButton = findNamed(window->contentItem(), "sourceTextButton");
+        check(sourceButton != nullptr, "the source-text action is offered");
+        if (sourceButton) {
+            QMetaObject::invokeMethod(sourceButton, "clicked");
+            QTest::qWait(60);
+            check(sourceDrawer->isVisible(), "the source drawer opens only when asked");
+            QMetaObject::invokeMethod(sourceButton, "clicked");
+            QTest::qWait(40);
+            check(!sourceDrawer->isVisible(), "and closes again");
+        }
+        // --- EW.10: the whole journey at the canvas ------------------------
+        // Edit a verse, insert a slide, type into it, reorder it, undo/redo —
+        // all without presenting: the audience revision must not move.
+        const int sceneBefore = worker.sceneActive();
+        docs.selectSlide(0);
+        QTest::qWait(40);
+        const QString fresh = docs.insertSlideAfterCurrent();
+        QTest::qWait(80);
+        check(!fresh.isEmpty() && docs.currentSlide() == 1,
+              "the journey inserts a fresh slide after the edited verse");
+        if (gesture) gesture->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(120);
+        check(canvas->property("textMode").toBool(),
+              "the fresh slide's empty box enters text mode from the keyboard");
+        QTest::keyClick(window, Qt::Key_A);
+        QTest::keyClick(window, Qt::Key_D);
+        QTest::keyClick(window, Qt::Key_D);
+        QTest::keyClick(window, Qt::Key_E);
+        QTest::keyClick(window, Qt::Key_D);
+        QTest::qWait(80);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTest::qWait(120);
+        check(docs.currentSlideText() == QStringLiteral("added"),
+              "the inserted slide carries the typed words");
+        docs.moveCurrentSlideTo(0);
+        QTest::qWait(40);
+        check(docs.currentSlide() == 0 &&
+                  docs.currentSlideText() == QStringLiteral("added"),
+              "reordering keeps the typed slide selected by id");
+        docs.undo();
+        check(docs.currentSlide() == 1 &&
+                  docs.currentSlideText() == QStringLiteral("added"),
+              "one undo restores the order with the words still on their slide");
+        docs.redo();
+        check(docs.currentSlide() == 0 &&
+                  docs.currentSlideText() == QStringLiteral("added"),
+              "redo republishes the reorder without touching the words");
+        check(worker.sceneActive() == sceneBefore && !worker.wordsOnAir(),
+              "the whole editing journey never presented to the audience");
+        docs.undo();  // the move
+        docs.undo();  // the typed burst
+        docs.undo();  // the insertion
+        QTest::qWait(40);
+        check(docs.slides().size() == 1,
+              "the journey's structural edits undo one at a time");
+        window->setProperty("page", "show");
+        QTest::qWait(60);
+    }
+
     for (int i = 0; i < 30; ++i) {
         docs.addShowToPlaylist(fillerId);
     }

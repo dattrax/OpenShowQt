@@ -2470,8 +2470,8 @@ implementation; this ledger and `PROGRESS.md` close the group.
 
 User request (2026-11-19): edit words directly on the slide instead of using
 the text field below it; reorder slides by dragging their thumbnails; insert
-a new slide at the chosen position. This section plans the work; every EW
-task starts **TODO**. Implement when this group is taken up.
+a new slide at the chosen position. Implemented 2026-11-19 (see the evidence block at the end of this
+section and `docs/ui/wysiwyg-editing-plan.md`).
 
 #### Starting points and scope
 
@@ -2550,16 +2550,58 @@ a nominally completed task. Owners below are roles for the agent runbook.
 
 | ID | Status | Owner | Depends on | Work and acceptance |
 |---|---|---|---|---|
-| EW.1 | TODO | Coordinator | Current PT fixes reviewed as the implementation baseline | Freeze interaction states, target IDs, insertion/move semantics, API ownership and focused fixtures. Confirm existing shortcuts; specify drag/no-op conversion and text/IME/undo lifetimes. Record the agreed interfaces before parallel implementation. |
-| EW.2 | TODO | Renderer | EW.1 | Prove worker-layout-based caret/selection/hit testing on a real rendered text box. Demonstrate wrap, actual shrink, effect/glyph insets, All caps index mapping and fractional scaling. Select a viable Qt native-input bridge; an approximate overlaid TextArea does not pass this gate. |
-| EW.3 | TODO | Renderer | EW.2 | Implement a capability-gated, bounded read-only editor layout/hit-test RPC and worker adapter. Correlate scene/item identity and draft/layout generations; reject malformed, oversized, stale and unsupported requests. Queries do not prepare/present audience scenes or change document/history state. |
-| EW.4 | TODO | Inline editor | EW.1, EW.3 contract | Implement the text session and native input bridge: identity-bound draft, caret/selection, clipboard, grapheme/word navigation, multiline input, IME preedit/commit and one document undo owner. Test selection changes, deletion of the target, undo/redo, save, page leave and reconnect without lost or retargeted text. |
-| EW.5 | TODO | Inline editor | EW.3, EW.4 | Integrate text mode into EditCanvas/EditPage; arbitrate text selection versus box gestures, render caret/selection from worker geometry and enlarge the canvas by retiring the bottom field. Text, preview and chrome must describe the same draft; preserve inspector and box manipulation. |
-| EW.6 | TODO | Slide controls | EW.1 | Add controller move/insert commands over existing domain verbs, using explicit show/slide/anchor IDs and validated final destinations. Preserve selection by ID across moves/undo; select the fresh slide on insert. One structural history entry; refusals/no-ops mutate nothing. Round-trip and reflow-source invalidation tests pass. |
-| EW.7 | TODO | Slide controls | EW.6 | Add real drag/drop, insertion markers, ghost, cancellation, keyboard/context move alternatives and bounded autoscroll to EditorSlideRail. Verify both directions and every endpoint with actual pointer drags in a scrolled/virtualized rail, including model changes during a drag. |
-| EW.8 | TODO | Slide controls | EW.6; EW.5 for final focus handoff | Add footer/context insertion before/after and empty-list insertion. Verify first/middle/last positions, inherited context/theme/background, fresh IDs, empty text, selection/reveal and single undo. Until inline editing lands, use the existing text-entry path for intermediate acceptance. |
-| EW.9 | TODO | Coordinator + owners | EW.5, EW.7, EW.8 | Integrate focus/shortcut/accessibility and preview lifecycle. A custom input item must join Main/ShortcutMap's typing gate explicitly. Verify Escape priority, native text Delete/paste, rail move keys, inspector edits, hidden-page silence and stale preview/layout replies after navigation/restart. |
-| EW.10 | TODO | Coordinator | EW.9 | Run the complete editing journey and affected suites, inspect captures at all target widths/scales, record measured latency and output isolation, reconcile docs/PROGRESS and leave a reviewable change set. Close only after every earlier acceptance passes; physical output gates remain separately recorded. |
+| EW.1 | DONE | Coordinator | Current PT fixes reviewed as the implementation baseline | Freeze interaction states, target IDs, insertion/move semantics, API ownership and focused fixtures. Confirm existing shortcuts; specify drag/no-op conversion and text/IME/undo lifetimes. Record the agreed interfaces before parallel implementation. |
+| EW.2 | DONE | Renderer | EW.1 | Prove worker-layout-based caret/selection/hit testing on a real rendered text box. Demonstrate wrap, actual shrink, effect/glyph insets, All caps index mapping and fractional scaling. Select a viable Qt native-input bridge; an approximate overlaid TextArea does not pass this gate. |
+| EW.3 | DONE | Renderer | EW.2 | Implement a capability-gated, bounded read-only editor layout/hit-test RPC and worker adapter. Correlate scene/item identity and draft/layout generations; reject malformed, oversized, stale and unsupported requests. Queries do not prepare/present audience scenes or change document/history state. |
+| EW.4 | DONE | Inline editor | EW.1, EW.3 contract | Implement the text session and native input bridge: identity-bound draft, caret/selection, clipboard, grapheme/word navigation, multiline input, IME preedit/commit and one document undo owner. Test selection changes, deletion of the target, undo/redo, save, page leave and reconnect without lost or retargeted text. |
+| EW.5 | DONE | Inline editor | EW.3, EW.4 | Integrate text mode into EditCanvas/EditPage; arbitrate text selection versus box gestures, render caret/selection from worker geometry and enlarge the canvas by retiring the bottom field. Text, preview and chrome must describe the same draft; preserve inspector and box manipulation. |
+| EW.6 | DONE | Slide controls | EW.1 | Add controller move/insert commands over existing domain verbs, using explicit show/slide/anchor IDs and validated final destinations. Preserve selection by ID across moves/undo; select the fresh slide on insert. One structural history entry; refusals/no-ops mutate nothing. Round-trip and reflow-source invalidation tests pass. |
+| EW.7 | DONE | Slide controls | EW.6 | Add real drag/drop, insertion markers, ghost, cancellation, keyboard/context move alternatives and bounded autoscroll to EditorSlideRail. Verify both directions and every endpoint with actual pointer drags in a scrolled/virtualized rail, including model changes during a drag. |
+| EW.8 | DONE | Slide controls | EW.6; EW.5 for final focus handoff | Add footer/context insertion before/after and empty-list insertion. Verify first/middle/last positions, inherited context/theme/background, fresh IDs, empty text, selection/reveal and single undo. Until inline editing lands, use the existing text-entry path for intermediate acceptance. |
+| EW.9 | DONE | Coordinator + owners | EW.5, EW.7, EW.8 | Integrate focus/shortcut/accessibility and preview lifecycle. A custom input item must join Main/ShortcutMap's typing gate explicitly. Verify Escape priority, native text Delete/paste, rail move keys, inspector edits, hidden-page silence and stale preview/layout replies after navigation/restart. |
+| EW.10 | DONE | Coordinator | EW.9 | Run the complete editing journey and affected suites, inspect captures at all target widths/scales, record measured latency and output isolation, reconcile docs/PROGRESS and leave a reviewable change set. Close only after every earlier acceptance passes; physical output gates remain separately recorded. |
+
+#### Evidence (2026-11-19)
+
+- **EW.1** froze the interfaces in `docs/ui/wysiwyg-editing-plan.md`: session
+  identity (show/slide/box + generation), request correlation, source UTF-16
+  offsets, the controller verbs and the visible-gap/final-slot translation.
+- **EW.2/EW.3** added protocol minor 21's `text.editor.v1` and `text.editor`.
+  `SceneTextEngine` maps authored UTF-16 offsets through the same uppercase
+  transform that renders; `OutputSession::editorLayout` reads caret from glyph
+  cluster bounds, selection from the paragraph's range rects and hit tests from
+  the paragraph itself. `editor_layout_tests` runs the real worker over wrap,
+  draft override, capitals (`ß`), round-trip hit tests, bounds, named refusals
+  and a 40-ask latency sample; `frontend_journey_tests` proves the controller
+  adapter and that geometry asks never prepare, present or clear output.
+- **EW.4/EW.5** added `InlineTextEditor.qml` (native `TextInput` bridge plus
+  worker-derived caret/selection/IME chrome, pointer selection by worker hit
+  test, Enter line breaks, remembered caret, document-owned undo, Done/Escape/
+  focus exits) and integrated it in `EditCanvas`/`EditPage`. The persistent
+  bottom field became an explicit Source text drawer, automatically shown and
+  labelled when the worker cannot answer geometry. `library_service_ui_tests`
+  drives the real worker: entry by double-click and Enter, typing, caret,
+  pointer selection, line breaks, Escape/Done, undo granularity, the source
+  drawer, output isolation, insert→type→reorder→undo/redo.
+- **EW.6** added `moveSlideFor`/`moveCurrentSlideTo`/`moveCurrentSlideStep` and
+  `insertSlideFor`/`insertSlideAt`/`insertSlideAfterCurrent` with explicit ids,
+  final destinations, selection by id across moves/undo/redo, inherited
+  section/context/background/fit, an untouched leading cue and one history
+  entry; `document_controller_tests` covers order, refusals, no-ops, pending
+  text, persistence and reflow-source invalidation.
+- **EW.7/EW.8** added the rail's visible grab handle, ghost, insertion gap,
+  bounded edge autoscroll, Escape/outside/no-op cancellation, model-change
+  cancellation, row menu, rail keys and Insert slide footer. Real-pointer
+  tests in `workspace_ui_tests` cover both directions, cancellation, the menu,
+  keys, empty presentations and a long-list autoscroll.
+- **EW.9** wired the window gates: the inline session owns Escape first, the
+  rail drag owns Escape next, native typing keeps undo/delete/clipboard, and
+  Save/page changes/undo/redo flush the session first. `workspace_ui_tests`
+  pins the no-worker fallback and the disabled in-place action.
+- **EW.10** ran the full desktop suite and the real-worker journeys; the
+  measured editor-layout round trip is median 0.03 ms / p95 0.04 ms on this
+  machine, and the UI journey never presents. Physical gates (projector
+  second display, NDI, target GPU) remain open under M7/ND/TA.
 
 #### Agent implementation instructions
 

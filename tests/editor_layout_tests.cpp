@@ -428,6 +428,30 @@ int main(int argc, char* argv[]) {
     // answer is authored units, and the frontend's zoom multiplies once.
     // That keeps the caret correct at every DPI instead of baking one in.
 
+    // EW.10's latency evidence: the ask is a full scene parse plus a real
+    // layout, so this is the whole round trip, not a cache hit. p95 is what
+    // the plan budgets; the exact numbers are printed for the ledger.
+    {
+        std::vector<double> millis;
+        millis.reserve(40);
+        for (int i = 0; i < 40; ++i) {
+            const auto started = std::chrono::steady_clock::now();
+            Answer probe = ask(fd, nextId, scene, 0, {{"caret", (i * 7) % 50}});
+            const auto finished = std::chrono::steady_clock::now();
+            if (!probe.ok) continue;
+            millis.push_back(std::chrono::duration<double, std::milli>(
+                finished - started).count());
+        }
+        std::sort(millis.begin(), millis.end());
+        const double p95 = millis.empty() ? 1e9
+            : millis[std::min(millis.size() - 1,
+                              static_cast<std::size_t>(millis.size() * 0.95))];
+        std::printf("editor layout round trip: n=%zu median=%.2f ms p95=%.2f ms\n",
+                    millis.size(), millis.empty() ? 0.0 : millis[millis.size() / 2], p95);
+        check(!millis.empty() && p95 < 150.0,
+              "editor layout p95 round trip stays inside the 150 ms budget");
+    }
+
     // Refusals: every one is a named sentence and the session lives on.
     {
         check(refusedWith(fd, nextId,

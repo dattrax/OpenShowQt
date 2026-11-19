@@ -770,8 +770,10 @@ public:
     // navigation, undo, save and load — and on aboutToQuit, connected in
     // the constructor (task 6.14a, review R14): the debounced keystrokes
     // of a closing session must reach the model, and through the tick,
-    // the scratch, before the process is gone.
-    void flushText();
+    // the scratch, before the process is gone. EW.5 exposes it to the
+    // inline editor's explicit finish, so leaving text mode keeps the
+    // typed burst as one document edit.
+    Q_INVOKABLE void flushText();
 
     // Task 6.14b (review R14): scratch persistence on the bounded,
     // coalescing executor instead of on the UI thread. Production main()

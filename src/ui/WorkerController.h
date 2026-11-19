@@ -156,6 +156,10 @@ class WorkerController : public QObject {
     // keyed by file path. Cached; the card asks once when it appears.
     Q_PROPERTY(QVariantMap videoThumbnails READ videoThumbnails NOTIFY videoThumbnailsChanged)
     Q_PROPERTY(bool fontListSupported READ fontListSupported NOTIFY fontListChanged)
+    // EW.3: this connection answers text.editor (caret/selection/hit). The
+    // Edit page offers in-place editing only to a hello that carries it and
+    // keeps its explicit Source text drawer otherwise.
+    Q_PROPERTY(bool textEditorSupported READ textEditorSupported NOTIFY stateChanged)
     Q_PROPERTY(QString fontListState READ fontListState NOTIFY fontListChanged)
     Q_PROPERTY(QStringList fontFamilies READ fontFamilies NOTIFY fontListChanged)
     Q_PROPERTY(QVariantMap fontFaces READ fontFaces NOTIFY fontListChanged)

@@ -628,3 +628,18 @@ Ctrl+Z/Ctrl+Y/Ctrl+Shift+Z route to the focused Library/service list on Show as
 well as Edit. A mixed Library removal spans catalog and document histories;
 its immediate undo/redo visits both stores. It is not a transaction across two
 files. Adding or dropping into the service hands focus to the destination.
+
+## In-place text editing and the slide rail (EW)
+
+| Part | Contract |
+|---|---|
+| `InlineTextEditor` (`inlineTextEditor`) | The native input bridge over the Edit stage. Active only for the selected TEXT box when the worker's hello names `text.editor.v1`. Its transparent `inlineTextInput` owns focus/IME/clipboard; `inlineCaret` and the selection rectangles come from the worker's own laid-out paragraph (authored units × the canvas zoom); `inlineComposition` decorates an IME preedit. Pointer selection uses `text.editor` hit tests. Enter inserts an authored line break; Escape/Done/focus exit commit and leave with the words kept; the caret resumes per slide/box. It never presents, never keeps a second undo stack and clears its chrome if the capability goes away. |
+| `EditPage` Source drawer | The bottom text area is no longer persistent: `sourceTextButton` opens it only when asked on a capable worker, and it opens automatically (button disabled, labelled **Source text (required)**) when the worker cannot answer editor geometry or is disconnected. That is explicit source editing, not WYSIWYG. |
+| `EditCanvas` box menu / gestures | One click selects; double-click on a text box, Enter while a selected text box holds canvas focus, or **Edit text** (`editTextMenuItem`) enters text mode. Move/resize handles are absent while text mode holds the box. F2 keeps its output meaning. |
+| `EditorSlideRail` reorder | `editorSlideGrabHandle` on every card starts a drag with `editorSlideGhost` and `editorSlideInsertionGap`; edge autoscroll is one row per tick; Escape, outside release, the source's own gap and a model change cancel without an edit. `editorSlideMenu` (right-click / Menu / Shift+F10) offers Move up, Move down, Insert before and Insert after; Ctrl+Up/Ctrl+Down move and Insert inserts after the selection while the rail owns focus. The footer action is **Insert slide**. |
+
+The rail and the inline session are two independent Escape meanings: a held
+reorder grab owns the first Escape, then a text session, then the box
+selection/output meanings. Native typing keeps Delete, clipboard and text
+navigation; document undo/redo, Save, page changes and navigation flush the
+session first so one history entry names the box the burst was typed into.

@@ -11,6 +11,57 @@ archive is a current instruction.
 
 ## Current checkpoint
 
+**WYSIWYG editing, slide ordering and insertion (2026-11-19): EW.1–EW.10 are
+DONE.** The Edit stage now edits the words on the slide, the rail reorders and
+inserts slides by pointer or keyboard, and both paths are one document history
+entry each. The frozen contract is
+[`docs/ui/wysiwyg-editing-plan.md`](docs/ui/wysiwyg-editing-plan.md); the
+architecture section is "WYSIWYG editing, slide ordering and insertion
+(milestone EW)".
+
+Protocol minor **21** adds `text.editor.v1` / `text.editor`: a compiled scene,
+one text item, an optional bounded draft and caret/selection/point asks
+answered from the renderer's own `layoutInBox`. Carets come from glyph cluster
+bounds, selection from the paragraph's range rects, hit tests from the
+paragraph, and authored UTF-16 offsets map through the same uppercase transform
+that renders (so `ß` → `SS` still names the authored character). Nothing is
+stored, prepared, presented or cached.
+
+`InlineTextEditor.qml` is the native input bridge: a transparent focused
+`TextInput` for IME/clipboard/navigation/line breaks, worker-derived caret,
+selection and composition chrome, and pointer selection by worker hit tests.
+Escape owns the session first (then the rail grab, then selection/output), and
+Done, focus exit, navigation, undo/redo, save and page leave commit or retire
+the session deterministically. The persistent bottom field became an explicit
+**Source text** drawer, opened automatically and labelled when the worker
+cannot answer geometry.
+
+`DocumentController` gained `moveSlideFor`/`moveCurrentSlideTo`/
+`moveCurrentSlideStep` and `insertSlideFor`/`insertSlideAt`/
+`insertSlideAfterCurrent`: explicit show/slide/anchor ids, final-slot
+destinations, selection by id across moves and undo/redo, one history entry,
+inherited section/context/background/fit, no copied words/notes/items/style,
+and an untouched leading cue. The rail drags a visible grab handle with a ghost
+and insertion gap, bounded edge autoscroll, Escape/outside/no-op/model-change
+cancellation, row and keyboard moves, and Insert before/after; the footer is
+**Insert slide**.
+
+Verification: full desktop suite **88/89 with one known parallel flake**
+(`workspace_ui_tests` failed once under `-j8` at the pre-existing camera-Delete
+check; it passed alone and in a 3-way concurrent run with
+`background_media_tests` and `frontend_journey_tests`). The headless suite
+passed **48/48** (`-LE display`). `font_fixture_tests` is **skipped** in this
+environment: its pinned corpus cache was removed during this run and the
+sandbox has no network, so it cannot fetch the pinned fonts (it is not an EW
+test). The real-worker editor journey and the whole-shell Edit journey pass;
+the editor-layout round trip measured median **0.03 ms**, p95 **0.04 ms** over
+40 asks on this machine, well inside the 150 ms budget. Editing, moving and
+inserting never presented; the workspace suite also passes at
+`QT_SCALE_FACTOR=1.5`. IME composition is implemented as the native preedit
+plus decoration, but no physical input method was exercised here. Physical
+gates (projector second display, NDI, target GPU) remain open under M7/ND/TA
+and are not claimed.
+
 **Reflow section reconstruction (2026-11-19): corrected.** Reflow previously
 treated each stored slide fragment as a new stanza, retaining old pagination;
 its saved source also became stale after the first reflow. It now joins
@@ -437,14 +488,17 @@ service. FO stays gated behind those.
    worker binary as argv[1] under ctest. Test fixtures are written into the CWD
    (`transport-fixtures/`, `audio-mix-fixtures/`, `playback-fixtures/`,
    `background-media-fixtures/`, `scene-render-*.png`) and are git-ignored.
-4. Protocol/service/scene formats are now **protocol minor 20**, **service
-   format 14**, **scene format 8**; `docs/architecture.md` and
+4. Protocol/service/scene formats are now **protocol minor 21**, **service
+   format 15**, **scene format 8**; `docs/architecture.md` and
    `docs/ui/control-sets.md` are the authorities for the wire and the controls.
-   TL.3 earns `scene.text-layout.v1` and `text.measure.v3`, so the worker's
-   hello now names both.
+   TL.3 earns `scene.text-layout.v1` and `text.measure.v3`; EW.3 adds
+   `text.editor.v1`, so the worker's hello now names all three.
 
 ## Recent commits
 
+- this commit: WYSIWYG editing, slide ordering and insertion (EW.1–EW.10)
+- `ece6e64` feat(worker): answer editor caret and selection geometry from the real layout (EW.2–EW.3)
+- `7b23b96` feat(ui): freeze the WYSIWYG contract and add slide move/insert with a real rail (EW.1, EW.6–EW.8)
 - `1487777` test(ui): cover the remaining pointer fixtures and raise the suite wall (BX.4)
 - `6c7c384` fix(ui): map inset gesture coordinates and fit the stage for edge handles (BX.4)
 - `e38bae9` test(journey): publish a moved box through preview, Go and save/reopen (BX.4)

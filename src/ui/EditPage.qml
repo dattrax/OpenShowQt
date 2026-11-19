@@ -31,6 +31,18 @@ Flickable {
 
     // The canvas's handles being on (or Escape having stepped out).
     property alias boxSelected: editCanvas.selected
+    // EW.5: the canvas's in-place text mode, named for the window's gates.
+    property alias textEditing: editCanvas.textMode
+
+    // EW.5: in-place text editing is the primary path. The bottom text area
+    // is now an EXPLICIT source drawer: it opens automatically only when the
+    // connected worker cannot answer editor geometry (or when the operator
+    // asks for it), and it is labelled as source editing rather than
+    // pretending a Qt text layout is the audience's pixels.
+    property bool sourceDrawerRequested: false
+    readonly property bool sourceDrawerVisible: sourceDrawerRequested
+        || !worker.textEditorSupported
+    function endTextEditing() { editCanvas.endTextEditing() }
 
     // The context-property worker, named once at the page root: inside an
     // instance body `worker: worker` resolves to the instance's OWN
@@ -62,17 +74,21 @@ Flickable {
 
     ScrollView {
         id: lyricEditor
+        visible: editPage.sourceDrawerVisible
         anchors.left: parent.left; anchors.right: themeScroll.left
         anchors.rightMargin: 12
-        anchors.bottom: boxFields.top; anchors.bottomMargin: 12
-        height: 110
+        anchors.bottom: boxFields.top; anchors.bottomMargin: visible ? 12 : 0
+        height: visible ? 110 : 0
         clip: true
         TextArea {
             id: lyricText
             objectName: "slideTextEditor"
             enabled: docs.slides.length > 0 && docs.currentBoxKind !== "image"
             text: docs.currentSlideText
-            placeholderText: docs.currentBoxKind === "image" ? "Select a text box to edit its words" : "Slide text"
+            placeholderText: docs.currentBoxKind === "image" ? "Select a text box to edit its words"
+                : (worker.textEditorSupported
+                   ? "Source text — the canvas edits this box in place"
+                   : "Source text (this worker cannot edit in place)")
             onTextChanged: if (activeFocus && enabled) docs.setSlideText(text)
             selectByMouse: true
             wrapMode: TextArea.Wrap
@@ -201,6 +217,13 @@ Flickable {
                     enabled: docs.currentBox >= 0
                              && docs.currentBox < docs.currentSlideBoxes.length - 1
                     onClicked: docs.moveCurrentTextBox(docs.currentBox + 1)
+                }
+                PanelButton {
+                    objectName: "sourceTextButton"
+                    text: !worker.textEditorSupported ? "Source text (required)"
+                         : (editPage.sourceDrawerVisible ? "Hide source text" : "Source text")
+                    enabled: worker.textEditorSupported
+                    onClicked: editPage.sourceDrawerRequested = !editPage.sourceDrawerVisible
                 }
             }
         }

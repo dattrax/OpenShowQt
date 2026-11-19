@@ -1054,6 +1054,66 @@ them, while unrelated history and playable service copies remain. In-flight
 song preparation is cancelled if its Library source is deleted.
 
 
+## WYSIWYG editing, slide ordering and insertion (milestone EW)
+
+The Edit stage edits the words ON the slide, not in a separate field. A
+selected text box enters a text session on double-click, Enter or the box
+menu's **Edit text**; the mode is identity-bound to one show/slide/box and the
+session commits its draft to the document through the ordinary debounce, so a
+typing burst is one document history entry and the native field never keeps an
+independent undo stack. Escape/Done/focus exit commit and leave; navigation, a
+selection change, a removed target, undo/redo, save and page leave retire the
+session deterministically.
+
+The visible words stay the worker's render. `InlineTextEditor.qml` contributes
+only an input sink and chrome: a transparent, focused `TextInput` for IME,
+clipboard, grapheme/word navigation and line breaks, plus a caret, selection
+rectangles and composition decoration. Pointer selection is done with the
+worker's hit test, so clicking and dragging select the glyphs under the
+pointer. When the worker cannot answer geometry — disconnected or too old —
+the editor clears the chrome and Edit shows an explicit **Source text** drawer
+(automatically and labelled as such when the capability is absent); it is
+source editing, never a Qt layout pretending to be the audience's pixels.
+
+`text.editor` (protocol minor 21, capability `text.editor.v1`) is the one
+geometry owner. The ask carries a compiled scene, one text item, an optional
+bounded draft and the caret, selection or pointer it wants answered.
+`OutputSession::editorLayout` calls the same `SceneTextEngine::layoutInBox`
+that paints: carets come from glyph cluster bounds, selection from the
+paragraph's own range rects, hit tests from `getGlyphPositionAtCoordinate`, and
+all coordinates are authored 1920×1080 units with the frontend's zoom applied
+once. Offsets are UTF-16 code units of the authored item text (Qt's unit);
+`SceneTextEngine::sourceToDisplayOffset`/`displayToSourceOffset` bridge them
+through the same uppercase transform that renders, so an All-caps expansion
+(`ß` → `SS`) still names an authored character. A reply is installed only for
+the newest request of the current session; nothing is stored, prepared,
+presented or cached, and a geometry ask can never move the audience.
+
+The slide rail reorders with a visible grab handle: a ghost follows the
+pointer, an insertion gap is drawn before/between/after cards, edge autoscroll
+is bounded to one row per tick, and Escape, a release outside the lane, the
+source's own gap or a model change during the gesture cancels with no edit.
+The visible gap converts exactly once to `Documents::moveSlide`'s final-slot
+rule. The row menu and the rail's keys offer Move up/down and Insert
+before/after; the footer's **Insert slide** inserts after the selection
+(position zero for an empty presentation). `DocumentController` wraps these as
+one history entry each, validates explicit show/slide/anchor ids, keeps the
+selected slide selected by id across moves and undo/redo, selects the fresh
+slide on insert, and inherits the anchor's section, text context, background
+and fit without copying words, notes, foreground items or per-slide style
+overrides. A leading blank cue is an ordinary slide: an explicit position is
+obeyed and the cue is neither moved nor recreated.
+
+Evidence: `editor_layout_tests` (real worker wrap, draft override, capitals,
+round-trip hit tests, refusals, latency); `frontend_journey_tests` (controller
+adapter, output isolation); `library_service_ui_tests` (double-click/Enter
+entry, typing, worker caret and selection, line breaks, Escape/Done, undo
+granularity, source drawer, insert→type→reorder→undo/redo on the real shell);
+`document_controller_tests` (move/insert verbs, refusals, no-ops, inheritance,
+leading cue, persistence); `workspace_ui_tests` (real rail pointer drags,
+cancellation, autoscroll, menu/keys, empty insertion and the no-worker
+fallback); `protocol_tests`/`rpc_ipc_tests` (minor 21 and the capability).
+
 ## Whole-item themes and optional reflow (milestone PT)
 
 A theme can be applied to a WHOLE song or passage from its left-hand row, not

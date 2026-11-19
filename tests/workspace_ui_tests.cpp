@@ -838,6 +838,26 @@ int main(int argc, char** argv) {
         QTest::qWait(80);
         check(list->property("count").toInt() == 5,
               "the rail fixture shows five slides");
+        // EW.5's fallback, on this no-worker shell: the bottom field IS the
+        // explicit source drawer and the canvas never offers in-place
+        // editing without a worker that can answer its geometry.
+        {
+            auto* canvas = findNamed(window->contentItem(), "editCanvas");
+            auto* source = findNamed(window->contentItem(), "slideTextEditor");
+            auto* sourceAction = findNamed(window->contentItem(), "sourceTextButton");
+            auto* editText = window->findChild<QObject*>("editTextMenuItem");
+            check(source && source->isVisible(),
+                  "without a worker the source drawer is the visible fallback");
+            check(sourceAction &&
+                      sourceAction->property("text").toString().contains(
+                          QStringLiteral("required")) &&
+                      !sourceAction->property("enabled").toBool(),
+                  "the fallback names itself as required and cannot be closed");
+            check(canvas && !canvas->property("textEditAvailable").toBool(),
+                  "the canvas offers in-place editing only with a capable worker");
+            check(editText && !editText->property("enabled").toBool(),
+                  "the box menu's Edit text action follows the same capability gate");
+        }
         const auto authored = railPreviews();
         check(authored == (QStringList{"Rail 1", "Rail 2", "Rail 3", "Rail 4", "Rail 5"}),
               "the rail fixture starts in authored order");
@@ -969,9 +989,13 @@ int main(int argc, char** argv) {
                       "Move up lands the slide one slot earlier");
                 docs.undo();
                 check(railPreviews() == beforeMenu, "one undo restores the menu move");
-                // Insert before/after through the same menu.
-                QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier,
-                                  third->mapToScene(QPointF(20, 20)).toPoint());
+                // Insert before/after through the same menu. The delegate may
+                // have been rebuilt by the move/undo, so the row is located
+                // again rather than reused.
+                QQuickItem* insertRow = tileAt(2);
+                if (insertRow)
+                    QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier,
+                                      insertRow->mapToScene(QPointF(20, 20)).toPoint());
                 QTest::qWait(60);
                 QObject* insertBefore =
                     window->findChild<QObject*>("editorInsertBeforeMenuItem");

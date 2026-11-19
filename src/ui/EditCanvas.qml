@@ -37,6 +37,80 @@ Item {
     readonly property bool hasSlide: docs.currentSlide >= 0
         && docs.slides.length > docs.currentSlide
 
+    // EW.5: in-place text editing. The mode is this canvas's, the session is
+    // InlineTextEditor's, and the selection it edits is the SELECTED box —
+    // one box, one draft, one document identity. `textEditAvailable` is the
+    // honest gate: a text box under the selection and a worker whose hello
+    // offers the geometry answer. Without either, Edit keeps its explicit
+    // Source text drawer.
+    property bool textMode: false
+    property string textSlideId: ""
+    property string textBoxId: ""
+    // The caret each box remembered when the operator last left it (EW.5's
+    // "resume the remembered caret, else the end"). Keyed by slide/box id, so
+    // a reordered slide cannot hand its caret to another box.
+    property var caretMemory: ({})
+    readonly property bool textEditAvailable: worker.textEditorSupported
+        && hasSlide && currentBox >= 0 && docs.currentBoxKind === "text"
+
+    function beginTextEditing(offset) {
+        if (!textEditAvailable)
+            return false
+        const box = canvas.selectedBox()
+        const slideId = String(docs.slides[docs.currentSlide].id)
+        if (box === undefined)
+            return false
+        const memoryKey = slideId + "/" + String(box.id)
+        const resume = offset >= 0 ? offset
+            : (canvas.caretMemory[memoryKey] !== undefined
+               ? canvas.caretMemory[memoryKey] : -1)
+        if (canvas.dragMode !== "")
+            canvas.cancelDrag()
+        canvas.textSlideId = slideId
+        canvas.textBoxId = String(box.id)
+        inlineEditor.slideId = slideId
+        inlineEditor.boxId = canvas.textBoxId
+        inlineEditor.itemIndex = canvas.currentBox
+        inlineEditor.zoom = canvas.zoom
+        inlineEditor.box = Qt.rect(canvas.boxX, canvas.boxY, canvas.boxW, canvas.boxH)
+        inlineEditor.sceneJson = docs.sceneJsonForSlide(slideId)
+        inlineEditor.initialCaret = resume
+        canvas.selected = true
+        canvas.textMode = true
+        inlineEditor.active = true
+        inlineEditor.openAt(resume)
+        return true
+    }
+    function endTextEditing() {
+        if (!canvas.textMode)
+            return
+        inlineEditor.finish()
+    }
+    function cancelTextEditing() {
+        endTextEditing()
+    }
+    function textIdentityHolds() {
+        if (!canvas.hasSlide)
+            return false
+        const box = canvas.selectedBox()
+        return box !== undefined
+            && String(docs.slides[docs.currentSlide].id) === canvas.textSlideId
+            && String(box.id) === canvas.textBoxId
+    }
+    // A document or style edit while the mode is held re-asks geometry for
+    // the same draft; a removed slide/box or a navigation ends the session.
+    function refreshTextGeometry() {
+        if (!canvas.textMode)
+            return
+        if (!canvas.textIdentityHolds()) {
+            canvas.endTextEditing()
+            return
+        }
+        inlineEditor.box = Qt.rect(canvas.boxX, canvas.boxY, canvas.boxW, canvas.boxH)
+        inlineEditor.sceneJson = docs.sceneJsonForSlide(canvas.textSlideId)
+        inlineEditor.askGeometry()
+    }
+
     // The slide's boxes in DRAW order, straight from the model; and the
     // selected one's rectangle, in authored units, mirrored from the
     // document. Only the gestures below move it, and a commit reloads it.
@@ -110,9 +184,13 @@ Item {
         syncFromDocuments()
         selected = true
     }
-    onVisibleChanged: if (visible) {
-        syncFromDocuments()
-        selected = true
+    onVisibleChanged: {
+        if (visible) {
+            syncFromDocuments()
+            selected = true
+        } else if (textMode) {
+            endTextEditing()
+        }
     }
     Connections {
         target: docs
@@ -125,14 +203,22 @@ Item {
                 // now occupies the selection.
                 canvas.cancelDrag()
             }
+            if (canvas.textMode)
+                canvas.refreshTextGeometry()
         }
         function onNavigationChanged() {
-            // Moving to another slide cancels the gesture; it never retargets.
+            // Moving to another slide cancels the gesture and ends the text
+            // session; it never retargets. The session commits its draft
+            // first, so the one undo entry names the box it was typed into.
+            if (canvas.textMode)
+                canvas.endTextEditing()
             canvas.cancelDrag()
             canvas.syncFromDocuments()
             canvas.selected = true
         }
         function onBoxSelectionChanged() {
+            if (canvas.textMode && !canvas.textIdentityHolds())
+                canvas.endTextEditing()
             if (canvas.dragMode !== "") {
                 canvas.cancelDrag()
             }
@@ -142,6 +228,8 @@ Item {
     // Escape steps out of the selection through the key map; a held drag
     // must be discarded, not committed.
     onSelectedChanged: {
+        if (!selected && canvas.textMode)
+            canvas.endTextEditing()
         if (!selected && canvas.dragMode !== "")
             canvas.cancelDrag()
     }
@@ -269,6 +357,12 @@ Item {
         id: boxMenu
         objectName: "editBoxMenu"
         MenuItem {
+            objectName: "editTextMenuItem"
+            text: "Edit text"
+            enabled: canvas.textEditAvailable
+            onClicked: canvas.beginTextEditing(-1)
+        }
+        MenuItem {
             objectName: "resetBoxPlacementMenuItem"
             text: "Reset box placement"
             enabled: {
@@ -336,6 +430,7 @@ Item {
 
         Repeater {
             model: canvas.selected && canvas.hasSlide && canvas.currentBox >= 0
+                && !canvas.textMode
                 ? [Qt.point(0, 0), Qt.point(1, 0), Qt.point(0, 1), Qt.point(1, 1)]
                 : []
             delegate: Rectangle {
@@ -402,6 +497,26 @@ Item {
             // Focus so the canvas's own Escape (below) reaches the item
             // scope rather than the window's clear-all shortcut.
             focus: true
+            // EW.5: text mode owns the pointer over its box; the box gesture
+            // surface stands down rather than competing for a click.
+            enabled: !canvas.textMode
+
+            onDoubleClicked: function (mouse) {
+                const px = mouse.x - canvas.gestureInset
+                const py = mouse.y - canvas.gestureInset
+                if (!canvas.hasSlide)
+                    return
+                const hit = docs.boxAt(px / canvas.zoom, py / canvas.zoom)
+                if (hit < 0)
+                    return
+                const box = canvas.boxes[hit]
+                if (box === undefined || box.kind !== "text")
+                    return
+                docs.selectTextBox(hit)
+                canvas.syncFromDocuments()
+                canvas.selected = true
+                canvas.beginTextEditing(-1)
+            }
 
             onPressed: function (mouse) {
                 const px = mouse.x - canvas.gestureInset
@@ -473,7 +588,40 @@ Item {
                 if (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier)) {
                     canvas.openBoxMenuAtSelection()
                     event.accepted = true
+                    return
                 }
+                // Enter on a selected text box enters the mode (EW.5); F2
+                // keeps its output meaning and is never a second owner here.
+                if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+                    && !event.modifiers && canvas.textEditAvailable) {
+                    canvas.beginTextEditing(-1)
+                    event.accepted = true
+                }
+            }
+        }
+
+        // EW.4/EW.5: the native input bridge and editing chrome. It rides
+        // the fitted stage, so its authored-unit geometry and this canvas's
+        // zoom are the only two transforms between the worker's paragraph
+        // and what the operator sees.
+        InlineTextEditor {
+            id: inlineEditor
+            anchors.fill: parent
+            onFinished: {
+                if (canvas.textSlideId !== "" && canvas.textBoxId !== "") {
+                    canvas.caretMemory[canvas.textSlideId + "/" + canvas.textBoxId] =
+                        inlineEditor.caretOffset
+                }
+                canvas.textMode = false
+                canvas.syncFromDocuments()
+                canvas.selected = true
+                gestureArea.forceActiveFocus()
+            }
+            onGeometryLost: {
+                // No matching layout: keep the committed draft, clear the
+                // chrome, and hand the operator the explicit source drawer.
+                if (!worker.textEditorSupported)
+                    canvas.endTextEditing()
             }
         }
     }

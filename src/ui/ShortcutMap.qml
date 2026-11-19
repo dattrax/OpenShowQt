@@ -49,6 +49,7 @@ Item {
     property bool binFocused: false          // the media bin owns the keyboard
     property bool boxSelected: false        // the canvas's handles are on
     property bool slideDragging: false      // a rail reorder grab is held
+    property bool textEditing: false        // the canvas's in-place text mode
     property int currentBox: -1             // docs.currentBox
     property int slideCount: 0
     property int cueCount: 0              // the running order's cues (UI.3b)
@@ -62,6 +63,7 @@ Item {
     // What a pressed key asks the window to do.
     signal outputCancelRequested()
     signal slideDragCancelRequested()
+    signal exitTextEditingRequested()
     signal deselectBoxRequested()
     signal clearBackgroundRequested()
     signal clearWordsRequested()
@@ -109,7 +111,7 @@ Item {
     readonly property bool outputClearEnabled: (wordsOnAir || backgroundOnAir || audioOnAir
                                                 || canRestore)
                                                && !(page === "edit" && boxSelected)
-                                               && !slideDragging
+                                               && !slideDragging && !textEditing
     Shortcut {
         sequence: StandardKey.Cancel
         enabled: shortcutMap.outputClearEnabled
@@ -123,9 +125,18 @@ Item {
         enabled: shortcutMap.slideDragging
         onActivated: slideDragCancelRequested()
     }
+    // EW.5: the editing session owns Escape before selection/output meanings.
+    // The session itself keeps the draft and leaves; the next Escape is the
+    // box-selection one.
+    Shortcut {
+        sequence: "Escape"
+        enabled: shortcutMap.textEditing
+        onActivated: exitTextEditingRequested()
+    }
     Shortcut {
         sequence: "Escape"
         enabled: page === "edit" && boxSelected && !shortcutMap.slideDragging
+                 && !shortcutMap.textEditing
         onActivated: deselectBoxRequested()
     }
     Shortcut {

@@ -118,6 +118,7 @@ set(OPENSHOW_WORKSPACE_QML_NAMES
   WorkerFontPicker.qml TextStyleControls.qml TextEffectsControls.qml
   BackgroundControls.qml TransitionControls.qml
   AppearanceInspector.qml BoxTransform.qml ApplyThemeDialog.qml
+  InlineTextEditor.qml
 )
 set(OPENSHOW_WORKSPACE_QML_FILES)
 foreach(qml IN LISTS OPENSHOW_WORKSPACE_QML_NAMES)
