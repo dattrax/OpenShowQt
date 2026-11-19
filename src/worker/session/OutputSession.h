@@ -405,6 +405,62 @@ public:
                      std::string* error, SceneTextEngine::InkRect* inkOut = nullptr,
                      bool* fitsOut = nullptr);
 
+    // --- editor layout and hit testing (EW.2/EW.3) -------------------------
+    //
+    // The WYSIWYG text session's only geometry source. The answer is read
+    // from the SAME `SceneTextEngine::layoutInBox` result that paints the
+    // item: carets come from glyph cluster bounds, selection from the
+    // paragraph's own range rectangles, and hit tests from
+    // `getGlyphPositionAtCoordinate`. Authored-canvas coordinates are
+    // `paragraphLeft/paragraphTop` plus the paragraph's local space.
+    //
+    // Offsets are UTF-16 code units of the AUTHORED item text (the wire's
+    // unit), optionally overridden by a bounded draft. `allCaps` maps them
+    // through the display transform, so the reply's offsets always name
+    // authored characters. Nothing is stored, prepared, presented or
+    // cached; a closed output refuses by name rather than guessing a caret.
+    struct EditorRect {
+        float x = 0.0f;
+        float y = 0.0f;
+        float width = 0.0f;
+        float height = 0.0f;
+    };
+    struct EditorLayout {
+        int item = 0;
+        float boxX = 0.0f;
+        float boxY = 0.0f;
+        float boxWidth = 0.0f;
+        float boxHeight = 0.0f;
+        float fontSize = 0.0f;
+        int lineCount = 0;
+        int textLength = 0;
+        bool hasCaret = false;
+        EditorRect caret;
+        int caretOffset = 0;
+        int caretLine = 0;
+        std::vector<EditorRect> selection;
+        bool hasHit = false;
+        int hitOffset = 0;
+        int hitLine = 0;
+    };
+    struct EditorAsk {
+        const openshow::scene::Scene* scene = nullptr;
+        int item = -1;
+        // A draft override for the named item. Empty vector + hasLines=false
+        // means "use the scene's own words".
+        std::vector<std::string> lines;
+        bool hasLines = false;
+        int caret = 0;
+        bool hasCaret = false;
+        int selectionStart = 0;
+        int selectionEnd = 0;
+        bool hasSelection = false;
+        double pointX = 0.0;
+        double pointY = 0.0;
+        bool hasPoint = false;
+    };
+    bool editorLayout(const EditorAsk& ask, EditorLayout* out, std::string* error);
+
     // Task TL.3: the whole-scene display-transform guard, run by
     // scene.prepare before the store grows. The uppercase transform the
     // renderer applies can lengthen text; a scene whose transformed lines

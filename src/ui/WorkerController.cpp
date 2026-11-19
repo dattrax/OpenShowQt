@@ -22,6 +22,7 @@
 
 #include "openshow/domain/documents.h"
 #include "openshow/protocol/preview_wire.h"
+#include "openshow/scene/scene.h"
 
 #include "PreviewConsumer.h"
 #include "SceneAsk.h"
@@ -425,6 +426,7 @@ void WorkerController::onRpcDisconnected() {
     fConnected = false;
     fHandshakeDone = false;
     fTextMeasureCapable = false;  // a capability belongs to a live hello (BI.4)
+    fTextEditorCapable = false;   // EW.3: same, for the editor geometry answer
     fTextStyleCapable = false;    // TS.1: same, for the style-block claim
     fTextMeasureV2Capable = false;  // TS.3: same, for styled measurement
     // TR.1: same again. A worker that has not said it takes its fade lengths
@@ -572,6 +574,11 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             // built to forbid (task BI.4).
             emit textMeasureFailed(id, reason);
         }
+        if (pending.method == proto::kMethodTextEditor) {
+            // EW.3: a refused geometry ask is the session's signal to stand
+            // the caret chrome down, never to invent a position.
+            emit editorLayoutFailed(id, reason);
+        }
         if (pending.method == proto::kMethodMediaThumbnail) {
             const QString key = fThumbnailRequestPaths.value(pending.id);
             fThumbnailRequestPaths.remove(pending.id);
@@ -690,6 +697,7 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         bool measureV2Capable = false;
         bool textLayoutCapable = false;
         bool measureV3Capable = false;
+        bool editorCapable = false;
         bool fontListCapable = false;
         bool liveCapable = false;
         bool transitionOptionsCapable = false;
@@ -750,6 +758,10 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                     // successor to text.measure.v2. The name decides whether
                     // a layout-shaped block may be sent at all.
                     measureV3Capable = true;
+                } else if (capability.as_string() == proto::kCapabilityTextEditorV1) {
+                    // EW.3: the worker answers the editor's caret/selection/
+                    // hit geometry from its own laid-out paragraph.
+                    editorCapable = true;
                 } else if (capability.as_string() == proto::kCapabilityLiveSources) {
                     liveCapable = true;
                 } else if (capability.as_string() == proto::kCapabilityFontListV1) {
@@ -773,6 +785,7 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         fTextMeasureV2Capable = measureV2Capable;
         fTextLayoutCapable = textLayoutCapable;
         fTextMeasureV3Capable = measureV3Capable;
+        fTextEditorCapable = editorCapable;
         fTransitionOptionsCapable = transitionOptionsCapable;
         fFontListCapable = fontListCapable;
         fFontListState = fontListCapable ? QStringLiteral("idle")
@@ -922,6 +935,121 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             }
         }
         emit textMeasureFailed(id, QStringLiteral("the worker's measurement reply was malformed"));
+        return;
+    }
+
+    if (pending.method == proto::kMethodTextEditor) {
+        // EW.3: the geometry answer. Its core is {item, box, fontSize,
+        // lineCount, textLength}; caret/hit are optional and selection is a
+        // list. A reply whose core is not the shape this build asked for is
+        // reported as a failed ask, because a caret that never arrives is
+        // something the editor can say out loud rather than wait on.
+        const auto numberAt = [&payload](const char* key, double* out) {
+            const auto found = payload.find(key);
+            if (found == payload.end() || !found->value().is_number()) return false;
+            *out = found->value().to_number<double>();
+            return true;
+        };
+        const auto intAt = [&payload](const char* key, qint64* out) {
+            const auto found = payload.find(key);
+            if (found == payload.end() || !found->value().is_int64()) return false;
+            *out = found->value().as_int64();
+            return true;
+        };
+        qint64 item = 0;
+        qint64 lineCount = 0;
+        qint64 textLength = 0;
+        double fontSize = 0.0;
+        const auto boxEntry = payload.find("box");
+        bool wellFormed = intAt("item", &item) && intAt("lineCount", &lineCount) &&
+                          intAt("textLength", &textLength) &&
+                          numberAt("fontSize", &fontSize) &&
+                          boxEntry != payload.end() && boxEntry->value().is_object();
+        QVariantMap box;
+        if (wellFormed) {
+            const boost::json::object& rawBox = boxEntry->value().as_object();
+            for (const char* edge : {"x", "y", "width", "height"}) {
+                const auto found = rawBox.find(edge);
+                if (found == rawBox.end() || !found->value().is_number()) {
+                    wellFormed = false;
+                    break;
+                }
+                box.insert(QString::fromLatin1(edge), found->value().to_number<double>());
+            }
+        }
+        if (wellFormed) {
+            QVariantMap answer;
+            answer.insert(QStringLiteral("item"), item);
+            answer.insert(QStringLiteral("lineCount"), lineCount);
+            answer.insert(QStringLiteral("textLength"), textLength);
+            answer.insert(QStringLiteral("fontSize"), fontSize);
+            answer.insert(QStringLiteral("box"), box);
+            const auto caretEntry = payload.find("caret");
+            if (caretEntry != payload.end() && caretEntry->value().is_object()) {
+                const boost::json::object& raw = caretEntry->value().as_object();
+                const auto x = raw.find("x");
+                const auto y = raw.find("y");
+                const auto height = raw.find("height");
+                const auto offset = raw.find("offset");
+                const auto line = raw.find("line");
+                if (x != raw.end() && y != raw.end() && height != raw.end() &&
+                    offset != raw.end() && line != raw.end() &&
+                    x->value().is_number() && y->value().is_number() &&
+                    height->value().is_number() && offset->value().is_int64() &&
+                    line->value().is_int64()) {
+                    QVariantMap caret;
+                    caret.insert(QStringLiteral("x"), x->value().to_number<double>());
+                    caret.insert(QStringLiteral("y"), y->value().to_number<double>());
+                    caret.insert(QStringLiteral("height"), height->value().to_number<double>());
+                    caret.insert(QStringLiteral("offset"),
+                                 static_cast<qint64>(offset->value().as_int64()));
+                    caret.insert(QStringLiteral("line"),
+                                 static_cast<qint64>(line->value().as_int64()));
+                    answer.insert(QStringLiteral("caret"), caret);
+                }
+            }
+            QVariantList selection;
+            const auto selectionEntry = payload.find("selection");
+            if (selectionEntry != payload.end() && selectionEntry->value().is_array()) {
+                for (const boost::json::value& entry :
+                     selectionEntry->value().as_array()) {
+                    if (!entry.is_object()) continue;
+                    const boost::json::object& raw = entry.as_object();
+                    QVariantMap rect;
+                    bool rectOk = true;
+                    for (const char* edge : {"x", "y", "width", "height"}) {
+                        const auto found = raw.find(edge);
+                        if (found == raw.end() || !found->value().is_number()) {
+                            rectOk = false;
+                            break;
+                        }
+                        rect.insert(QString::fromLatin1(edge),
+                                    found->value().to_number<double>());
+                    }
+                    if (rectOk) selection.push_back(rect);
+                }
+            }
+            answer.insert(QStringLiteral("selection"), selection);
+            const auto hitEntry = payload.find("hit");
+            if (hitEntry != payload.end() && hitEntry->value().is_object()) {
+                const boost::json::object& raw = hitEntry->value().as_object();
+                const auto offset = raw.find("offset");
+                const auto line = raw.find("line");
+                if (offset != raw.end() && line != raw.end() &&
+                    offset->value().is_int64() && line->value().is_int64()) {
+                    QVariantMap hit;
+                    hit.insert(QStringLiteral("offset"),
+                               static_cast<qint64>(offset->value().as_int64()));
+                    hit.insert(QStringLiteral("line"),
+                               static_cast<qint64>(line->value().as_int64()));
+                    answer.insert(QStringLiteral("hit"), hit);
+                }
+            }
+            emit editorLayoutReady(id, answer);
+            return;
+        }
+        emit editorLayoutFailed(id,
+                                QStringLiteral("the worker's editor layout reply was malformed"));
         return;
     }
 
@@ -1608,6 +1736,101 @@ qint64 WorkerController::measureText(const QVariantList& blocks) {
     const std::int64_t id =
         sendRequest(proto::kMethodTextMeasure, boost::json::object{{"blocks", std::move(jsonBlocks)}});
     return id;
+}
+
+qint64 WorkerController::requestEditorLayout(const QVariantMap& ask) {
+    // EW.3: the caret/selection question is answerable only by a worker that
+    // named text.editor.v1. Every refusal here says so in the status line:
+    // the page then keeps its Source text drawer rather than painting a
+    // caret from Qt's own metrics. Nothing is sent half-validated.
+    if (!fConnected || !fHandshakeDone) {
+        setStatus(QStringLiteral("edit text: the worker is not connected"));
+        return 0;
+    }
+    if (!fTextEditorCapable) {
+        setStatus(QStringLiteral(
+            "edit text: this worker cannot answer editor geometry; use Source text"));
+        return 0;
+    }
+    const QString sceneJson = ask.value(QStringLiteral("scene")).toString();
+    if (sceneJson.isEmpty()) {
+        setStatus(QStringLiteral("edit text: there is no compiled slide to edit"));
+        return 0;
+    }
+    boost::system::error_code parseError;
+    boost::json::value scene = boost::json::parse(sceneJson.toStdString(), parseError);
+    if (parseError || !scene.is_object()) {
+        setStatus(QStringLiteral("edit text: the slide's compiled scene is not usable"));
+        return 0;
+    }
+    const QVariant itemValue = ask.value(QStringLiteral("item"));
+    bool itemOk = false;
+    const int item = itemValue.toInt(&itemOk);
+    if (!itemOk || item < 0) {
+        setStatus(QStringLiteral("edit text: no text box is selected"));
+        return 0;
+    }
+    boost::json::object params{
+        {"scene", std::move(scene)},
+        {"item", item},
+    };
+    const QVariant linesValue = ask.value(QStringLiteral("lines"));
+    if (linesValue.isValid()) {
+        const QVariantList lines = linesValue.toList();
+        if (static_cast<std::size_t>(lines.size()) > openshow::scene::kMaxItemLines) {
+            setStatus(QStringLiteral("edit text: the draft has more than %1 lines")
+                          .arg(static_cast<qint64>(openshow::scene::kMaxItemLines)));
+            return 0;
+        }
+        boost::json::array jsonLines;
+        jsonLines.reserve(lines.size());
+        for (const QVariant& line : lines) {
+            const QString text = line.toString();
+            if (text.size() > static_cast<int>(openshow::scene::kMaxLineChars)) {
+                setStatus(QStringLiteral("edit text: a draft line is over %1 characters")
+                              .arg(static_cast<qint64>(openshow::scene::kMaxLineChars)));
+                return 0;
+            }
+            jsonLines.push_back(boost::json::value(text.toStdString()));
+        }
+        params["lines"] = std::move(jsonLines);
+    }
+    const QVariant caretValue = ask.value(QStringLiteral("caret"));
+    if (caretValue.isValid()) {
+        const int caret = caretValue.toInt();
+        if (caret < 0) {
+            setStatus(QStringLiteral("edit text: the caret offset is negative"));
+            return 0;
+        }
+        params["caret"] = caret;
+    }
+    const QVariant selectionValue = ask.value(QStringLiteral("selection"));
+    if (selectionValue.isValid()) {
+        const QVariantList selection = selectionValue.toList();
+        if (selection.size() != 2 || selection[0].toInt() < 0 || selection[1].toInt() < 0) {
+            setStatus(QStringLiteral("edit text: the selection is not an anchor/focus pair"));
+            return 0;
+        }
+        params["selection"] = boost::json::array{selection[0].toInt(), selection[1].toInt()};
+    }
+    const QVariant pointValue = ask.value(QStringLiteral("point"));
+    if (pointValue.isValid()) {
+        const QVariantMap point = pointValue.toMap();
+        const double x = point.value(QStringLiteral("x")).toDouble();
+        const double y = point.value(QStringLiteral("y")).toDouble();
+        if (!std::isfinite(x) || !std::isfinite(y) || std::abs(x) > 100000.0 ||
+            std::abs(y) > 100000.0) {
+            setStatus(QStringLiteral("edit text: the pointer is outside the authored canvas"));
+            return 0;
+        }
+        params["point"] = boost::json::object{{"x", x}, {"y", y}};
+    }
+    if (!params.contains("caret") && !params.contains("selection") &&
+        !params.contains("point")) {
+        setStatus(QStringLiteral("edit text: nothing was asked about the caret"));
+        return 0;
+    }
+    return sendRequest(proto::kMethodTextEditor, std::move(params));
 }
 
 void WorkerController::refreshFontFamilies() {

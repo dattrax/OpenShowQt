@@ -209,8 +209,16 @@ namespace openshow::protocol {
 // would pack a page the audience's slide overflows. Centre/off content
 // travels on the legacy payload in both directions; anything else is refused
 // locally and by name.
+// Minor 21 (EW.3) adds `text.editor`: the bounded, read-only editor layout
+// and hit-test answer a WYSIWYG text session needs. It is computed from the
+// same laid-out paragraph that paints (caret from glyph clusters, selection
+// from the paragraph's own range rects) and returns authored-canvas
+// geometry for a compiled scene's text item, optionally with a draft text
+// override. Nothing is stored, prepared or presented; a hello without the
+// capability keeps the source-text fallback rather than an approximate
+// caret from Qt's own metrics.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 20;
+inline constexpr std::uint32_t kProtocolMinor = 21;
 
 // The capability that names a worker DRAWING the scene 4 style block.
 // Defined here so the frontend's pre-send gate and the worker's hello name
@@ -247,6 +255,19 @@ inline constexpr const char* kCapabilityTextMeasureV3 = "text.measure.v3";
 // without the name there is no honest family list to show, and typed
 // names — which never needed the worker — keep working.
 inline constexpr const char* kCapabilityFontListV1 = "font.list.v1";
+
+// EW.3: this worker answers `text.editor` — caret/selection geometry and
+// hit testing from the SAME laid-out paragraph that paints, with source
+// UTF-16 offsets and an optional draft text override. The name is the whole
+// negotiation: without it the Edit page keeps its explicit source-text
+// drawer and never pretends a Qt text layout is the audience's.
+inline constexpr const char* kCapabilityTextEditorV1 = "text.editor.v1";
+inline constexpr const char* kMethodTextEditor = "text.editor";
+// One bounded ask: at most kMaxItemLines draft lines of kMaxLineChars, the
+// same caps a drawn item obeys, so an editor question can never be larger
+// than the scene the renderer already agrees to draw. The reply carries at
+// most kMaxEditorSelectionRects boxes (selection geometry is per line).
+inline constexpr std::size_t kMaxEditorSelectionRects = 256;
 
 // The capability that names a worker HONOURING the scene.present durations
 // (minor 18): not merely one that parses the two keys — every build since TR.1

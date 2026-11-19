@@ -458,6 +458,15 @@ if(OPENSHOW_BUILD_UI)
     COMMAND text_measure_tests $<TARGET_FILE:openshow-worker>)
   set_tests_properties(text_measure_tests PROPERTIES LABELS display TIMEOUT 90)
 
+  # EW.2/EW.3: the editor's caret/selection/hit-test geometry against the
+  # real renderer — wrap, a draft override, capitals expansion and the
+  # authored-offset round trip. Needs a display like every live worker row.
+  add_executable(editor_layout_tests editor_layout_tests.cpp)
+  target_link_libraries(editor_layout_tests PRIVATE openshow::protocol openshow::scene)
+  add_test(NAME editor_layout_tests
+    COMMAND editor_layout_tests $<TARGET_FILE:openshow-worker>)
+  set_tests_properties(editor_layout_tests PROPERTIES LABELS display TIMEOUT 90)
+
   # Milestone BI (task BI.5): the importer's page session end to end — the
   # scripted network answers, the REAL worker measures, the slides preview
   # off air, and Add is the one door to today's schedule. Needs a display

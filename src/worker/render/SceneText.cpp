@@ -354,6 +354,26 @@ float effectiveSize(const openshow::scene::SceneItem& item, float scale) {
     return base * scale;
 }
 
+// EW.3: UTF-16 is the editor's wire unit (Qt's QString unit), while the
+// model and SkParagraph speak UTF-8. These two conversions are the only
+// crossing points; an invalid sequence degrades to replacement characters,
+// exactly as the renderer's own UTF-8 decode would.
+std::u16string asUtf16(const std::string& utf8) {
+    return SkUnicode::convertUtf8ToUtf16(utf8.c_str(), static_cast<int>(utf8.size()));
+}
+
+// One UTF-8 code point's byte range, using the shortest legal encoding
+// lengths. The scene's text is bounded and validated before it reaches a
+// layout, so this only has to be total, not clever.
+std::size_t utf8Step(const std::string& text, std::size_t at) {
+    const unsigned char lead = static_cast<unsigned char>(text[at]);
+    std::size_t length = 1;
+    if ((lead & 0xE0) == 0xC0) length = 2;
+    else if ((lead & 0xF0) == 0xE0) length = 3;
+    else if ((lead & 0xF8) == 0xF0) length = 4;
+    return std::min(length, text.size() - at);
+}
+
 }  // namespace
 
 bool SceneTextEngine::displayLines(const openshow::scene::SceneItem& item,
@@ -438,6 +458,132 @@ bool SceneTextEngine::validateSceneText(const openshow::scene::Scene& scene,
             }
         }
     }
+    return true;
+}
+
+std::size_t SceneTextEngine::sourceTextUnits(const openshow::scene::SceneItem& item) {
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < item.lines.size(); ++i) {
+        if (i > 0) {
+            ++total;  // the authored line break is one UTF-16 unit
+        }
+        total += asUtf16(item.lines[i]).size();
+    }
+    return total;
+}
+
+bool SceneTextEngine::sourceToDisplayOffset(const openshow::scene::SceneItem& item,
+                                            std::size_t sourceOffset,
+                                            std::size_t* displayOffset,
+                                            std::string* error) const {
+    if (displayOffset == nullptr) {
+        if (error != nullptr) *error = "the editor offset map needs a destination";
+        return false;
+    }
+    *displayOffset = sourceOffset;
+    if (!item.allCaps) {
+        return true;  // the display text IS the authored text
+    }
+    std::vector<std::string> display;
+    if (!displayLines(item, &display, error)) {
+        return false;
+    }
+    // The transform's own answer for a prefix: uppercasing the prefix gives
+    // exactly the display units a caret after that prefix has passed. The
+    // whole line's transform is displayLines' (one ICU call); this only
+    // asks where a boundary landed inside the result.
+    const auto prefixUnits = [this](const std::u16string& sourceLine,
+                                    std::size_t local) -> std::size_t {
+        const std::size_t limit = std::min(local, sourceLine.size());
+        if (limit == 0) return 0;
+        const std::u16string prefix = sourceLine.substr(0, limit);
+        const SkString utf8 = SkUnicode::convertUtf16ToUtf8(prefix);
+        if (!fUnicode) return limit;
+        const SkString upper = fUnicode->toUpper(utf8, "");
+        return SkUnicode::convertUtf8ToUtf16(upper).size();
+    };
+    std::size_t sourceStart = 0;
+    std::size_t displayStart = 0;
+    for (std::size_t i = 0; i < item.lines.size(); ++i) {
+        const std::u16string sourceLine = asUtf16(item.lines[i]);
+        const std::u16string displayLine = asUtf16(display[i]);
+        const std::size_t sourceEnd = sourceStart + sourceLine.size();
+        if (sourceOffset <= sourceEnd) {
+            *displayOffset = displayStart + prefixUnits(sourceLine,
+                                                        sourceOffset - sourceStart);
+            return true;
+        }
+        // The authored line break itself maps to the end of its line.
+        if (sourceOffset == sourceEnd + 1) {
+            *displayOffset = displayStart + displayLine.size();
+            return true;
+        }
+        sourceStart = sourceEnd + 1;
+        displayStart += displayLine.size() + 1;
+    }
+    *displayOffset = displayStart;  // past the end clamps to the text's end
+    return true;
+}
+
+bool SceneTextEngine::displayToSourceOffset(const openshow::scene::SceneItem& item,
+                                            std::size_t displayOffset,
+                                            std::size_t* sourceOffset,
+                                            std::string* error) const {
+    if (sourceOffset == nullptr) {
+        if (error != nullptr) *error = "the editor offset map needs a destination";
+        return false;
+    }
+    *sourceOffset = displayOffset;
+    if (!item.allCaps) {
+        return true;
+    }
+    std::vector<std::string> display;
+    if (!displayLines(item, &display, error)) {
+        return false;
+    }
+    std::size_t sourceStart = 0;
+    std::size_t displayStart = 0;
+    for (std::size_t i = 0; i < item.lines.size(); ++i) {
+        const std::u16string sourceLine = asUtf16(item.lines[i]);
+        const std::u16string displayLine = asUtf16(display[i]);
+        if (displayOffset <= displayStart + displayLine.size()) {
+            const std::size_t local = displayOffset - displayStart;
+            // Walk the source's code points, accumulating each one's
+            // displayed width. A target inside an expansion (ß → SS) maps to
+            // the nearer end of the AUTHORED character: the caret still
+            // names one authored character, never half of an expansion.
+            std::size_t sourceLocal = 0;
+            std::size_t shownLocal = 0;
+            for (std::size_t at = 0; at < item.lines[i].size();) {
+                const std::size_t step = utf8Step(item.lines[i], at);
+                std::size_t shown = 1;
+                if (fUnicode) {
+                    const SkString codePoint(item.lines[i].c_str() + at, step);
+                    const SkString upper = fUnicode->toUpper(codePoint, "");
+                    shown = SkUnicode::convertUtf8ToUtf16(upper).size();
+                }
+                const std::size_t sourceUnits =
+                    asUtf16(item.lines[i].substr(at, step)).size();
+                if (local <= shownLocal) {
+                    *sourceOffset = sourceStart + sourceLocal;
+                    return true;
+                }
+                if (local < shownLocal + shown) {
+                    *sourceOffset = sourceStart + sourceLocal +
+                                    ((local - shownLocal) * 2 >= shown ? sourceUnits : 0);
+                    return true;
+                }
+                shownLocal += shown;
+                sourceLocal += sourceUnits;
+                at += step;
+            }
+            *sourceOffset = sourceStart + sourceLine.size();
+            return true;
+        }
+        sourceStart += sourceLine.size() + 1;
+        displayStart += displayLine.size() + 1;
+    }
+    *sourceOffset = sourceTextUnits(item);
     return true;
 }
 

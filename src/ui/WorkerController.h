@@ -289,6 +289,18 @@ public:
     // whose hello does not offer text.measure.v1 — with the reason said.
     Q_INVOKABLE qint64 measureText(const QVariantList& blocks);
 
+    // EW.2/EW.3: the WYSIWYG text session's geometry. `ask` is
+    // {scene: <compiled scene JSON string>, item: int, lines?: [strings],
+    //  caret?: int, selection?: [anchor, focus], point?: {x, y}}.
+    // The reply arrives under the returned request id as
+    // {item, box:{x,y,width,height}, fontSize, lineCount, textLength,
+    //  caret?: {x,y,height,offset,line}, selection: [{x,y,width,height}],
+    //  hit?: {offset,line}} in AUTHORED 1920x1080 units. 0 means nothing was
+    // sent: no connection, or a hello without text.editor.v1, with the
+    // reason in the status line. The answer is never stored; the caller
+    // owns the session identity and ignores stale ids.
+    Q_INVOKABLE qint64 requestEditorLayout(const QVariantMap& ask);
+
     // Media transport (task 6.15a, review R15): play/pause/seek/loop/
     // gain/mute as operator operations over the socket. Each call is a
     // fire-and-confirm request — the reply says the worker took it, the
@@ -426,6 +438,11 @@ public:
     // a layout-shaped ask sent to a v2-only worker would be answered as if the
     // transform had not been asked for; measureText refuses it by name.
     bool layoutMeasureSupported() const { return fTextMeasureV3Capable; }
+    // The worker's hello names text.editor.v1 (EW.3): caret/selection/hit
+    // geometry from the very paragraph that paints. Without it the Edit page
+    // keeps its explicit Source text drawer — source editing, never a Qt
+    // layout pretending to be the audience's pixels.
+    bool textEditorSupported() const { return fTextEditorCapable; }
     // --- installed fonts (task TS.4) ------------------------------------
     // The worker's hello names font.list.v1: it answers "which families
     // can THIS shaper resolve?" about its own font manager, which is the
@@ -513,6 +530,10 @@ signals:
     // carries the id of the ask it belongs to and a retired ask ignores it.
     void textMeasured(qint64 requestId, const QVariantList& measured);
     void textMeasureFailed(qint64 requestId, const QString& reason);
+    // One editor geometry answer (EW.3): correlated by the request id this
+    // controller returned, so a superseded ask is ignored by construction.
+    void editorLayoutReady(qint64 requestId, const QVariantMap& answer);
+    void editorLayoutFailed(qint64 requestId, const QString& reason);
     // The font walk moved (task TS.4): a page landed, the state changed,
     // or the session retired the list. The picker binds to this alone.
     void fontListChanged();
@@ -579,6 +600,8 @@ private:
     // textLayoutSupported() and layoutMeasureSupported().
     bool fTextLayoutCapable = false;
     bool fTextMeasureV3Capable = false;
+    // text.editor.v1 (EW.3): see textEditorSupported().
+    bool fTextEditorCapable = false;
     // font.list.v1 (task TS.4): see fontListSupported(). The walk state
     // beside it belongs to the CONNECTION: a page that never gets sent,
     // or an answer that arrives after the session died, is nobody's list.

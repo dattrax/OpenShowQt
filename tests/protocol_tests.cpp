@@ -214,10 +214,10 @@ void testHello() {
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
         // The count is a tripwire, not a fact to preserve: a new capability
-        // belongs in the hello (TR.2's scene.transition-options.v1 made it 21),
-        // and reading this fail means a name was added or dropped — which is
+        // belongs in the hello (EW.3's text.editor.v1 made it 27), and
+        // reading this fail means a name was added or dropped — which is
         // exactly the kind of change that should cost a looked-at line.
-        check(result.at("capabilities").as_array().size() == 26, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 27, "hello lists capabilities");
         {  // Minor 19: the show audio layer is performed, not ignored.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasShowAudio = std::any_of(
@@ -236,7 +236,7 @@ void testHello() {
                   "the layout scene capability is spelled scene.text-layout.v1");
             check(proto::kCapabilityTextMeasureV3 == std::string("text.measure.v3"),
                   "the layout measure capability is spelled text.measure.v3");
-            check(proto::kProtocolMinor == 20, "the layout wire is protocol minor 20");
+            check(proto::kProtocolMinor == 21, "the editor wire is protocol minor 21");
             const auto& caps = result.at("capabilities").as_array();
             const bool hasLayout = std::any_of(
                 caps.begin(), caps.end(), [](const boost::json::value& v) {
@@ -249,6 +249,11 @@ void testHello() {
             check(hasLayout && hasMeasureV3,
                   "scene.text-layout.v1 and text.measure.v3 are advertised now the "
                   "renderer draws and measures the pair");
+            const bool hasEditor = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == proto::kCapabilityTextEditorV1;
+                });
+            check(hasEditor, "text.editor.v1 answers the editor's layout and hit test");
         }
         {  // Task 6.17b's scene 2 (kinded items) is named by a capability.
             const auto& caps = result.at("capabilities").as_array();

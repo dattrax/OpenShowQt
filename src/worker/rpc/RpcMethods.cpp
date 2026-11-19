@@ -1679,6 +1679,231 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
         proto::appendFrame(
             proto::makeResult(id, boost::json::object{{"measured", std::move(measured)}}),
             outbound);
+    } else if (name == proto::kMethodTextEditor) {
+        // EW.2/EW.3: the WYSIWYG session's read-only geometry question.
+        // The ask carries a COMPILED scene (the same payload scene.prepare
+        // takes), one text item, an optional bounded draft and the caret,
+        // selection or pointer it wants answered. Everything is answered
+        // from the renderer's own layout; nothing is stored, prepared,
+        // presented or remembered.
+        if (!given.is_object()) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "text.editor wants a {scene,item} object"),
+                outbound);
+            return;
+        }
+        const boost::json::object& args = given.as_object();
+        std::int64_t request = 0;
+        const auto requestKey = args.find("request");
+        if (requestKey != args.end()) {
+            if (!requestKey->value().is_int64()) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "text.editor \"request\" must be an integer"),
+                    outbound);
+                return;
+            }
+            request = requestKey->value().as_int64();
+        }
+        const auto sceneEntry = args.find("scene");
+        if (sceneEntry == args.end() || !sceneEntry->value().is_object()) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "text.editor wants the compiled slide as a \"scene\" object"),
+                outbound);
+            return;
+        }
+        openshow::scene::Scene scene;
+        std::string sceneError;
+        if (!openshow::scene::fromJson(sceneEntry->value(), &scene, &sceneError)) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "text.editor scene: " + sceneError),
+                outbound);
+            return;
+        }
+        const auto itemEntry = args.find("item");
+        if (itemEntry == args.end() || !itemEntry->value().is_int64()) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "text.editor wants an integer \"item\" index"),
+                outbound);
+            return;
+        }
+        const std::int64_t itemIndex = itemEntry->value().as_int64();
+        if (itemIndex < 0 ||
+            static_cast<std::size_t>(itemIndex) >= scene.items.size()) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "text.editor item " + std::to_string(itemIndex) +
+                                     " is outside the scene's " +
+                                     std::to_string(scene.items.size()) + " items"),
+                outbound);
+            return;
+        }
+        if (scene.items[static_cast<std::size_t>(itemIndex)].isImage) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "text.editor item " + std::to_string(itemIndex) +
+                                     " is a picture, not a text item"),
+                outbound);
+            return;
+        }
+        OutputSession::EditorAsk ask;
+        ask.scene = &scene;
+        ask.item = static_cast<int>(itemIndex);
+        const auto linesEntry = args.find("lines");
+        if (linesEntry != args.end()) {
+            if (!linesEntry->value().is_array()) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "text.editor \"lines\" must be an array of strings"),
+                    outbound);
+                return;
+            }
+            const boost::json::array& lines = linesEntry->value().as_array();
+            if (lines.size() > openshow::scene::kMaxItemLines) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "text.editor takes at most " +
+                                         std::to_string(openshow::scene::kMaxItemLines) +
+                                         " draft lines"),
+                    outbound);
+                return;
+            }
+            ask.hasLines = true;
+            ask.lines.reserve(lines.size());
+            for (const boost::json::value& line : lines) {
+                if (!line.is_string() ||
+                    line.as_string().size() > openshow::scene::kMaxLineChars) {
+                    proto::appendFrame(
+                        proto::makeError(id, proto::kInvalidParams,
+                                         "text.editor draft lines must be strings of at most " +
+                                             std::to_string(openshow::scene::kMaxLineChars) +
+                                             " characters"),
+                        outbound);
+                    return;
+                }
+                ask.lines.push_back(std::string(line.as_string()));
+            }
+        }
+        const auto caretEntry = args.find("caret");
+        if (caretEntry != args.end()) {
+            if (!caretEntry->value().is_int64() || caretEntry->value().as_int64() < 0) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "text.editor \"caret\" must be a non-negative UTF-16 offset"),
+                    outbound);
+                return;
+            }
+            ask.hasCaret = true;
+            ask.caret = static_cast<int>(caretEntry->value().as_int64());
+        }
+        const auto selectionEntry = args.find("selection");
+        if (selectionEntry != args.end()) {
+            const auto* pair = selectionEntry->value().if_array();
+            if (pair == nullptr || pair->size() != 2 || !(*pair)[0].is_int64() ||
+                !(*pair)[1].is_int64() || (*pair)[0].as_int64() < 0 ||
+                (*pair)[1].as_int64() < 0) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "text.editor \"selection\" must be [anchor, focus] of "
+                                     "non-negative UTF-16 offsets"),
+                    outbound);
+                return;
+            }
+            ask.hasSelection = true;
+            ask.selectionStart = static_cast<int>((*pair)[0].as_int64());
+            ask.selectionEnd = static_cast<int>((*pair)[1].as_int64());
+        }
+        const auto pointEntry = args.find("point");
+        if (pointEntry != args.end()) {
+            const auto* point = pointEntry->value().if_object();
+            if (point == nullptr) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "text.editor \"point\" must be {x,y} in authored units"),
+                    outbound);
+                return;
+            }
+            const auto x = point->find("x");
+            const auto y = point->find("y");
+            if (x == point->end() || y == point->end() || !x->value().is_number() ||
+                !y->value().is_number()) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "text.editor \"point\" wants finite x and y numbers"),
+                    outbound);
+                return;
+            }
+            const double px = x->value().to_number<double>();
+            const double py = y->value().to_number<double>();
+            if (!std::isfinite(px) || !std::isfinite(py) || std::abs(px) > 100000.0 ||
+                std::abs(py) > 100000.0) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "text.editor \"point\" is outside the authored canvas"),
+                    outbound);
+                return;
+            }
+            ask.hasPoint = true;
+            ask.pointX = px;
+            ask.pointY = py;
+        }
+        if (!ask.hasCaret && !ask.hasSelection && !ask.hasPoint) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "text.editor needs a caret, a selection or a point to answer"),
+                outbound);
+            return;
+        }
+        OutputSession::EditorLayout answer;
+        std::string error;
+        if (!fSession.editorLayout(ask, &answer, &error)) {
+            proto::appendFrame(proto::makeError(id, proto::kInternalError, error), outbound);
+            return;
+        }
+        boost::json::array selection;
+        for (const OutputSession::EditorRect& rect : answer.selection) {
+            selection.push_back(boost::json::object{
+                {"x", static_cast<double>(rect.x)},
+                {"y", static_cast<double>(rect.y)},
+                {"width", static_cast<double>(rect.width)},
+                {"height", static_cast<double>(rect.height)}});
+        }
+        boost::json::value caret = nullptr;
+        if (answer.hasCaret) {
+            caret = boost::json::object{
+                {"x", static_cast<double>(answer.caret.x)},
+                {"y", static_cast<double>(answer.caret.y)},
+                {"height", static_cast<double>(answer.caret.height)},
+                {"offset", answer.caretOffset},
+                {"line", answer.caretLine}};
+        }
+        boost::json::value hit = nullptr;
+        if (answer.hasHit) {
+            hit = boost::json::object{{"offset", answer.hitOffset},
+                                      {"line", answer.hitLine}};
+        }
+        proto::appendFrame(
+            proto::makeResult(
+                id, boost::json::object{
+                        {"request", request},
+                        {"item", answer.item},
+                        {"box",
+                         boost::json::object{
+                             {"x", static_cast<double>(answer.boxX)},
+                             {"y", static_cast<double>(answer.boxY)},
+                             {"width", static_cast<double>(answer.boxWidth)},
+                             {"height", static_cast<double>(answer.boxHeight)}}},
+                        {"fontSize", static_cast<double>(answer.fontSize)},
+                        {"lineCount", answer.lineCount},
+                        {"textLength", answer.textLength},
+                        {"caret", std::move(caret)},
+                        {"selection", std::move(selection)},
+                        {"hit", std::move(hit)}}),
+            outbound);
     } else if (name == proto::kMethodFontList) {
         // Task TS.4: "which families can THIS worker's shaper resolve?" —
         // answered by the renderer's own engine, which is the entire reason

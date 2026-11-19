@@ -381,6 +381,94 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // --- EW.3: the editor's geometry comes from the real worker ------------
+    {
+        check(controller.textEditorSupported(),
+              "the real worker's hello names text.editor.v1");
+        scene::Scene slide;
+        slide.showId = "edit-show";
+        slide.slideId = "edit-slide";
+        scene::SceneItem words;
+        words.lines = {"Editor geometry", "second line"};
+        words.fontSize = 96.0;
+        words.width = 1600.0;
+        words.height = 880.0;
+        words.align = "left";
+        slide.items.push_back(std::move(words));
+        const QString slideJson = QString::fromStdString(
+            boost::json::serialize(scene::toJson(slide)));
+        int sceneAtAsk = controller.sceneActive();
+        bool wordsAtAsk = controller.wordsOnAir();
+
+        QVariantMap startAnswer;
+        QVariantMap midAnswer;
+        QVariantMap hitAnswer;
+        QVariantMap selectionAnswer;
+        const QMetaObject::Connection startConn = QObject::connect(
+            &controller, &WorkerController::editorLayoutReady,
+            [&startAnswer](qint64, const QVariantMap& answer) { startAnswer = answer; });
+        check(controller.requestEditorLayout(QVariantMap{
+                  {"scene", slideJson}, {"item", 0}, {"caret", 0}}) > 0,
+              "the controller sends an editor layout ask to the capable worker");
+        check(waitUntil([&startAnswer] { return !startAnswer.isEmpty(); }),
+              "the caret-0 answer arrives");
+        QObject::disconnect(startConn);
+        const QVariantMap startCaret = startAnswer.value("caret").toMap();
+        check(startAnswer.value("textLength").toInt() == 27 &&
+                  startAnswer.value("lineCount").toInt() == 2 &&
+                  startCaret.value("offset").toInt() == 0 &&
+                  startCaret.value("line").toInt() == 0,
+              "the worker names the source length, wrapped lines and the first caret");
+
+        const QMetaObject::Connection midConn = QObject::connect(
+            &controller, &WorkerController::editorLayoutReady,
+            [&midAnswer](qint64, const QVariantMap& answer) { midAnswer = answer; });
+        controller.requestEditorLayout(QVariantMap{
+            {"scene", slideJson}, {"item", 0}, {"caret", 6}});
+        check(waitUntil([&midAnswer] { return !midAnswer.isEmpty(); }),
+              "the caret-6 answer arrives");
+        QObject::disconnect(midConn);
+        const QVariantMap midCaret = midAnswer.value("caret").toMap();
+        check(midCaret.value("x").toDouble() > startCaret.value("x").toDouble(),
+              "a caret further into the line is further right");
+
+        const QMetaObject::Connection hitConn = QObject::connect(
+            &controller, &WorkerController::editorLayoutReady,
+            [&hitAnswer](qint64, const QVariantMap& answer) { hitAnswer = answer; });
+        controller.requestEditorLayout(QVariantMap{
+            {"scene", slideJson}, {"item", 0},
+            {"point", QVariantMap{{"x", midCaret.value("x").toDouble()},
+                                  {"y", midCaret.value("y").toDouble()
+                                            + midCaret.value("height").toDouble() / 2.0}}}});
+        check(waitUntil([&hitAnswer] { return !hitAnswer.isEmpty(); }),
+              "the pointer answer arrives");
+        QObject::disconnect(hitConn);
+        check(hitAnswer.value("hit").toMap().value("offset").toInt() == 6,
+              "a pointer at the caret's own point names the caret's offset");
+
+        const QMetaObject::Connection selectionConn = QObject::connect(
+            &controller, &WorkerController::editorLayoutReady,
+            [&selectionAnswer](qint64, const QVariantMap& answer) {
+                selectionAnswer = answer;
+            });
+        // A draft override across the authored line break: the selection's
+        // rects come from the same laid-out paragraph, one or more per line.
+        controller.requestEditorLayout(QVariantMap{
+            {"scene", slideJson}, {"item", 0},
+            {"lines", QVariantList{QStringLiteral("Draft one"),
+                                   QStringLiteral("Draft two")}},
+            {"selection", QVariantList{0, 20}}});
+        check(waitUntil([&selectionAnswer] { return !selectionAnswer.isEmpty(); }),
+              "the selection answer arrives");
+        QObject::disconnect(selectionConn);
+        check(selectionAnswer.value("textLength").toInt() == 19 &&
+                  selectionAnswer.value("selection").toList().size() >= 2,
+              "the draft's own length and one selection rect per wrapped line answer");
+        check(controller.sceneActive() == sceneAtAsk &&
+                  controller.wordsOnAir() == wordsAtAsk,
+              "editor geometry asks never prepare, present or clear the output");
+    }
+
     // --- 1. the go paints the whole authored stack ---------------------------
     controller.presentSceneJson(sceneAlpha(goldPath, magentaPath));
     if (!check(waitUntil([&controller] {

@@ -262,6 +262,23 @@ public:
     // grows. A scene that passes this lays out with no transform failure.
     bool validateSceneText(const openshow::scene::Scene& scene, std::string* error) const;
 
+    // EW.3: the editor's source/display offset bridge. The wire and Qt speak
+    // UTF-16 code units of the AUTHORED item text (lines joined by '\n'); the
+    // shaped paragraph counts the DISPLAY text, which `allCaps` may lengthen
+    // (ß → SS). These two directions use the very same uppercase transform
+    // that renders, so a caret inside an expansion still names the authored
+    // character and the authored case is never rewritten. Without `allCaps`
+    // both are the identity. Out-of-range offsets clamp to the text's ends.
+    bool sourceToDisplayOffset(const openshow::scene::SceneItem& item,
+                               std::size_t sourceOffset, std::size_t* displayOffset,
+                               std::string* error = nullptr) const;
+    bool displayToSourceOffset(const openshow::scene::SceneItem& item,
+                               std::size_t displayOffset, std::size_t* sourceOffset,
+                               std::string* error = nullptr) const;
+    // The authored text's length in UTF-16 code units, the unit the editor
+    // asks and answers in.
+    static std::size_t sourceTextUnits(const openshow::scene::SceneItem& item);
+
     // scale multiplies the item's size before layout (the fit pass).
     // `error` (task TL.3) receives the named refusal when the display
     // transform cannot be bounded.

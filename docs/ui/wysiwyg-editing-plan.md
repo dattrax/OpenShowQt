@@ -29,7 +29,7 @@ the place each leaf records what it actually built.
 | Thing | Identity |
 |---|---|
 | Editing session | `showId` + `slideId` + `boxId` + draft generation |
-| Layout request | frontend `request` counter (monotonic) |
+| Layout request | the JSON-RPC request id (monotonic; `request` is echoed for diagnostics) |
 | Layout reply | `request`; carries no document authority |
 | Scene item | index in the compiled scene; `compileSlide` emits one item per authored box in draw order, so item index = box index in `docs.currentSlideBoxes` |
 | Text offsets | UTF-16 code units of the item's source text (authored lines joined by `\n`), i.e. exactly Qt's `QString` offsets |

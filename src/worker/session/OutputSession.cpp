@@ -40,7 +40,11 @@
 #include "live/live_source_hub.h"
 #include "media/MediaProbe.h"
 #include "media/VideoThumbnail.h"
+#include "openshow/protocol/protocol.h"
+
 #include "render/SceneRenderer.h"
+#include "modules/skparagraph/include/DartTypes.h"
+#include "modules/skparagraph/include/Paragraph.h"
 #include "session/Faults.h"
 
 namespace openshow::worker {
@@ -786,6 +790,197 @@ bool OutputSession::listFonts(std::vector<SceneTextEngine::FontFamily>* families
     }
     return fScene->textEngine().listFonts(families, error);
 }
+
+bool OutputSession::editorLayout(const EditorAsk& ask, EditorLayout* out,
+                                 std::string* error) {
+    // EW.2/EW.3: the editor's geometry is the renderer's own. Every number
+    // below comes from `layoutInBox` — the same call that produces the
+    // audience's pixels — and from the paragraph that layout built. There is
+    // deliberately no second font measurement here: a caret placed by Qt's
+    // metrics would drift from the glyphs on the very first wrapped line.
+    if (out == nullptr || ask.scene == nullptr) {
+        if (error != nullptr) *error = "text.editor needs a scene and a destination";
+        return false;
+    }
+    if (fScene == nullptr) {
+        if (error != nullptr) {
+            *error = "text.editor has no text engine to lay out with (the output is closed)";
+        }
+        return false;
+    }
+    if (ask.item < 0 ||
+        static_cast<std::size_t>(ask.item) >= ask.scene->items.size()) {
+        if (error != nullptr) {
+            *error = "text.editor item " + std::to_string(ask.item) +
+                     " is outside the scene's " +
+                     std::to_string(ask.scene->items.size()) + " items";
+        }
+        return false;
+    }
+    openshow::scene::SceneItem item =
+        ask.scene->items[static_cast<std::size_t>(ask.item)];
+    if (item.isImage) {
+        if (error != nullptr) {
+            *error = "text.editor item " + std::to_string(ask.item) +
+                     " is a picture; there is no text layout to edit";
+        }
+        return false;
+    }
+    if (ask.hasLines) {
+        item.lines = ask.lines;
+    }
+    const SceneTextEngine::LaidOutItem laid =
+        fScene->textEngine().layoutInBox(item, 1.0f, error);
+    if (!laid.hasText && !item.lines.empty()) {
+        return false;  // the display transform refused; `error` names why
+    }
+
+    *out = EditorLayout{};
+    out->item = ask.item;
+    out->boxX = laid.boxX;
+    out->boxY = laid.boxY;
+    out->boxWidth = laid.boxWidth;
+    out->boxHeight = laid.boxHeight;
+    out->fontSize = laid.fontSize;
+    out->lineCount = laid.lineCount;
+    const std::size_t sourceLength = SceneTextEngine::sourceTextUnits(item);
+    out->textLength = static_cast<int>(sourceLength);
+    const float left = SceneTextEngine::paragraphLeft(laid);
+    const float top = SceneTextEngine::paragraphTop(laid);
+
+    const auto clampOffset = [sourceLength](int value) -> std::size_t {
+        if (value < 0) return 0;
+        return std::min(static_cast<std::size_t>(value), sourceLength);
+    };
+
+    if (laid.paragraph == nullptr) {
+        // An empty authored box has no paragraph to ask. The truthful caret
+        // is the paragraph origin — where the first glyph would go.
+        out->hasCaret = ask.hasCaret;
+        if (out->hasCaret) {
+            out->caret = EditorRect{left, top, 1.0f,
+                                    laid.fontSize > 0.0f ? laid.fontSize * 1.2f : 1.0f};
+            out->caretOffset = 0;
+            out->caretLine = 0;
+        }
+        if (ask.hasPoint) {
+            out->hasHit = true;
+            out->hitOffset = 0;
+            out->hitLine = 0;
+        }
+        return true;
+    }
+
+    const std::size_t displayLength = [&]() {
+        std::vector<std::string> display;
+        if (!fScene->textEngine().displayLines(item, &display, nullptr)) {
+            return sourceLength;
+        }
+        std::size_t total = 0;
+        for (std::size_t i = 0; i < display.size(); ++i) {
+            if (i > 0) ++total;
+            total += SkUnicode::convertUtf8ToUtf16(display[i].c_str(),
+                                                  static_cast<int>(display[i].size()))
+                         .size();
+        }
+        return total;
+    }();
+
+    if (ask.hasCaret) {
+        const std::size_t sourceOffset = clampOffset(ask.caret);
+        std::size_t displayOffset = sourceOffset;
+        if (!fScene->textEngine().sourceToDisplayOffset(item, sourceOffset,
+                                                        &displayOffset, error)) {
+            return false;
+        }
+        displayOffset = std::min(displayOffset, displayLength);
+        skia::textlayout::Paragraph::GlyphInfo info;
+        bool haveInfo = false;
+        if (displayOffset < displayLength) {
+            haveInfo = laid.paragraph->getGlyphInfoAtUTF16Offset(displayOffset, &info);
+        } else if (displayLength > 0) {
+            // The end-of-text caret rides the final grapheme's right edge.
+            haveInfo = laid.paragraph->getGlyphInfoAtUTF16Offset(displayLength - 1, &info);
+        }
+        if (haveInfo) {
+            const SkRect& bounds = info.fGraphemeLayoutBounds;
+            const bool after = displayOffset >= info.fGraphemeClusterTextRange.end;
+            out->hasCaret = true;
+            out->caret.x = left + (after ? bounds.right() : bounds.left());
+            out->caret.y = top + bounds.top();
+            out->caret.width = 1.0f;
+            out->caret.height = bounds.height();
+        } else {
+            out->hasCaret = true;
+            out->caret = EditorRect{left, top, 1.0f,
+                                    laid.fontSize > 0.0f ? laid.fontSize * 1.2f : 1.0f};
+        }
+        out->caretOffset = static_cast<int>(sourceOffset);
+        const std::size_t lineQuery = displayOffset < displayLength
+            ? displayOffset : (displayLength > 0 ? displayLength - 1 : 0);
+        const int line = laid.paragraph->getLineNumberAtUTF16Offset(lineQuery);
+        out->caretLine = line < 0 ? 0 : line;
+    }
+
+    if (ask.hasSelection) {
+        std::size_t sourceA = clampOffset(ask.selectionStart);
+        std::size_t sourceB = clampOffset(ask.selectionEnd);
+        if (sourceA > sourceB) std::swap(sourceA, sourceB);
+        if (sourceA != sourceB) {
+            std::size_t displayA = sourceA;
+            std::size_t displayB = sourceB;
+            if (!fScene->textEngine().sourceToDisplayOffset(item, sourceA, &displayA,
+                                                            error) ||
+                !fScene->textEngine().sourceToDisplayOffset(item, sourceB, &displayB,
+                                                            error)) {
+                return false;
+            }
+            displayA = std::min(displayA, displayLength);
+            displayB = std::min(displayB, displayLength);
+            if (displayB > displayA) {
+                const auto rects = laid.paragraph->getRectsForRange(
+                    static_cast<unsigned>(displayA), static_cast<unsigned>(displayB),
+                    skia::textlayout::RectHeightStyle::kMax,
+                    skia::textlayout::RectWidthStyle::kTight);
+                out->selection.reserve(std::min(rects.size(),
+                                                openshow::protocol::kMaxEditorSelectionRects));
+                for (const skia::textlayout::TextBox& box : rects) {
+                    if (out->selection.size() >= openshow::protocol::kMaxEditorSelectionRects) break;
+                    if (!box.rect.isFinite() || box.rect.isEmpty()) continue;
+                    out->selection.push_back(EditorRect{left + box.rect.left(),
+                                                        top + box.rect.top(),
+                                                        box.rect.width(),
+                                                        box.rect.height()});
+                }
+            }
+        }
+    }
+
+    if (ask.hasPoint) {
+        const double localX = ask.pointX - left;
+        const double localY = ask.pointY - top;
+        if (std::isfinite(localX) && std::isfinite(localY)) {
+            const skia::textlayout::PositionWithAffinity position =
+                laid.paragraph->getGlyphPositionAtCoordinate(
+                    static_cast<SkScalar>(localX), static_cast<SkScalar>(localY));
+            const std::size_t displayOffset = std::min(
+                static_cast<std::size_t>(std::max(position.position, 0)), displayLength);
+            std::size_t sourceOffset = displayOffset;
+            if (!fScene->textEngine().displayToSourceOffset(item, displayOffset,
+                                                            &sourceOffset, error)) {
+                return false;
+            }
+            out->hasHit = true;
+            out->hitOffset = static_cast<int>(sourceOffset);
+            const std::size_t lineQuery = displayOffset < displayLength
+                ? displayOffset : (displayLength > 0 ? displayLength - 1 : 0);
+            const int line = laid.paragraph->getLineNumberAtUTF16Offset(lineQuery);
+            out->hitLine = line < 0 ? 0 : line;
+        }
+    }
+    return true;
+}
+
 
 /*
  * The background-media seam (tasks 5.5–6.15b; BackgroundTransport is the

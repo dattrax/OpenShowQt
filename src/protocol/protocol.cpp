@@ -286,7 +286,9 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                             // spellings and withheld them precisely so this
                             // update would be a conscious one.
                             kCapabilityTextLayout,
-                            kCapabilityTextMeasureV3};
+                            kCapabilityTextMeasureV3,
+                            // EW.3: the editor layout/hit-test answer.
+                            kCapabilityTextEditorV1};
     if (liveSources) {
         capabilities.push_back(kCapabilityLiveSources);
     }
