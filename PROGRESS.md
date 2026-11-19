@@ -50,11 +50,11 @@ Verification: the full desktop suite passed **every runnable entry with `-j4` (8
 entry, `font_fixture_tests`, is **skipped**: its pinned-corpus cache was
 removed during this work and the sandbox has no network to fetch the pinned
 fonts again; it is not an EW test and its earlier cache-based failure was in
-stroke/shadow ink bounds untouched by EW). Two `-j8` runs saw the known
-timing-sensitive display flakes (`workspace_ui_tests` at the pre-existing
-camera-Delete check once, `frontend_journey_tests` at the cue live-marker check
-once); both passed alone, in a 3-way concurrent run and in the clean `-j4`
-run. The headless suite passed **48/48** (`-LE display`). The real-worker
+stroke/shadow ink bounds untouched by EW). Parallel runs saw only the known
+timing-sensitive display flakes: `workspace_ui_tests` at the pre-existing
+camera-Delete check (`-j8`, once) and `frontend_journey_tests` at the cue
+live-marker check (`-j8` once and `-j4` once, after a clean `-j4` run). Each
+passed alone, in a 3-way concurrent run, and in the clean `-j4` run. The headless suite passed **48/48** (`-LE display`). The real-worker
 editor journey and the whole-shell Edit journey pass; the editor-layout round
 trip measured median **0.02–0.03 ms**, p95 **0.02–0.04 ms** over 40 asks on
 this machine, well inside the 150 ms budget. Editing, moving and inserting
@@ -499,6 +499,7 @@ service. FO stays gated behind those.
 
 ## Recent commits
 
+- `8b2f2d4` fix(ui): announce capabilities after the hello reads them
 - `2f94500` fix(ui): re-read the slide's boxes when navigation changes (EW.5)
 - `b1c7674` docs: record the clean EW verification run and the skipped font fixture
 - `38880fb` fix(worker): refuse a superseded text.editor request (EW.3)
