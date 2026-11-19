@@ -111,6 +111,7 @@ Window {
         preparationListFocused: leftDock.visible && (leftDock.libraryListFocused || leftDock.serviceListFocused)
         editorSlideListFocused: editorSlideRail.activeFocus
         boxSelected: editPage.boxSelected
+        slideDragging: editorSlideRail.dragActive
         currentBox: docs.currentBox
         slideCount: docs.slides.length
         cueCount: showPage.cueRows.length
@@ -125,6 +126,7 @@ Window {
         onOutputCancelRequested: worker.canRestore ? worker.restoreOutput()
                                                    : worker.clearAll()
         onDeselectBoxRequested: editPage.boxSelected = false
+        onSlideDragCancelRequested: editorSlideRail.cancelDrag()
         onClearBackgroundRequested: worker.clearBackground()
         onClearWordsRequested: worker.clearSlide()
         onDuplicateSlideRequested: docs.duplicateCurrentSlide()

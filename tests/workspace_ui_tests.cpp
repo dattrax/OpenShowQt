@@ -793,6 +793,324 @@ int main(int argc, char** argv) {
         docs.selectSlide(originalIndex);
         check(docs.slides() == originalSlides, "the preview fixture leaves the original show intact");
     }
+    // --- EW.7/EW.8: real reorder drags, insertion gaps and insert verbs ---
+    {
+        auto* rail = findNamed(window->contentItem(), "editorSlideRail");
+        auto* list = findNamed(window->contentItem(), "editorSlideList");
+        const QString returnShow = docs.currentSongId();
+        const int returnSlide = docs.currentSlide();
+        check(rail && list, "the Edit rail and its lane are on the page");
+        const auto waitFor = [](const std::function<bool()>& predicate, int budgetMs = 2000) {
+            QElapsedTimer timer;
+            timer.start();
+            while (!predicate() && timer.elapsed() < budgetMs) QTest::qWait(20);
+            return predicate();
+        };
+        auto railPreviews = [&]() {
+            QStringList out;
+            for (const QVariant& row : docs.slides())
+                out << row.toMap().value(QStringLiteral("preview")).toString();
+            return out;
+        };
+        auto tileAt = [&](int slot) -> QQuickItem* {
+            QList<QQuickItem*> tiles;
+            collectNamed(list, "editorSlideTile", tiles);
+            for (auto* candidate : tiles)
+                if (candidate->property("index").toInt() == slot) return candidate;
+            return nullptr;
+        };
+        auto handleAt = [&](int slot) -> QQuickItem* {
+            QList<QQuickItem*> handles;
+            collectNamed(list, "editorSlideGrabHandle", handles);
+            for (auto* candidate : handles)
+                if (candidate->property("index").toInt() == slot) return candidate;
+            return nullptr;
+        };
+        docs.createSong(QStringLiteral("Rail fixture"));
+        const QString railShow = docs.currentSongId();
+        for (int i = 1; i <= 5; ++i) {
+            docs.addSlide();
+            docs.setSlideText(QStringLiteral("Rail %1").arg(i));
+            docs.flushText();
+        }
+        docs.selectSlide(0);
+        window->setProperty("page", "edit");
+        QTest::qWait(80);
+        check(list->property("count").toInt() == 5,
+              "the rail fixture shows five slides");
+        const auto authored = railPreviews();
+        check(authored == (QStringList{"Rail 1", "Rail 2", "Rail 3", "Rail 4", "Rail 5"}),
+              "the rail fixture starts in authored order");
+
+        // Pointer drag: grab slide 1's handle and drop in the gap after
+        // slide 3. The ghost and the insertion gap are visible while the
+        // grab is held; the visible gap translates to final slot 2.
+        QQuickItem* sourceTile = tileAt(0);
+        QQuickItem* handle = handleAt(0);
+        check(sourceTile && handle, "every card carries a visible reorder handle");
+        if (sourceTile && handle) {
+            const QPoint start = handle->mapToScene(QPointF(handle->width() / 2,
+                                                            handle->height() / 2)).toPoint();
+            QQuickItem* thirdTile = tileAt(2);
+            const QPoint target = thirdTile
+                ? thirdTile->mapToScene(QPointF(thirdTile->width() / 2,
+                                                thirdTile->height() - 4)).toPoint()
+                : start + QPoint(0, 120);
+            QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+            QTest::mouseMove(window, start + QPoint(0, 18), 15);
+            QTest::mouseMove(window, target, 20);
+            check(rail->property("dragActive").toBool(),
+                  "a held grab is a live reorder gesture");
+            auto* ghost = findNamed(window->contentItem(), "editorSlideGhost");
+            auto* gap = findNamed(window->contentItem(), "editorSlideInsertionGap");
+            check(ghost && ghost->isVisible() && gap && gap->isVisible(),
+                  "the drag shows a ghost and an insertion gap");
+            const int shownGap = rail->property("dragGap").toInt();
+            check(shownGap == 3, "the gap follows the pointer between cards");
+            QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, target);
+            check(railPreviews() ==
+                      (QStringList{"Rail 2", "Rail 3", "Rail 1", "Rail 4", "Rail 5"}),
+                  "dropping slide 1 in the third gap moves it once to final slot 2");
+            check(docs.currentSlide() == 2 &&
+                      docs.slides().at(2).toMap().value("preview").toString()
+                          == QStringLiteral("Rail 1"),
+                  "the moved slide stays selected by id");
+            check(waitFor([&]() { return !rail->property("dragActive").toBool(); }),
+                  "the gesture ends on release");
+            docs.undo();
+            check(railPreviews() == authored, "one undo restores the authored order");
+            docs.redo();
+        }
+
+        // Escape cancels a held gesture: no order change and no history.
+        {
+            const auto beforeCancel = railPreviews();
+            QQuickItem* grab = handleAt(0);
+            if (grab) {
+                const QPoint start = grab->mapToScene(QPointF(grab->width() / 2,
+                                                              grab->height() / 2)).toPoint();
+                rail->forceActiveFocus();
+                QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+                QTest::mouseMove(window, start + QPoint(0, 90), 20);
+                QTest::keyClick(window, Qt::Key_Escape);
+                QTest::qWait(20);
+                check(!rail->property("dragActive").toBool(),
+                      "Escape retires a held reorder");
+                QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier,
+                                    start + QPoint(0, 90));
+                check(railPreviews() == beforeCancel,
+                      "a cancelled drag changes no slide order");
+                // The cancelled gesture added no history: one undo still
+                // takes away the last real move (the redo above).
+                docs.undo();
+                check(railPreviews() == authored,
+                      "a cancelled drag records nothing - the previous edit is what undo takes");
+                docs.redo();
+            }
+        }
+
+        // A release outside the lane and a drop on the source's own gap are
+        // both no-ops: true for the controller, unchanged for the model.
+        {
+            const auto beforeNoop = railPreviews();
+            QQuickItem* grab = handleAt(0);
+            if (grab) {
+                const QPoint start = grab->mapToScene(QPointF(grab->width() / 2,
+                                                              grab->height() / 2)).toPoint();
+                QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+                QTest::mouseMove(window, start + QPoint(0, 60), 20);
+                const QPoint outside = rail->mapToScene(QPointF(rail->width() / 2,
+                                                                rail->height() - 4)).toPoint();
+                QTest::mouseMove(window, outside, 20);
+                QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, outside);
+                check(railPreviews() == beforeNoop,
+                      "a release outside the lanes cancels without moving");
+                QQuickItem* grabAgain = handleAt(0);
+                if (grabAgain) {
+                    const QPoint pressPoint = grabAgain->mapToScene(
+                        QPointF(grabAgain->width() / 2, grabAgain->height() / 2)).toPoint();
+                    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, pressPoint);
+                    QTest::mouseMove(window, pressPoint + QPoint(0, 4), 15);
+                    QTest::mouseMove(window, pressPoint, 15);
+                    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, pressPoint);
+                }
+                check(railPreviews() == beforeNoop,
+                      "a drop on the source's own gap changes nothing");
+                docs.undo();
+                check(railPreviews() == authored,
+                      "the no-op drop added no history");
+                docs.redo();
+            }
+        }
+
+        // Context menu: Move up is the pointer-free alternative, and Insert
+        // before/after land exactly where the row menu says.
+        {
+            const auto beforeMenu = railPreviews();
+            QQuickItem* third = tileAt(2);
+            check(third != nullptr, "a middle card is reachable for its menu");
+            if (third) {
+                QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier,
+                                  third->mapToScene(QPointF(20, 20)).toPoint());
+                QTest::qWait(60);
+                QObject* menu = window->findChild<QObject*>("editorSlideMenu");
+                QObject* up = window->findChild<QObject*>("editorMoveUpMenuItem");
+                QObject* down = window->findChild<QObject*>("editorMoveDownMenuItem");
+                check(menu && menu->property("visible").toBool(),
+                      "right-click opens the slide's row menu");
+                check(up && up->property("enabled").toBool() && down
+                          && down->property("enabled").toBool(),
+                      "a middle slide can move either way");
+                if (up) QMetaObject::invokeMethod(up, "clicked");
+                QTest::qWait(40);
+                QStringList moved = beforeMenu;
+                moved.move(2, 1);
+                check(railPreviews() == moved,
+                      "Move up lands the slide one slot earlier");
+                docs.undo();
+                check(railPreviews() == beforeMenu, "one undo restores the menu move");
+                // Insert before/after through the same menu.
+                QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier,
+                                  third->mapToScene(QPointF(20, 20)).toPoint());
+                QTest::qWait(60);
+                QObject* insertBefore =
+                    window->findChild<QObject*>("editorInsertBeforeMenuItem");
+                check(insertBefore && insertBefore->property("enabled").toBool(),
+                      "the row menu offers Insert before");
+                const int countBeforeInsert = docs.slides().size();
+                if (insertBefore)
+                    QMetaObject::invokeMethod(insertBefore, "clicked");
+                QTest::qWait(80);
+                check(docs.slides().size() == countBeforeInsert + 1 &&
+                          docs.currentSlide() == 2,
+                      "Insert before lands at the named row and selects the fresh slide");
+                check(docs.currentSlideText().isEmpty(),
+                      "the fresh slide carries empty words");
+                docs.undo();
+                check(docs.slides().size() == countBeforeInsert,
+                      "one undo removes the menu insertion");
+            }
+        }
+
+        // Keyboard alternatives while the rail owns focus: Ctrl+Down moves
+        // the selected slide, plain Down still only navigates.
+        {
+            docs.selectSlide(0);
+            rail->forceActiveFocus();
+            QTest::qWait(20);
+            const auto beforeKeys = railPreviews();
+            QTest::keyClick(window, Qt::Key_Down, Qt::ControlModifier);
+            check(railPreviews() ==
+                      (QStringList{beforeKeys[1], beforeKeys[0], beforeKeys[2],
+                                   beforeKeys[3], beforeKeys[4]}),
+                  "Ctrl+Down moves the selected slide one slot");
+            check(docs.currentSlide() == 1,
+                  "the moved selection follows the slide");
+            QTest::keyClick(window, Qt::Key_Down);
+            check(docs.currentSlide() == 2, "plain Down still navigates only");
+            docs.undo();
+            check(railPreviews() == beforeKeys,
+                  "the keyboard move is one edit and the navigation none");
+        }
+
+        // Footer insertion: after the selection, selected and revealed, one
+        // undo. The empty presentation inserts at position zero.
+        {
+            docs.selectSlide(1);
+            QTest::qWait(20);
+            auto* insert = findNamed(window->contentItem(), "editorAddSlide");
+            check(insert && insert->property("text").toString() == QStringLiteral("Insert slide"),
+                  "the rail footer offers Insert slide");
+            const int beforeInsert = docs.slides().size();
+            if (insert)
+                QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                  insert->mapToScene(QPointF(insert->width() / 2,
+                                                             insert->height() / 2)).toPoint());
+            QTest::qWait(80);
+            check(docs.slides().size() == beforeInsert + 1 && docs.currentSlide() == 2,
+                  "Insert slide lands after the selected slide");
+            const QVariantList freshBoxes = docs.currentSlideBoxes();
+            check(freshBoxes.size() == 1 &&
+                      freshBoxes.front().toMap().value("kind").toString()
+                          == QStringLiteral("text") &&
+                      docs.currentSlideText().isEmpty(),
+                  "the fresh slide is one empty editable text box");
+            docs.undo();
+            check(docs.slides().size() == beforeInsert,
+                  "one undo removes the footer insertion");
+
+            docs.createSong(QStringLiteral("Rail empty fixture"));
+            docs.flushText();
+            window->setProperty("page", "show");
+            QTest::qWait(20);
+            window->setProperty("page", "edit");
+            QTest::qWait(60);
+            auto* emptyInsert = findNamed(window->contentItem(), "editorAddSlide");
+            check(docs.slides().isEmpty() && list->property("count").toInt() == 0,
+                  "an empty presentation shows an empty rail");
+            if (emptyInsert)
+                QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                  emptyInsert->mapToScene(QPointF(emptyInsert->width() / 2,
+                                                                  emptyInsert->height() / 2)).toPoint());
+            QTest::qWait(80);
+            check(docs.slides().size() == 1 && docs.currentSlide() == 0,
+                  "the empty presentation's Insert slide lands at position zero");
+            docs.undo();
+        }
+
+        // Bounded autoscroll during a held grab, and a model change during
+        // the drag retires the gesture instead of retargeting a slot.
+        {
+            docs.createSong(QStringLiteral("Rail long fixture"));
+            for (int i = 1; i <= 14; ++i) {
+                docs.addSlide();
+                docs.setSlideText(QStringLiteral("Long %1").arg(i));
+                docs.flushText();
+            }
+            docs.selectSlide(0);
+            window->setProperty("page", "show");
+            QTest::qWait(20);
+            window->setProperty("page", "edit");
+            QTest::qWait(80);
+            QMetaObject::invokeMethod(list, "positionViewAtBeginning");
+            QTest::qWait(40);
+            QQuickItem* grab = handleAt(0);
+            if (grab) {
+                const QPoint press = grab->mapToScene(
+                    QPointF(grab->width() / 2, grab->height() / 2)).toPoint();
+                QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, press);
+                QTest::mouseMove(window, press + QPoint(0, 10), 15);
+                const QPoint bottomEdge = list->mapToScene(
+                    QPointF(list->width() / 2, list->height() - 4)).toPoint();
+                const qreal beforeScroll = list->property("contentY").toReal();
+                QTest::mouseMove(window, bottomEdge, 20);
+                check(waitFor([&]() {
+                          return list->property("contentY").toReal() > beforeScroll + 8;
+                      }, 1200),
+                      "holding a grab at the lane's edge autoscrolls");
+                // The rows move under the pointer; the captured source is
+                // still the authored identity.
+                check(rail->property("dragSlideId").toString()
+                          == docs.slides().at(0).toMap().value("id").toString(),
+                      "the gesture keeps the captured source identity");
+                // A model change during the held grab cancels it.
+                const int longCount = docs.slides().size();
+                docs.addSlide();
+                QTest::qWait(30);
+                check(!rail->property("dragActive").toBool(),
+                      "a slide added mid-drag retires the reorder");
+                QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, bottomEdge);
+                check(docs.slides().size() == longCount + 1,
+                      "the cancelled gesture lands no structural move of its own");
+                docs.undo();
+            }
+        }
+
+        docs.selectSong(returnShow);
+        docs.selectSlide(returnSlide);
+        window->setProperty("page", "edit");
+        QTest::qWait(40);
+    }
     // Edit uses native text Delete while typing and one undoable slide
     // removal elsewhere. The same key remains inactive on Show.
     {

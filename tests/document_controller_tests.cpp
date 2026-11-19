@@ -5014,6 +5014,281 @@ void exerciseReflowSourceSurfaces(const std::filesystem::path& root) {
           "both captured sources survive save and reopen");
 }
 
+// --- EW.6: slide ordering and insertion ------------------------------------
+//
+// The rail's structural verbs driven through the very controller the rail
+// binds to: explicit identities, final destinations, one history entry,
+// selection by id, inherited context and the leading cue left alone.
+void exerciseSlideOrdering(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root / "service");
+    docs.createSong(QStringLiteral("Ordering"));
+    const QString show = docs.currentSongId();
+    const QString anchorShow = show;
+    std::vector<QString> ids;
+    const char* words[] = {"A words", "B words", "C words", "D words"};
+    for (const char* text : words) {
+        docs.addSlide();
+        docs.setSlideText(QString::fromLatin1(text));
+        docs.flushText();
+        const QVariantList rows = docs.slides();
+        ids.push_back(rows.back().toMap().value(QStringLiteral("id")).toString());
+    }
+    auto order = [&]() {
+        std::vector<QString> out;
+        for (const QVariant& row : docs.slides())
+            out.push_back(row.toMap().value(QStringLiteral("id")).toString());
+        return out;
+    };
+    auto previews = [&]() {
+        std::vector<QString> out;
+        for (const QVariant& row : docs.slides())
+            out.push_back(row.toMap().value(QStringLiteral("preview")).toString());
+        return out;
+    };
+    check(order() == ids, "the fixture starts in authored order");
+
+    // Select B and move it two slots down: the final-position rule names
+    // index 2, and the selection follows B's ID rather than staying on the
+    // slot it used to occupy.
+    docs.selectSlide(1);
+    check(docs.currentSlide() == 1 && docs.currentSlideText() == QStringLiteral("B words"),
+          "B is selected before the move");
+    int docsSignals = 0;
+    QObject::connect(&docs, &DocumentController::documentsChanged,
+                     [&] { ++docsSignals; });
+    check(docs.moveSlideFor(show, ids[1], 2), "B is moved to the final slot 2");
+    check(order() == std::vector<QString>{ids[0], ids[2], ids[1], ids[3]},
+          "the list carries A, C, B, D after the move");
+    check(docs.currentSlide() == 2 && docs.currentSlideText() == QStringLiteral("B words"),
+          "the selected slide stays selected by id after the move");
+    check(docsSignals == 1, "a move is one document change");
+
+    // A drop on the source's own final slot is a legal no-op: true, no
+    // history entry, no document change. The proof is that undo then takes
+    // away the MOVE, not a phantom edit.
+    const int beforeNoop = docsSignals;
+    const auto beforeNoopOrder = order();
+    check(docs.moveSlideFor(show, ids[1], 2), "moving B onto its own slot answers true");
+    check(order() == beforeNoopOrder && docsSignals == beforeNoop,
+          "a no-op drop changes nothing and announces nothing");
+
+    // Refusals leave the model and both stacks alone.
+    const auto beforeRefusals = order();
+    const int beforeRefusalSignals = docsSignals;
+    check(!docs.moveSlideFor(show, QStringLiteral("slide999"), 0) &&
+              order() == beforeRefusals,
+          "moving an unknown slide is refused without a change");
+    check(!docs.moveSlideFor(QStringLiteral("show999"), ids[0], 0) &&
+              order() == beforeRefusals,
+          "moving within another presentation is refused without a change");
+    check(!docs.moveSlideFor(show, ids[0], 9) && order() == beforeRefusals &&
+              docsSignals == beforeRefusalSignals,
+          "a destination outside the list is refused without a history entry");
+
+    // One undo reverses the move and the cursor follows B back to slot 1.
+    docs.undo();
+    check(order() == ids, "one undo restores the authored order");
+    check(docs.currentSlideText() == QStringLiteral("B words"),
+          "undo keeps the selected slide by id while it exists");
+    docs.redo();
+    check(order() == std::vector<QString>{ids[0], ids[2], ids[1], ids[3]} &&
+              docs.currentSlideText() == QStringLiteral("B words"),
+          "redo republishes the move and keeps B selected");
+    docs.undo();
+
+    // Move up/down at the ends are legal no-ops; in the middle they move one
+    // slot. The fixture is back in authored order and A is selected.
+    docs.selectSlide(0);
+    check(docs.moveCurrentSlideStep(-1) && order() == ids,
+          "moving the first slide up is a legal no-op");
+    check(docs.moveCurrentSlideStep(1) && docs.currentSlide() == 1 &&
+              order() == std::vector<QString>{ids[1], ids[0], ids[2], ids[3]},
+          "moving A down lands A at slot 1 and keeps A selected");
+    docs.undo();
+
+    // Pending words flush to the slide the burst was typed into before the
+    // move: the capture is by id, not by the slot the cursor will land on.
+    docs.selectSlide(0);
+    docs.setSlideText(QStringLiteral("A edited"));
+    check(docs.moveCurrentSlideTo(3), "the flushed slide is moved by the current-slide verb");
+    check(previews().back() == QStringLiteral("A edited") &&
+              docs.currentSlide() == 3,
+          "the pending burst lands on the slide being moved, not its destination");
+
+    // Insertion after a middle anchor: one fresh slide, selected, carrying
+    // the anchor's section/context/background/fit but none of its words,
+    // notes or style overrides.
+    docs.undo();
+    docs.createSong(QStringLiteral("Insertion"));
+    const QString insertShow = docs.currentSongId();
+    docs.addSlide();
+    docs.setSlideText(QStringLiteral("Verse one\nsecond line"));
+    docs.flushText();
+    const QString anchor = docs.slides().front().toMap().value("id").toString();
+    // Register a picture asset for the background (a missing local file is
+    // legal until a save), then give the anchor its picture, fit and style.
+    check(docs.importMediaFile(QStringLiteral("/tmp/ew6-background.png")),
+          "the fixture registers a picture asset");
+    const QString asset = docs.assets().back().toMap().value("id").toString();
+    check(docs.setSlideBackgroundFor(insertShow, anchor, asset, QStringLiteral("contain")),
+          "the anchor takes the picture with its fit");
+    check(docs.customizeCurrentSlide(QStringLiteral("allCaps"), true),
+          "the anchor wears a per-slide style the insertion must not copy");
+    const auto beforeInsert = docs.slides();
+    const QString fresh = docs.insertSlideFor(insertShow, anchor, true);
+    check(!fresh.isEmpty(), "insert after the anchor returns a fresh id");
+    check(docs.slides().size() == beforeInsert.size() + 1,
+          "insertion adds exactly one slide");
+    check(docs.slides().at(1).toMap().value("id").toString() == fresh &&
+              docs.currentSlide() == 1,
+          "the fresh slide lands after the anchor and is selected");
+    check(docs.currentSlideText().isEmpty() && docs.currentSlideBoxes().size() == 1,
+          "the fresh slide carries exactly one empty text box");
+    {
+        const openshow::domain::Show* full = docs.documents().findShow(insertShow.toStdString());
+        check(full != nullptr && full->slides.size() == 2, "the show holds both slides");
+        if (full != nullptr && full->slides.size() == 2) {
+            const openshow::domain::Slide& created = full->slides[1];
+            const openshow::domain::Slide& source = full->slides[0];
+            check(created.notes.empty() && created.customizations.empty(),
+                  "insertion copies neither notes nor per-slide style overrides");
+            check(created.backgroundAssetId == source.backgroundAssetId &&
+                      created.backgroundFit == source.backgroundFit,
+                  "insertion inherits the anchor's background and fit");
+            check(created.textContext == source.textContext &&
+                      created.group == source.group,
+                  "insertion inherits the anchor's section and text context");
+            check(created.themeId.empty(),
+                  "insertion follows the presentation's theme rather than copying the anchor's");
+            check(created.items.size() == 1 && created.items.front().lines.empty(),
+                  "the fresh slide has one empty box and none of the anchor's words");
+        }
+    }
+    // One undo takes the fresh slide away; redo brings the same id back.
+    docs.undo();
+    check(docs.slides().size() == beforeInsert.size() &&
+              docs.slides().front().toMap().value("id").toString() == anchor,
+          "one undo removes exactly the inserted slide");
+    docs.redo();
+    check(docs.slides().size() == 2 &&
+              docs.slides().at(1).toMap().value("id").toString() == fresh,
+          "redo restores the fresh slide's identity");
+
+    // A real anchor context: a Bible passage names the `scripture` text
+    // context and carries a captured reflow source. The insertion inherits
+    // the context, and reordering the passage invalidates the captured
+    // source so a prepared plan cannot resurrect the old order.
+    check(docs.addScripturePassage(docs.currentPlaylistId(), QStringLiteral("John 1:1-3"),
+                                   QStringLiteral("NIV"), QStringLiteral("notice"),
+                                   QVariantList{
+                                       QVariantMap{{QStringLiteral("lines"),
+                                                    QVariantList{QStringLiteral("In the beginning")}},
+                                                   {QStringLiteral("notes"), QStringLiteral("John 1:1")}},
+                                       QVariantList{QStringLiteral("The same was in the beginning")}}),
+          "the fixture adds a scripture passage with a captured source");
+    // The passage is the newest show in the service; schedule-owned shows
+    // are hidden from the Library list, so the document itself is asked.
+    QString scriptureShow;
+    for (const openshow::domain::Id& id : docs.documents().showIds()) {
+        const openshow::domain::Show* show = docs.documents().findShow(id);
+        if (show != nullptr && show->name == "John 1:1-3")
+            scriptureShow = QString::fromStdString(id);
+    }
+    check(!scriptureShow.isEmpty(), "the passage show is in the service");
+    docs.selectSong(scriptureShow);
+    check(docs.slides().size() == 2, "the passage holds two slides");
+    const QString verseOne = docs.slides().at(0).toMap().value("id").toString();
+    const QString verseTwo = docs.slides().at(1).toMap().value("id").toString();
+    check(docs.reflowSourceMatches(scriptureShow),
+          "the passage's captured source matches before any edit");
+    const QString verseInsert = docs.insertSlideFor(scriptureShow, verseOne, true);
+    check(!verseInsert.isEmpty() &&
+              docs.slides().at(1).toMap().value("id").toString() == verseInsert &&
+              docs.slides().at(2).toMap().value("id").toString() == verseTwo,
+          "the insertion lands between the passage's verses");
+    {
+        const openshow::domain::Show* full =
+            docs.documents().findShow(scriptureShow.toStdString());
+        check(full != nullptr && full->slides.size() == 3 &&
+                  full->slides[1].textContext == "scripture",
+              "the inserted slide inherits the passage's scripture context");
+    }
+    check(docs.reflowSourceMatches(scriptureShow),
+          "a wordless insertion leaves the word projection matching (the cue is an eligibility question)");
+    check(docs.moveSlideFor(scriptureShow, verseTwo, 0),
+          "the passage's verses can be reordered");
+    check(docs.slides().front().toMap().value("id").toString() == verseTwo,
+          "the reorder put the second verse first");
+    check(!docs.reflowSourceMatches(scriptureShow),
+          "reordering the words invalidates the captured source");
+    docs.undo();
+    docs.undo();
+    check(docs.slides().at(0).toMap().value("id").toString() == verseOne &&
+              docs.slides().size() == 2 && docs.reflowSourceMatches(scriptureShow),
+          "undo restores the passage and its captured source");
+
+    docs.selectSong(insertShow);
+
+    // Empty presentation: the footer's insertion is position zero.
+    docs.createSong(QStringLiteral("Empty"));
+    const QString emptyShow = docs.currentSongId();
+    check(docs.slides().isEmpty(), "the empty fixture holds no slides");
+    const QString first = docs.insertSlideAfterCurrent();
+    check(!first.isEmpty() && docs.slides().size() == 1 &&
+              docs.slides().front().toMap().value("id").toString() == first,
+          "an empty presentation inserts at position zero and selects it");
+    check(docs.insertSlideAt(emptyShow, 1) != "" && docs.slides().size() == 2,
+          "an explicit index at the end appends");
+
+    // The leading blank cue is an ordinary slide: insert before and after
+    // obey the requested position and never move or recreate the cue.
+    docs.createSong(QStringLiteral("Leading cue"));
+    const QString cueShow = docs.currentSongId();
+    const QString cue = docs.insertSlideAt(cueShow, 0);
+    docs.addSlide();
+    docs.setSlideText(QStringLiteral("Words"));
+    docs.flushText();
+    const QString wordsSlide = docs.slides().back().toMap().value("id").toString();
+    const QString beforeCue = docs.insertSlideFor(cueShow, cue, false);
+    check(!beforeCue.isEmpty() &&
+              docs.slides().front().toMap().value("id").toString() == beforeCue &&
+              docs.slides().at(1).toMap().value("id").toString() == cue,
+          "insert before the cue lands at position zero and leaves the cue in place");
+    docs.undo();
+    const QString afterCue = docs.insertSlideFor(cueShow, cue, true);
+    check(!afterCue.isEmpty() &&
+              docs.slides().at(0).toMap().value("id").toString() == cue &&
+              docs.slides().at(1).toMap().value("id").toString() == afterCue &&
+              docs.slides().at(2).toMap().value("id").toString() == wordsSlide,
+          "insert after the cue lands between the cue and the words");
+
+    // Reordering a show with a captured reflow source invalidates the
+    // match, so a prepared plan cannot resurrect the old order.
+    docs.createSong(QStringLiteral("Reflow order"));
+    const QString reflowShow = docs.currentSongId();
+    for (int i = 0; i < 3; ++i) {
+        docs.addSlide();
+        docs.setSlideText(QStringLiteral("line %1").arg(i + 1));
+        docs.flushText();
+    }
+    // The controller only captures a source through preparation/import; the
+    // conservative current-word source is always available, and its match
+    // only becomes meaningful once a source exists. The order rule itself is
+    // pinned by domain_tests; here the save round-trip is what the rail
+    // needs.
+    // Drop the fixture's registered-but-missing picture first: a save
+    // refuses to package an asset whose file is not readable.
+    docs.removeAsset(asset);
+    const auto savedOrder = order();
+    check(docs.save(), "the edited session saves");
+    DocumentController reopened(nullptr, root / "service");
+    reopened.selectSong(reflowShow);
+    std::vector<QString> reopenedOrder;
+    for (const QVariant& row : reopened.slides())
+        reopenedOrder.push_back(row.toMap().value("id").toString());
+    check(reopenedOrder == savedOrder, "the edited order survives save and reopen");
+}
+
 int main(int argc, char* argv[]) {
     const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() /
                                            ("openshow-docctrl-" + std::to_string(getpid()));
@@ -5052,6 +5327,7 @@ int main(int argc, char* argv[]) {
     exerciseBoxAuthoring(tempRoot / "boxauthoring");
     exerciseMediaAudioCue(tempRoot / "mediaaudio");
     exerciseClipboard(tempRoot / "clipboard");
+    exerciseSlideOrdering(tempRoot / "slideordering");
     exerciseBackgroundFit(tempRoot / "fit");
     exerciseImageItemSession(tempRoot / "mixeditem");
     exerciseImageAuthoring(tempRoot / "imageauthoring");

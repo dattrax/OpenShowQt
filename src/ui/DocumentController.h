@@ -206,6 +206,39 @@ public:
     // Appends a slide to the current song and makes it current.
     Q_INVOKABLE bool addSlide();
     Q_INVOKABLE bool removeCurrentSlide();
+
+    // --- slide ordering and insertion (EW.6) ---
+    //
+    // The rail's structural verbs over the domain's existing moveSlide /
+    // insertSlide. Every one names explicit identities — the show, the slide
+    // being moved, the anchor a new slide sits beside — and a final
+    // destination rather than a live index, so a drag that started before a
+    // model change cannot land on whatever now occupies that slot. Each call
+    // is ONE history entry, flushes pending text first, and a refusal or a
+    // no-op mutates nothing and records nothing. The selected slide follows
+    // its own id across the edit (and across undo/redo while it exists);
+    // an insertion selects and reveals the fresh slide.
+    //
+    // `toIndex` is the slide's position in the FINAL list, exactly as
+    // Documents::moveSlide spells it. An empty anchor appends; an explicit
+    // index is clamped only by validation (0..size). A fresh slide inherits
+    // its anchor's group, text context, background asset and fit, follows
+    // the presentation's theme, and carries one empty text box; words,
+    // notes, foreground items and per-slide style overrides are not copied.
+    Q_INVOKABLE bool moveSlideFor(const QString& showId, const QString& slideId,
+                                  int toIndex);
+    Q_INVOKABLE bool moveCurrentSlideTo(int toIndex);
+    // Moves the current slide one slot up (-1) or down (+1). An end or a
+    // no-op answers true without an edit, because the gesture was legal and
+    // simply had nowhere to go.
+    Q_INVOKABLE bool moveCurrentSlideStep(int delta);
+    // Returns the new slide's id, or "" with a status sentence.
+    Q_INVOKABLE QString insertSlideFor(const QString& showId,
+                                       const QString& anchorSlideId, bool after);
+    Q_INVOKABLE QString insertSlideAt(const QString& showId, int index);
+    // EW.8's footer/context path: insert after the selected slide (position
+    // zero for an empty presentation). Returns the new slide's id or "".
+    Q_INVOKABLE QString insertSlideAfterCurrent();
     // Queues new text for the current slide; one history entry lands when
     // typing pauses or the next operation runs. When the selection is a
     // picture the commit refuses out loud instead of swallowing the words
@@ -814,6 +847,18 @@ private:
     QString fixtureSlideSceneJson(const QStringList& lines, bool scripture) const;
     // The current slide's id, or "" when navigation points nowhere.
     openshow::domain::Id currentSlideId() const;
+    // EW.6: re-points the slide cursor at a named slide (by id) after a
+    // structural edit or an undo/redo, falling back to the clamped index
+    // when that slide no longer exists. Emits navigationChanged only when
+    // the index moved, and never clears the box selection for a slide that
+    // is still under the cursor. One helper so a move, an insert and both
+    // history directions cannot disagree about which slide is selected.
+    void anchorSlideNavigation(const openshow::domain::Id& preferredSlideId);
+    // The shared insertion body: one edit, fresh identity, inherited
+    // context from `anchorId` (empty = document defaults), selected fresh
+    // slide. Returns "" with status on refusal.
+    QString insertSlideInternal(const openshow::domain::Id& showId,
+                                const openshow::domain::Id& anchorId, size_t index);
     // Every session has a playlist to run: seed a default "Service" when
     // neither the loaded service nor autosave brought one. Direct, not
     // history-wrapped — like the loaded state it is baseline, so undo

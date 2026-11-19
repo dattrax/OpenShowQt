@@ -330,6 +330,274 @@ bool DocumentController::removeCurrentSlide() {
     return true;
 }
 
+// --- slide ordering and insertion (EW.6) -----------------------------------
+
+namespace {
+
+// Where a slide id sits in a show, or -1. The controller's own lookup: the
+// domain's helper is private to documents.cpp, and every structural verb
+// validates the identity it was handed before it edits anything.
+int slideSlot(const openshow::domain::Show* show, const std::string& slideId) {
+    if (show == nullptr || slideId.empty()) {
+        return -1;
+    }
+    for (std::size_t i = 0; i < show->slides.size(); ++i) {
+        if (show->slides[i].id == slideId) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+}  // namespace
+
+void DocumentController::anchorSlideNavigation(
+    const openshow::domain::Id& preferredSlideId) {
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    if (show == nullptr || show->slides.empty()) {
+        if (fCurrentSlide != -1) {
+            fCurrentSlide = -1;
+            fCurrentBoxId.clear();
+            emit navigationChanged();
+            emit slideTextChanged();
+            emit boxSelectionChanged();
+        }
+        return;
+    }
+    int index = slideSlot(show, preferredSlideId);
+    if (index < 0) {
+        // The slide the cursor named is gone (or this is the first anchor
+        // of a session): fall back to the clamped index, exactly as the
+        // pre-EW.6 replay rule did.
+        const int last = static_cast<int>(show->slides.size()) - 1;
+        index = fCurrentSlide < 0 ? 0 : (fCurrentSlide > last ? last : fCurrentSlide);
+    }
+    if (index == fCurrentSlide) {
+        return;
+    }
+    fCurrentSlide = index;
+    // The box selection belongs to a slide. When the slide did not change
+    // (a move re-anchored the same id) there is nothing to clear; reaching
+    // here means the cursor landed somewhere else.
+    fCurrentBoxId.clear();
+    emit navigationChanged();
+    emit slideTextChanged();
+    emit boxSelectionChanged();
+}
+
+bool DocumentController::moveSlideFor(const QString& showId, const QString& slideId,
+                                      int toIndex) {
+    flushText();
+    const openshow::domain::Id showKey =
+        showId.isEmpty() ? fCurrentSongId : showId.toStdString();
+    const openshow::domain::Show* show = fDocuments.findShow(showKey);
+    if (show == nullptr) {
+        setStatus(QStringLiteral("move slide: that presentation is no longer in the service"));
+        return false;
+    }
+    const int from = slideSlot(show, slideId.toStdString());
+    if (from < 0) {
+        setStatus(QStringLiteral("move slide: that slide is no longer in the presentation"));
+        return false;
+    }
+    const int count = static_cast<int>(show->slides.size());
+    if (toIndex < 0 || toIndex >= count) {
+        setStatus(QStringLiteral("move slide: destination %1 is outside the presentation")
+                      .arg(toIndex));
+        return false;
+    }
+    if (toIndex == from) {
+        // The drop landed in the source's own gap: a legal gesture with no
+        // structural change, so no history entry and no refusal sentence.
+        return true;
+    }
+    // The selection follows its own slide, not the slot it used to occupy.
+    // Captured BEFORE the edit, because the edit compacted the list.
+    const openshow::domain::Id selected = currentSlideId();
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.moveSlide(showKey, slideId.toStdString(),
+                                        static_cast<std::size_t>(toIndex), &error);
+        })) {
+        setStatus(QStringLiteral("move slide: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    if (showKey == fCurrentSongId) {
+        anchorSlideNavigation(selected);
+    }
+    return true;
+}
+
+bool DocumentController::moveCurrentSlideTo(int toIndex) {
+    const openshow::domain::Id slideId = currentSlideId();
+    if (slideId.empty()) {
+        setStatus(QStringLiteral("move slide: no slide is selected"));
+        return false;
+    }
+    return moveSlideFor(QString::fromStdString(fCurrentSongId),
+                        QString::fromStdString(slideId), toIndex);
+}
+
+bool DocumentController::moveCurrentSlideStep(int delta) {
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    if (show == nullptr || fCurrentSlide < 0 ||
+        static_cast<std::size_t>(fCurrentSlide) >= show->slides.size()) {
+        setStatus(QStringLiteral("move slide: no slide is selected"));
+        return false;
+    }
+    const int target = fCurrentSlide + delta;
+    if (target < 0 || target >= static_cast<int>(show->slides.size()) || delta == 0) {
+        // Legal gesture at an end: nothing moves, nothing is recorded.
+        return true;
+    }
+    return moveCurrentSlideTo(target);
+}
+
+QString DocumentController::insertSlideInternal(const openshow::domain::Id& showId,
+                                                const openshow::domain::Id& anchorId,
+                                                size_t index) {
+    const openshow::domain::Show* show = fDocuments.findShow(showId);
+    if (show == nullptr) {
+        setStatus(QStringLiteral("insert slide: that presentation is no longer in the service"));
+        return {};
+    }
+    if (index > show->slides.size()) {
+        setStatus(QStringLiteral("insert slide: position %1 is outside the presentation")
+                      .arg(static_cast<qint64>(index)));
+        return {};
+    }
+    const openshow::domain::Slide* anchor = nullptr;
+    if (!anchorId.empty()) {
+        const int slot = slideSlot(show, anchorId);
+        if (slot < 0) {
+            setStatus(QStringLiteral(
+                "insert slide: the slide it was anchored to is no longer in the presentation"));
+            return {};
+        }
+        anchor = &show->slides[static_cast<std::size_t>(slot)];
+    }
+    // The inherited context is captured BEFORE the edit, because the domain
+    // inserts a slide by moving the vector. Only presentation-wide or
+    // section context travels: words, notes, the box stack and per-slide
+    // style overrides are deliberately not copied.
+    const std::string group = anchor != nullptr ? anchor->group : std::string();
+    const std::string context = anchor != nullptr ? anchor->textContext : std::string();
+    const openshow::domain::Id background =
+        anchor != nullptr ? anchor->backgroundAssetId : openshow::domain::Id{};
+    const openshow::domain::BackgroundFit fit = anchor != nullptr
+        ? anchor->backgroundFit : openshow::domain::BackgroundFit::Cover;
+    openshow::domain::Id created;
+    std::string error;
+    if (!edit([&] {
+            created = fDocuments.insertSlide(showId, index, &error);
+            if (created.empty()) {
+                return false;
+            }
+            if (!fDocuments.setSlideGroup(showId, created, group, &error) ||
+                !fDocuments.setSlideTextContext(showId, created, context, &error)) {
+                return false;
+            }
+            // The background is set only when the anchor had one, so an
+            // unanchored insert keeps the document's own "no picture" answer
+            // rather than materialising an empty asset reference.
+            if (!background.empty() &&
+                !fDocuments.setSlideBackground(showId, created, background, &error)) {
+                return false;
+            }
+            if (anchor != nullptr &&
+                !fDocuments.setSlideBackgroundFit(showId, created, fit, &error)) {
+                return false;
+            }
+            return true;
+        })) {
+        setStatus(QStringLiteral("insert slide: %1").arg(QString::fromStdString(error)));
+        return {};
+    }
+    if (showId == fCurrentSongId) {
+        // Select and reveal the fresh slide. The box cursor clears so the
+        // domain's fallback resolves the new slide's one empty text box.
+        fCurrentSlide = static_cast<int>(index);
+        fCurrentBoxId.clear();
+        emit navigationChanged();
+        emit slideTextChanged();
+        emit boxSelectionChanged();
+    }
+    return QString::fromStdString(created);
+}
+
+QString DocumentController::insertSlideFor(const QString& showId,
+                                           const QString& anchorSlideId, bool after) {
+    flushText();
+    const openshow::domain::Id showKey =
+        showId.isEmpty() ? fCurrentSongId : showId.toStdString();
+    const openshow::domain::Show* show = fDocuments.findShow(showKey);
+    if (show == nullptr) {
+        setStatus(QStringLiteral("insert slide: that presentation is no longer in the service"));
+        return {};
+    }
+    if (anchorSlideId.isEmpty()) {
+        return insertSlideInternal(showKey, {}, show->slides.size());
+    }
+    const int slot = slideSlot(show, anchorSlideId.toStdString());
+    if (slot < 0) {
+        setStatus(QStringLiteral(
+            "insert slide: the slide it was anchored to is no longer in the presentation"));
+        return {};
+    }
+    return insertSlideInternal(showKey, anchorSlideId.toStdString(),
+                               static_cast<std::size_t>(slot) + (after ? 1u : 0u));
+}
+
+QString DocumentController::insertSlideAt(const QString& showId, int index) {
+    flushText();
+    const openshow::domain::Id showKey =
+        showId.isEmpty() ? fCurrentSongId : showId.toStdString();
+    const openshow::domain::Show* show = fDocuments.findShow(showKey);
+    if (show == nullptr) {
+        setStatus(QStringLiteral("insert slide: that presentation is no longer in the service"));
+        return {};
+    }
+    if (index < 0) {
+        setStatus(QStringLiteral("insert slide: position %1 is outside the presentation")
+                      .arg(index));
+        return {};
+    }
+    // Inheritance follows the position's neighbour: the slide that will sit
+    // before the new one (insert after it), or the first slide when the
+    // insert lands at the front. An empty presentation has no anchor.
+    openshow::domain::Id anchor;
+    if (!show->slides.empty()) {
+        const size_t at = std::min(static_cast<size_t>(index), show->slides.size());
+        if (at > 0) {
+            anchor = show->slides[at - 1].id;
+        } else {
+            anchor = show->slides.front().id;
+        }
+    }
+    return insertSlideInternal(showKey, anchor, static_cast<size_t>(index));
+}
+
+QString DocumentController::insertSlideAfterCurrent() {
+    const openshow::domain::Id showId = fCurrentSongId;
+    const openshow::domain::Id slideId = currentSlideId();
+    if (showId.empty()) {
+        setStatus(QStringLiteral("insert slide: no presentation is selected"));
+        return {};
+    }
+    if (slideId.empty()) {
+        // An empty presentation inserts at position zero; an unselected
+        // cursor in a presentation with slides appends (the rail's own
+        // "Insert slide" with nothing under the cursor).
+        const openshow::domain::Show* show = fDocuments.findShow(showId);
+        if (show != nullptr && !show->slides.empty()) {
+            return insertSlideInternal(showId, {}, show->slides.size());
+        }
+        return insertSlideInternal(showId, {}, 0);
+    }
+    return insertSlideFor(QString::fromStdString(showId),
+                          QString::fromStdString(slideId), true);
+}
+
 void DocumentController::setSlideText(const QString& text) {
     if (currentSlideId().empty()) {
         return;  // typing with nothing selected edits nothing
@@ -4341,6 +4609,9 @@ bool DocumentController::load() {
 
 void DocumentController::undo() {
     flushText();
+    // EW.6: the cursor follows its own slide across the history jump while
+    // that slide still exists; the clamped index is the fallback.
+    const openshow::domain::Id selectedSlide = currentSlideId();
     std::string error;
     if (!fHistory->undo(&error)) {
         setStatus(QStringLiteral("undo: %1").arg(QString::fromStdString(error)));
@@ -4352,14 +4623,11 @@ void DocumentController::undo() {
         const std::vector<openshow::domain::Id> ids = fDocuments.showIds();
         fCurrentSongId = ids.empty() ? openshow::domain::Id{} : ids.front();
         fCurrentSlide = 0;
+        fCurrentBoxId.clear();
         emit navigationChanged();
+        emit boxSelectionChanged();
     } else {
-        const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
-        const int count = show != nullptr ? static_cast<int>(show->slides.size()) : 0;
-        if (fCurrentSlide >= count) {
-            fCurrentSlide = count - 1;
-            emit navigationChanged();
-        }
+        anchorSlideNavigation(selectedSlide);
     }
     // Undo/redo can take the current playlist away too.
     anchorPlaylistNavigation();
@@ -4378,6 +4646,7 @@ void DocumentController::undo() {
 
 void DocumentController::redo() {
     flushText();
+    const openshow::domain::Id selectedSlide = currentSlideId();
     std::string error;
     if (!fHistory->redo(&error)) {
         setStatus(QStringLiteral("redo: %1").arg(QString::fromStdString(error)));
@@ -4387,14 +4656,11 @@ void DocumentController::redo() {
         const std::vector<openshow::domain::Id> ids = fDocuments.showIds();
         fCurrentSongId = ids.empty() ? openshow::domain::Id{} : ids.front();
         fCurrentSlide = 0;
+        fCurrentBoxId.clear();
         emit navigationChanged();
+        emit boxSelectionChanged();
     } else {
-        const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
-        const int count = show != nullptr ? static_cast<int>(show->slides.size()) : 0;
-        if (fCurrentSlide >= count) {
-            fCurrentSlide = count - 1;
-            emit navigationChanged();
-        }
+        anchorSlideNavigation(selectedSlide);
     }
     // Undo/redo can take the current playlist away too.
     anchorPlaylistNavigation();

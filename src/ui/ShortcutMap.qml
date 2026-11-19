@@ -48,6 +48,7 @@ Item {
     property bool squattedFocus: false      // a button or combo holds it
     property bool binFocused: false          // the media bin owns the keyboard
     property bool boxSelected: false        // the canvas's handles are on
+    property bool slideDragging: false      // a rail reorder grab is held
     property int currentBox: -1             // docs.currentBox
     property int slideCount: 0
     property int cueCount: 0              // the running order's cues (UI.3b)
@@ -60,6 +61,7 @@ Item {
 
     // What a pressed key asks the window to do.
     signal outputCancelRequested()
+    signal slideDragCancelRequested()
     signal deselectBoxRequested()
     signal clearBackgroundRequested()
     signal clearWordsRequested()
@@ -107,14 +109,23 @@ Item {
     readonly property bool outputClearEnabled: (wordsOnAir || backgroundOnAir || audioOnAir
                                                 || canRestore)
                                                && !(page === "edit" && boxSelected)
+                                               && !slideDragging
     Shortcut {
         sequence: StandardKey.Cancel
         enabled: shortcutMap.outputClearEnabled
         onActivated: outputCancelRequested()
     }
+    // EW.7: a held reorder grab owns Escape. The gesture's cancellation is
+    // the first Escape meaning while a slide is being dragged; clearing the
+    // output or dropping the box selection waits for the next press.
     Shortcut {
         sequence: "Escape"
-        enabled: page === "edit" && boxSelected
+        enabled: shortcutMap.slideDragging
+        onActivated: slideDragCancelRequested()
+    }
+    Shortcut {
+        sequence: "Escape"
+        enabled: page === "edit" && boxSelected && !shortcutMap.slideDragging
         onActivated: deselectBoxRequested()
     }
     Shortcut {
