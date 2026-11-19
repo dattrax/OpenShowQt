@@ -114,7 +114,13 @@ Item {
     // The slide's boxes in DRAW order, straight from the model; and the
     // selected one's rectangle, in authored units, mirrored from the
     // document. Only the gestures below move it, and a commit reloads it.
-    readonly property var boxes: docs.currentSlideBoxes
+    // The slide's boxes are re-read whenever the slide OR the document
+    // changes: `currentSlideBoxes` depends on navigation too, and a fresh
+    // slide is selected after the edit that created it (documentsChanged
+    // fires first). Bumping one tick in every relevant handler keeps the
+    // binding honest without a second box list.
+    property int boxesTick: 0
+    readonly property var boxes: { boxesTick; return docs.currentSlideBoxes }
     readonly property int currentBox: docs.currentBox
     property real boxX: 160
     property real boxY: 100
@@ -195,6 +201,7 @@ Item {
     Connections {
         target: docs
         function onDocumentsChanged() {
+            ++canvas.boxesTick
             if (canvas.dragMode === "") {
                 canvas.syncFromDocuments()
             } else if (!canvas.dragIdentityHolds()) {
@@ -207,6 +214,7 @@ Item {
                 canvas.refreshTextGeometry()
         }
         function onNavigationChanged() {
+            ++canvas.boxesTick
             // Moving to another slide cancels the gesture and ends the text
             // session; it never retargets. The session commits its draft
             // first, so the one undo entry names the box it was typed into.
@@ -217,6 +225,7 @@ Item {
             canvas.selected = true
         }
         function onBoxSelectionChanged() {
+            ++canvas.boxesTick
             if (canvas.textMode && !canvas.textIdentityHolds())
                 canvas.endTextEditing()
             if (canvas.dragMode !== "") {

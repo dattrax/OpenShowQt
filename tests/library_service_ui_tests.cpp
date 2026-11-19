@@ -375,6 +375,23 @@ int main(int argc, char** argv) {
             QTest::qWait(40);
             check(!sourceDrawer->isVisible(), "and closes again");
         }
+        // Deleting the box under a live session retires the session; the
+        // controller's flush lands the burst before the box goes.
+        if (gesture) gesture->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(100);
+        if (canvas->property("textMode").toBool()) {
+            QTest::keyClick(window, Qt::Key_Q);
+            QTest::qWait(40);
+            const int boxesBefore = docs.currentSlideBoxes().size();
+            docs.removeCurrentTextBox();
+            QTest::qWait(80);
+            check(!canvas->property("textMode").toBool(),
+                  "deleting the edited box leaves text mode");
+            check(docs.currentSlideBoxes().size() <= boxesBefore,
+                  "the deleted box is gone and no second box was invented");
+        }
+
         // --- EW.10: the whole journey at the canvas ------------------------
         // Edit a verse, insert a slide, type into it, reorder it, undo/redo —
         // all without presenting: the audience revision must not move.

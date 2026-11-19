@@ -57,6 +57,9 @@ Item {
     property bool movedSincePress: false
     property bool pendingSelecting: false
     property bool applyingCursor: false
+    // True between openAt() and the input actually taking focus; a focus-exit
+    // timer left over from a previous session must not retire this one.
+    property bool opening: false
 
     signal finished()
     signal geometryLost()
@@ -104,8 +107,12 @@ Item {
         applyingCursor = true
         input.select(position, position)
         applyingCursor = false
+        opening = true
         askGeometry()
-        Qt.callLater(function () { input.forceActiveFocus() })
+        Qt.callLater(function () {
+            input.forceActiveFocus()
+            editor.opening = false
+        })
     }
 
     function lines() {
@@ -342,7 +349,7 @@ Item {
             // rail, an inspector field, a button) leaves the mode and keeps
             // the committed words. A one-tick delay lets the incoming focus
             // settle instead of treating a transient change as an exit.
-            if (editor.active && !activeFocus) focusExit.restart()
+            if (editor.active && !editor.opening && !activeFocus) focusExit.restart()
         }
     }
 
@@ -350,7 +357,7 @@ Item {
         id: focusExit
         interval: 0
         repeat: false
-        onTriggered: if (editor.active && !input.activeFocus) editor.finish()
+        onTriggered: if (editor.active && !editor.opening && !input.activeFocus) editor.finish()
     }
 
     // Pointer selection, driven by the worker's own hit test. The TextInput's

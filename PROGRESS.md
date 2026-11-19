@@ -58,7 +58,9 @@ run. The headless suite passed **48/48** (`-LE display`). The real-worker
 editor journey and the whole-shell Edit journey pass; the editor-layout round
 trip measured median **0.02–0.03 ms**, p95 **0.02–0.04 ms** over 40 asks on
 this machine, well inside the 150 ms budget. Editing, moving and inserting
-never presented; the workspace suite also passes at `QT_SCALE_FACTOR=1.5`.
+never presented; the workspace suite and the real-worker Library/Edit journey
+also pass at `QT_SCALE_FACTOR=1.5`. Deleting the edited box retires the
+session, and insert→type→reorder→undo/redo is exercised on the real shell.
 IME composition is implemented as the native preedit plus decoration, but no
 physical input method was exercised here. Physical gates (projector second
 display, NDI, target GPU) remain open under M7/ND/TA and are not claimed.
