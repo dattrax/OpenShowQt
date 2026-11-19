@@ -46,7 +46,7 @@ and insertion gap, bounded edge autoscroll, Escape/outside/no-op/model-change
 cancellation, row and keyboard moves, and Insert before/after; the footer is
 **Insert slide**.
 
-Verification: the full desktop suite passed **88/88 with `-j4`** (the 89th
+Verification: the full desktop suite passed **every runnable entry with `-j4` (88/88)** (the 89th
 entry, `font_fixture_tests`, is **skipped**: its pinned-corpus cache was
 removed during this work and the sandbox has no network to fetch the pinned
 fonts again; it is not an EW test and its earlier cache-based failure was in
@@ -499,6 +499,8 @@ service. FO stays gated behind those.
 
 ## Recent commits
 
+- `2f94500` fix(ui): re-read the slide's boxes when navigation changes (EW.5)
+- `b1c7674` docs: record the clean EW verification run and the skipped font fixture
 - `38880fb` fix(worker): refuse a superseded text.editor request (EW.3)
 - `89151b4` feat(ui): edit words on the stage and finish the EW group (EW.4–EW.5, EW.9–EW.10)
 - `ece6e64` feat(worker): answer editor caret and selection geometry from the real layout (EW.2–EW.3)
