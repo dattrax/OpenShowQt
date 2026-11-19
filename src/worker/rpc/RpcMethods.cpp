@@ -1706,6 +1706,18 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
             }
             request = requestKey->value().as_int64();
         }
+        if (request > 0 && request < fLastEditorRequest) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "text.editor request " + std::to_string(request) +
+                                     " is older than the last answered " +
+                                     std::to_string(fLastEditorRequest)),
+                outbound);
+            return;
+        }
+        if (request > fLastEditorRequest) {
+            fLastEditorRequest = request;
+        }
         const auto sceneEntry = args.find("scene");
         if (sceneEntry == args.end() || !sceneEntry->value().is_object()) {
             proto::appendFrame(

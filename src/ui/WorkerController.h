@@ -606,6 +606,9 @@ private:
     bool fTextMeasureV3Capable = false;
     // text.editor.v1 (EW.3): see textEditorSupported().
     bool fTextEditorCapable = false;
+    // EW.3: the editor asks' own monotonic number, echoed on the wire so a
+    // superseded ask is refused by the worker rather than answered late.
+    qint64 fEditorRequest = 0;
     // font.list.v1 (task TS.4): see fontListSupported(). The walk state
     // beside it belongs to the CONNECTION: a page that never gets sent,
     // or an answer that arrives after the session died, is nobody's list.

@@ -1771,6 +1771,7 @@ qint64 WorkerController::requestEditorLayout(const QVariantMap& ask) {
         return 0;
     }
     boost::json::object params{
+        {"request", ++fEditorRequest},
         {"scene", std::move(scene)},
         {"item", item},
     };

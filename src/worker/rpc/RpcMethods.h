@@ -87,6 +87,11 @@ public:
 private:
     OutputSession& fSession;
     DeferredSink fDefer;
+    // EW.3: the newest text.editor ask this CONNECTION has answered. A
+    // request older than it is a superseded editor question and is refused
+    // by name; zero (an asker that does not number its asks) never moves the
+    // floor, so an older peer stays compatible.
+    std::int64_t fLastEditorRequest = 0;
     // Started lazily by live.sources; the startup probe already told the
     // hello whether this worker may offer it at all.
     std::unique_ptr<openshow::live::HelperBackend> fLive;

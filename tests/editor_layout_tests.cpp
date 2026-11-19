@@ -507,6 +507,31 @@ int main(int argc, char* argv[]) {
               "refusals leave the session answering");
     }
 
+    // A superseded editor ask is refused by name (EW.3's "stale" rule). The
+    // worker's floor belongs to the connection, and a request number that
+    // goes backwards cannot move a caret the newer ask already answered.
+    {
+        boost::json::object newer{{"request", 1000}, {"scene", scene},
+                                  {"item", 0}, {"caret", 0}};
+        boost::json::value newerReply;
+        check(call(fd, nextId++, proto::kMethodTextEditor, std::move(newer),
+                   &newerReply) &&
+                  !newerReply.as_object().contains("error"),
+              "a numbered editor ask is answered");
+        boost::json::object older{{"request", 999}, {"scene", scene},
+                                  {"item", 0}, {"caret", 0}};
+        boost::json::value olderReply;
+        check(call(fd, nextId++, proto::kMethodTextEditor, std::move(older),
+                   &olderReply) && olderReply.as_object().contains("error"),
+              "an editor request older than the last answered is refused");
+        if (olderReply.as_object().contains("error")) {
+            const std::string message(
+                olderReply.at("error").at("message").as_string());
+            check(message.find("older") != std::string::npos,
+                  "the stale refusal names itself");
+        }
+    }
+
     boost::json::value shutdownReply;
     call(fd, nextId++, "shutdown", {}, &shutdownReply);
     close(fd);
