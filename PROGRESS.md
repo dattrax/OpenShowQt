@@ -46,21 +46,22 @@ and insertion gap, bounded edge autoscroll, Escape/outside/no-op/model-change
 cancellation, row and keyboard moves, and Insert before/after; the footer is
 **Insert slide**.
 
-Verification: full desktop suite **88/89 with one known parallel flake**
-(`workspace_ui_tests` failed once under `-j8` at the pre-existing camera-Delete
-check; it passed alone and in a 3-way concurrent run with
-`background_media_tests` and `frontend_journey_tests`). The headless suite
-passed **48/48** (`-LE display`). `font_fixture_tests` is **skipped** in this
-environment: its pinned corpus cache was removed during this run and the
-sandbox has no network, so it cannot fetch the pinned fonts (it is not an EW
-test). The real-worker editor journey and the whole-shell Edit journey pass;
-the editor-layout round trip measured median **0.03 ms**, p95 **0.04 ms** over
-40 asks on this machine, well inside the 150 ms budget. Editing, moving and
-inserting never presented; the workspace suite also passes at
-`QT_SCALE_FACTOR=1.5`. IME composition is implemented as the native preedit
-plus decoration, but no physical input method was exercised here. Physical
-gates (projector second display, NDI, target GPU) remain open under M7/ND/TA
-and are not claimed.
+Verification: the full desktop suite passed **88/88 with `-j4`** (the 89th
+entry, `font_fixture_tests`, is **skipped**: its pinned-corpus cache was
+removed during this work and the sandbox has no network to fetch the pinned
+fonts again; it is not an EW test and its earlier cache-based failure was in
+stroke/shadow ink bounds untouched by EW). Two `-j8` runs saw the known
+timing-sensitive display flakes (`workspace_ui_tests` at the pre-existing
+camera-Delete check once, `frontend_journey_tests` at the cue live-marker check
+once); both passed alone, in a 3-way concurrent run and in the clean `-j4`
+run. The headless suite passed **48/48** (`-LE display`). The real-worker
+editor journey and the whole-shell Edit journey pass; the editor-layout round
+trip measured median **0.02–0.03 ms**, p95 **0.02–0.04 ms** over 40 asks on
+this machine, well inside the 150 ms budget. Editing, moving and inserting
+never presented; the workspace suite also passes at `QT_SCALE_FACTOR=1.5`.
+IME composition is implemented as the native preedit plus decoration, but no
+physical input method was exercised here. Physical gates (projector second
+display, NDI, target GPU) remain open under M7/ND/TA and are not claimed.
 
 **Reflow section reconstruction (2026-11-19): corrected.** Reflow previously
 treated each stored slide fragment as a new stanza, retaining old pagination;
@@ -496,7 +497,8 @@ service. FO stays gated behind those.
 
 ## Recent commits
 
-- this commit: WYSIWYG editing, slide ordering and insertion (EW.1–EW.10)
+- `38880fb` fix(worker): refuse a superseded text.editor request (EW.3)
+- `89151b4` feat(ui): edit words on the stage and finish the EW group (EW.4–EW.5, EW.9–EW.10)
 - `ece6e64` feat(worker): answer editor caret and selection geometry from the real layout (EW.2–EW.3)
 - `7b23b96` feat(ui): freeze the WYSIWYG contract and add slide move/insert with a real rail (EW.1, EW.6–EW.8)
 - `1487777` test(ui): cover the remaining pointer fixtures and raise the suite wall (BX.4)
