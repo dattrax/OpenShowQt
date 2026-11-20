@@ -373,6 +373,10 @@ void PreviewConsumer::storePersistedThumbnail(const QString& key, const QImage& 
     emit thumbnailReady(key);
 }
 
+bool PreviewConsumer::thumbnailCacheAvailable() const {
+    return fPictures != nullptr && fPictures->entryCount() > 0;
+}
+
 void PreviewConsumer::setThumbnailPictures(ThumbnailStore* store) {
     if (fPictures == store) {
         return;
@@ -384,6 +388,10 @@ void PreviewConsumer::setThumbnailPictures(ThumbnailStore* store) {
     if (store != nullptr) {
         connect(store, &ThumbnailStore::pictureReady, this, &PreviewConsumer::onPersistedPicture);
         connect(store, &ThumbnailStore::pictureMissed, this, &PreviewConsumer::onPersistedMiss);
+        // Availability is part of what QML reads: a row's placeholder must not
+        // claim "this worker cannot draw" when the service already holds a
+        // picture the overlay can decode.
+        connect(store, &ThumbnailStore::countersChanged, this, &PreviewConsumer::changed);
     }
     fPersistedPending.clear();
     fPersistedTried.clear();
@@ -558,8 +566,13 @@ void PreviewConsumer::requestThumbnailWindow(const QVariantList& slides, qint64 
 }
 
 void PreviewConsumer::pumpThumbnailWindow() {
-    if (!fThumbnailWindowActive || !fHostOnline || !fThumbnailCapable ||
-        fPendingPreviewName.empty()) return;
+    if (!fThumbnailWindowActive) return;
+    // TC.6/TC.7: the persisted overlay is asked even when the worker cannot
+    // draw thumbnails — a warmed service must still show its cards. Only the
+    // worker batch below requires the capability and a stream to carry its
+    // pixels.
+    requestPersistedPictures();
+    if (!fHostOnline || !fThumbnailCapable || fPendingPreviewName.empty()) return;
     if (fThumbnailWindowWaiting) {
         if (fThumbnailAwaitAck) return;
         // The ack maps accepted rows only: refused entries cannot block the
@@ -571,7 +584,6 @@ void PreviewConsumer::pumpThumbnailWindow() {
         }
         fThumbnailWindowWaiting = false;
     }
-    requestPersistedPictures();
     QVariantList batch;
     for (const auto& value : fThumbnailWindow) {
         const auto row = value.toMap();

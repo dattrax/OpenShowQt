@@ -41,8 +41,16 @@ provably changes no dirty state, history or generation
 the worker, holds decode-pending rows out of batches, sends no
 `preview.thumbnails` for an all-hit window, asks only for misses in a mixed
 one, and records worker renders after the slot is released
-(worker_controller_tests). TC.7–TC.10 remain TODO; no runtime cold/warm
-evidence is claimed yet.
+(worker_controller_tests). TC.7 is DONE: Show and Edit rows carry scene,
+fingerprint and owning show from one compile, QML's placeholder distinguishes
+persisted availability from the worker capability, and a warmed service can
+paint with no thumbnail-capable stream (workspace_ui_tests). TC.8–TC.10 remain
+TODO; no runtime cold/warm evidence is claimed yet. The long
+`workspace_ui_tests` interaction sequence showed intermittent focus/click
+failures on this live desktop (Delete, Shift+F10, box menu) across repeated
+runs, including with these QML files reverted; each failure differs and a
+serial ctest run passed, so they are recorded as environment flake, not a TC
+regression.
 
 **Edit follow-up (EW.11, 2026-11-19): corrected.** Upward/no-op drops used
 `dragFrom = -1` after drag cleanup and subtracted a slot incorrectly; compute

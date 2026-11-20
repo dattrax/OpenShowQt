@@ -380,6 +380,10 @@ qint64 WorkerController::thumbnailStale() const {
 qint64 WorkerController::thumbnailCachedBytes() const {
     return fPreview->thumbnailCachedBytes();
 }
+
+bool WorkerController::thumbnailCacheAvailable() const {
+    return fPreview->thumbnailCacheAvailable();
+}
 QImage WorkerController::thumbnail(const QString& key) const {
     return fPreview->thumbnail(key);
 }

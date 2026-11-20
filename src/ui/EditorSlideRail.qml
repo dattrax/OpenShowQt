@@ -60,12 +60,18 @@ Rectangle {
         const end = Math.min(rows.length,
             Math.ceil((slides.contentY + slides.height) / slides.rowHeight) + 1)
         const batch = []
-        for (let i = first; i < end; ++i)
-            batch.push({key: rows[i].id, scene: docs.sceneJsonForSlide(rows[i].id)})
+        for (let i = first; i < end; ++i) {
+            // TC.7: scene + render fingerprint from one compile, so the
+            // service's persisted pictures answer before the worker is asked.
+            const source = docs.thumbnailSourceForSlide(rows[i].id)
+            batch.push({key: rows[i].id, scene: source.scene,
+                        fingerprint: source.fingerprint, showId: docs.currentSongId})
+        }
         return batch
     }
     function requestBand() {
-        if (!rail.visible || !worker.thumbnailSupported) return
+        if (!rail.visible) return
+        if (!worker.thumbnailSupported && !worker.thumbnailCacheAvailable) return
         const batch = thumbnailWindow()
         if (!batch.length) { worker.clearThumbnails(); return }
         const width = Math.max(160, Math.min(512, Math.round(slides.width - 6)))
@@ -199,8 +205,10 @@ Rectangle {
     Connections {
         target: worker
         function onPreviewChanged() {
-            if (!worker.thumbnailSupported) rail.askedFor = false
-            if (rail.visible && worker.thumbnailSupported && !rail.askedFor) {
+            if (!worker.thumbnailSupported && !worker.thumbnailCacheAvailable)
+                rail.askedFor = false
+            if (rail.visible && (worker.thumbnailSupported || worker.thumbnailCacheAvailable)
+                    && !rail.askedFor) {
                 rail.askedFor = true
                 thumbnailAsk.restart()
             }
@@ -322,8 +330,10 @@ Rectangle {
                 surface.controller: worker
                 surface.target: "thumbnail"
                 surface.key: modelData.id
-                surface.pixelsVisible: rail.visible && worker.thumbnailSupported
+                surface.pixelsVisible: rail.visible && (worker.thumbnailSupported
+                                                        || worker.thumbnailCacheAvailable)
                 surface.placeholderVisible: !worker.thumbnailSupported
+                                            && !worker.thumbnailCacheAvailable
                 surface.placeholder: modelData.preview
                 surface.placeholderColor: "#eeeeee"
                 onActivated: rail.selectSlide(index)

@@ -11,6 +11,7 @@ import QtQuick.Controls
 // on air.
 Rectangle {
     id: showPage
+    objectName: "showPage"
     color: "#202020"
     signal editRequested()
 
@@ -188,7 +189,12 @@ Rectangle {
             const id = rows[i].slideId
             if (seen[id]) continue
             seen[id] = true
-            band.push({key: id, scene: docs.sceneJsonForSlide(id)})
+            // TC.7: the compiled scene AND the render fingerprint its card is
+            // cached under, from one compile. The consumer consults the
+            // service's pictures first and only the misses reach the worker.
+            const source = docs.thumbnailSourceForSlide(id)
+            band.push({key: id, scene: source.scene, fingerprint: source.fingerprint,
+                       showId: rows[i].showId})
         }
         // Keep bottom priority without throwing away the earlier visible
         // cues. The consumer continues those after the first wire batch.
@@ -212,7 +218,10 @@ Rectangle {
     // tick, and the ask always describes where the grid ended up.
     function requestSlideBand() {
         ++showPage.bandRequests
-        if (!visible || !worker.thumbnailSupported) return
+        if (!visible) return
+        // A warmed service shows its cards even when this worker cannot draw
+        // thumbnails: persisted availability is its own capability (TC.7).
+        if (!worker.thumbnailSupported && !worker.thumbnailCacheAvailable) return
         const rows = showPage.cueRows
         if (rows.length === 0) { worker.clearThumbnails(); return }
         const px = showPage.bandPixels()
@@ -237,7 +246,8 @@ Rectangle {
     Connections {
         target: worker
         function onPreviewChanged() {
-            if (worker.thumbnailSupported && !showPage.bandAskedFor) {
+            if ((worker.thumbnailSupported || worker.thumbnailCacheAvailable)
+                    && !showPage.bandAskedFor) {
                 showPage.bandAskedFor = true
                 thumbnailAsk.restart()
             }
@@ -409,11 +419,13 @@ Rectangle {
                 surface.target: "thumbnail"
                 surface.key: modelData.slideId
                 surface.pixelsVisible: worker.thumbnailSupported
-                // With no thumbnail lane the operator still sees the words the
-                // cue carries — a text row, plainly styled, never advertised as
-                // the rendered slide.
+                                       || worker.thumbnailCacheAvailable
+                // With neither a worker lane nor persisted pictures the
+                // operator still sees the words the cue carries — a text row,
+                // plainly styled, never advertised as the rendered slide.
                 surface.placeholder: modelData.preview
                 surface.placeholderVisible: !worker.thumbnailSupported
+                                            && !worker.thumbnailCacheAvailable
                 surface.placeholderColor: "#eeeeee"
                 surface.placeholderPixelSize: 13
 

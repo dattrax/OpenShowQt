@@ -99,6 +99,10 @@ class WorkerController : public QObject {
     Q_PROPERTY(qint64 thumbnailFrames READ thumbnailFrames NOTIFY previewChanged)
     Q_PROPERTY(qint64 thumbnailStale READ thumbnailStale NOTIFY previewChanged)
     Q_PROPERTY(qint64 thumbnailCachedBytes READ thumbnailCachedBytes NOTIFY previewChanged)
+    // TC.7: persisted availability, separate from the worker's own thumbnail
+    // capability. True while the service holds any card picture the overlay
+    // can decode; a placeholder must not claim "no pictures" when it does.
+    Q_PROPERTY(bool thumbnailCacheAvailable READ thumbnailCacheAvailable NOTIFY previewChanged)
     // Background media (task 5.5d): the worker's video-background transport
     // state. mediaError is the last failure for the on-air background and
     // stays set until a successful open replaces it (the worker carries it
@@ -421,6 +425,7 @@ public:
     qint64 thumbnailFrames() const;
     qint64 thumbnailStale() const;
     qint64 thumbnailCachedBytes() const;
+    bool thumbnailCacheAvailable() const;
     QImage thumbnail(const QString& key) const;
     // The worker's hello named text.measure.v1 (task BI.4): pagination may
     // ask, and a worker without it is said so rather than worked around.

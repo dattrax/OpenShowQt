@@ -697,6 +697,34 @@ int main(int argc, char** argv) {
     // Ctrl+1/2 for itself is gone, so nothing else has to step aside.
     window->setProperty("page", "show");
     QTest::qWait(30);
+    // TC.7: the Show grid's rows carry the render fingerprint and owner the
+    // thumbnail overlay needs, taken from the document's own compile. Without
+    // them a warmed service could never be looked up and every row would cost
+    // a worker render again.
+    {
+        auto* showPage = window->findChild<QQuickItem*>("showPage");
+        check(showPage != nullptr, "the Show page is addressable");
+        QVariant bandValue;
+        const bool answered =
+            showPage != nullptr &&
+            QMetaObject::invokeMethod(showPage, "slideWindow", Q_RETURN_ARG(QVariant, bandValue));
+        const QVariantList band = bandValue.toList();
+        check(answered && !band.isEmpty(), "the visible Show band is non-empty");
+        if (!band.isEmpty()) {
+            const QVariantMap row = band.front().toMap();
+            const QString slideId = row.value(QStringLiteral("key")).toString();
+            const QVariantMap source = docs.thumbnailSourceForSlide(slideId);
+            check(!slideId.isEmpty() && row.value(QStringLiteral("scene")).toString() ==
+                                           source.value(QStringLiteral("scene")).toString(),
+                  "a Show row carries the compiled scene it is cached under");
+            check(!row.value(QStringLiteral("fingerprint")).toString().isEmpty() &&
+                      row.value(QStringLiteral("fingerprint")).toString() ==
+                          source.value(QStringLiteral("fingerprint")).toString(),
+                  "a Show row carries the document's render fingerprint");
+            check(!row.value(QStringLiteral("showId")).toString().isEmpty(),
+                  "a Show row names the show that owns the picture");
+        }
+    }
     const int cueBeforeSearch = showPageItem->property("cueIndex").toInt();
     QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
     QTest::qWait(40);
@@ -731,6 +759,48 @@ int main(int argc, char** argv) {
         auto* list = findNamed(window->contentItem(), "editorSlideList");
         check(rail && list && rail->isVisible() && !left->isVisible(),
               "Edit shows a thumbnail rail instead of the Library/service pane");
+        // TC.7: the Edit rail asks under the same identity contract as Show.
+        if (auto* rail = window->findChild<QQuickItem*>("editorSlideRail")) {
+            QVariant batchValue;
+            const bool answered = QMetaObject::invokeMethod(rail, "thumbnailWindow",
+                                                           Q_RETURN_ARG(QVariant, batchValue));
+            const QVariantList batch = batchValue.toList();
+            check(answered && !batch.isEmpty(), "the Edit rail names its visible window");
+            if (!batch.isEmpty()) {
+                const QVariantMap row = batch.front().toMap();
+                const QString slideId = row.value(QStringLiteral("key")).toString();
+                const QVariantMap source = docs.thumbnailSourceForSlide(slideId);
+                check(!row.value(QStringLiteral("fingerprint")).toString().isEmpty() &&
+                          row.value(QStringLiteral("fingerprint")).toString() ==
+                              source.value(QStringLiteral("fingerprint")).toString(),
+                      "an Edit row carries the document's render fingerprint");
+                check(row.value(QStringLiteral("showId")).toString() == docs.currentSongId(),
+                      "an Edit row names its owning show");
+            }
+        } else {
+            check(false, "the Edit rail is addressable");
+        }
+        // EW.5's fallback, on this no-worker shell: the bottom field IS the
+        // explicit source drawer and the canvas never offers in-place
+        // editing without a worker that can answer its geometry.
+        {
+            auto* canvas = findNamed(window->contentItem(), "editCanvas");
+            auto* source = findNamed(window->contentItem(), "slideTextEditor");
+            auto* sourceAction = findNamed(window->contentItem(), "sourceTextButton");
+            auto* editText = window->findChild<QObject*>("editTextMenuItem");
+            check(source && source->isVisible(),
+                  "without a worker the source drawer is the visible fallback");
+            check(sourceAction &&
+                      sourceAction->property("text").toString().contains(
+                          QStringLiteral("required")) &&
+                      !sourceAction->property("enabled").toBool(),
+                  "the fallback names itself as required and cannot be closed");
+            check(canvas && !canvas->property("textEditAvailable").toBool(),
+                  "the canvas offers in-place editing only with a capable worker");
+            check(editText && !editText->property("enabled").toBool(),
+                  "the box menu's Edit text action follows the same capability gate");
+        }
+
         auto* more = findNamed(window->contentItem(), "toolbarMore");
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
                           more->mapToScene(QPointF(20, 20)).toPoint());
@@ -838,26 +908,6 @@ int main(int argc, char** argv) {
         QTest::qWait(80);
         check(list->property("count").toInt() == 5,
               "the rail fixture shows five slides");
-        // EW.5's fallback, on this no-worker shell: the bottom field IS the
-        // explicit source drawer and the canvas never offers in-place
-        // editing without a worker that can answer its geometry.
-        {
-            auto* canvas = findNamed(window->contentItem(), "editCanvas");
-            auto* source = findNamed(window->contentItem(), "slideTextEditor");
-            auto* sourceAction = findNamed(window->contentItem(), "sourceTextButton");
-            auto* editText = window->findChild<QObject*>("editTextMenuItem");
-            check(source && source->isVisible(),
-                  "without a worker the source drawer is the visible fallback");
-            check(sourceAction &&
-                      sourceAction->property("text").toString().contains(
-                          QStringLiteral("required")) &&
-                      !sourceAction->property("enabled").toBool(),
-                  "the fallback names itself as required and cannot be closed");
-            check(canvas && !canvas->property("textEditAvailable").toBool(),
-                  "the canvas offers in-place editing only with a capable worker");
-            check(editText && !editText->property("enabled").toBool(),
-                  "the box menu's Edit text action follows the same capability gate");
-        }
         const auto authored = railPreviews();
         check(authored == (QStringList{"Rail 1", "Rail 2", "Rail 3", "Rail 4", "Rail 5"}),
               "the rail fixture starts in authored order");

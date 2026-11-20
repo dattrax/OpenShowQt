@@ -97,6 +97,10 @@ public:
     qint64 thumbnailPersistedRequests() const { return fPersistedRequests; }
     qint64 thumbnailPersistedHits() const { return fPersistedHits; }
     qint64 thumbnailPersistedMisses() const { return fPersistedMisses; }
+    // Whether the overlay holds any picture to look up. Persistent
+    // availability, deliberately separate from the worker capability: a
+    // warmed service shows its cards even when the worker cannot draw.
+    bool thumbnailCacheAvailable() const;
 
     // The transport's preview-typed events, handed over by the session that
     // routes replies by the method they went out under.
