@@ -51,8 +51,10 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <string_view>
 
 #include "openshow/domain/documents.h"
+#include "openshow/domain/thumbnails.h"
 
 namespace openshow::domain {
 
@@ -75,13 +77,21 @@ namespace openshow::domain {
 // asset whose source file is missing fails the save naming the asset.
 // Re-saving a service loaded from this package is byte-identical: the
 // file records package-relative paths, never the loaded sourcePath.
+//
+// TC.3: an optional ThumbnailCache rides in the manifest's independently
+// versioned "thumbnailCache" block. It is derived data: it never enters
+// Documents or history, an absent/unsupported/malformed record is a MISS
+// (every valid authored byte still loads), and the service format does not
+// move. A save that cannot include the block still saves the document.
 bool saveService(const Documents& documents, const std::filesystem::path& directory,
-                 std::string* error = nullptr);
+                 std::string* error = nullptr, const ThumbnailCache* cache = nullptr);
 
 // Reads directory/service.json into *documents. See the header for the
-// validation contract; a failed load leaves *documents unchanged.
+// validation contract; a failed load leaves *documents unchanged. When
+// `cache` is given it receives the sanitised thumbnail block (empty when the
+// block is absent or unusable); it never causes a load failure.
 bool loadService(Documents* documents, const std::filesystem::path& directory,
-                 std::string* error = nullptr);
+                 std::string* error = nullptr, ThumbnailCache* cache = nullptr);
 
 // The same save, then ADOPT: on success every asset's sourcePath becomes
 // the package-owned file its bytes were just copied to, and *rebinds (when
@@ -100,6 +110,30 @@ bool loadService(Documents* documents, const std::filesystem::path& directory,
 // payloads — must apply the reported rebinds too.
 bool saveServiceAndAdopt(Documents& documents, const std::filesystem::path& directory,
                          std::vector<AssetRebind>* rebinds = nullptr,
+                         std::string* error = nullptr,
+                         const ThumbnailCache* cache = nullptr);
+
+// --- TC.3: the cache-only flush -------------------------------------------
+
+// The authored manifest's identity: sha256 of a canonical, key-sorted spelling
+// with no "thumbnailCache" member (member order is not stable across a parse
+// and a re-serialize, so the digest must not depend on it). Recorded when a save or load durably installs a
+// manifest and compared before a cache-only replacement, so a cache flush can
+// never overwrite a manifest somebody else has changed since.
+std::string authoredManifestDigest(const Documents& documents);
+// The same digest, read from manifest bytes already on disk (for a package the
+// session has not loaded). False only when the bytes are not a JSON object.
+bool manifestAuthoredDigest(std::string_view manifest, std::string* digest,
+                            std::string* error = nullptr);
+
+// Replaces ONLY the manifest's "thumbnailCache" block, through the same
+// temporary+fsync+rename the save uses. Refuses when the file's authored
+// digest no longer equals `expectedAuthoredDigest` (an external change is
+// skipped, never overwritten), and writes nothing when the block would be
+// unchanged. The authored bytes are otherwise preserved in order; a failure
+// leaves the previous manifest installed and readable.
+bool mergeThumbnailCache(const std::filesystem::path& directory, const ThumbnailCache& cache,
+                         std::string_view expectedAuthoredDigest,
                          std::string* error = nullptr);
 
 // Which asset bytes a package already holds (task 6.14b, review R14).

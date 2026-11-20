@@ -30,6 +30,7 @@
 #include "openshow/domain/refloweligibility.h"
 #include "openshow/domain/storage.h"
 #include "openshow/domain/themesnapshot.h"
+#include "openshow/domain/thumbnails.h"
 #include "openshow/domain/version.h"
 
 namespace {
@@ -5887,6 +5888,189 @@ void exerciseReflowEligibility() {
     }
 }
 
+
+// --- TC.3: the optional thumbnail block in service.json --------------------
+
+// The block is derived data riding beside the authored service: old files
+// load, a broken block costs only its pictures, the authored bytes and the
+// service format do not move, and a cache-only flush replaces exactly one
+// member through the same commit the save uses.
+void exerciseThumbnailCacheCodec(const fs::path& root) {
+    const fs::path service = root / "service";
+    Documents docs;
+    const Id show = docs.createShow("Thumbnail Hymn");
+    const Id slide = docs.appendSlide(show);
+    const Id second = docs.appendSlide(show);
+    docs.setSlideLines(show, slide, {"the cache keeps this verse"});
+
+    auto recordFor = [&](const Id& slideId, char fill) {
+        openshow::domain::ThumbnailCacheEntry entry;
+        entry.showId = show;
+        entry.slideId = slideId;
+        entry.fingerprint = openshow::domain::sha256Hex(std::string("fingerprint-") + slideId);
+        entry.renderer = openshow::domain::rendererIdentity();
+        entry.width = openshow::domain::kThumbnailWidth;
+        entry.height = openshow::domain::kThumbnailHeight;
+        std::string png(400, fill);
+        png.replace(0, 8, std::string("\x89PNG\r\n\x1a\n", 8));
+        entry.pngBytes = png.size();
+        entry.checksum = openshow::domain::sha256Hex(png);
+        entry.pngBase64 = openshow::domain::base64Encode(png);
+        return entry;
+    };
+    openshow::domain::ThumbnailCache written;
+    written.entries.push_back(recordFor(slide, 'a'));
+    written.entries.push_back(recordFor(second, 'b'));
+
+    std::string error;
+    check(saveService(docs, service, &error, &written), "TC.3: a save carries the cache block");
+    const std::string withCache = readFile(service / "service.json");
+    check(withCache.find("\"thumbnailCache\":{\"format\":1") != std::string::npos,
+          "TC.3: the block names its own format");
+    check(withCache.find("\"format\":15") != std::string::npos,
+          "TC.3: the service format does not move");
+    {
+        Documents loaded;
+        openshow::domain::ThumbnailCache loadedCache;
+        check(loadService(&loaded, service, &error, &loadedCache), "TC.3: the package loads");
+        check(sameService(docs, loaded), "TC.3: the authored document is unchanged");
+        check(loadedCache.entries.size() == 2 && loadedCache.entries[0].slideId == slide &&
+                  loadedCache.entries[1].slideId == second,
+              "TC.3: both records come back in file order");
+        check(authoredManifestDigest(docs) == authoredManifestDigest(loaded),
+              "TC.3: the authored digest does not see the cache");
+        check(saveService(loaded, service, &error, &loadedCache), "TC.3: a re-save succeeds");
+        check(readFile(service / "service.json") == withCache,
+              "TC.3: save/load round-trips the block byte for byte");
+    }
+    {
+        // A save with no cache writes the manifest an earlier build wrote.
+        check(saveService(docs, service, &error), "TC.3: a save without the overlay works");
+        check(readFile(service / "service.json").find("thumbnailCache") == std::string::npos,
+              "TC.3: no cache means no key, not an empty one");
+    }
+
+    // --- the cache-only flush --------------------------------------------
+    const std::string digest = authoredManifestDigest(docs);
+    check(mergeThumbnailCache(service, written, digest, &error),
+          "TC.3: a cache-only flush installs its block");
+    const std::string flushed = readFile(service / "service.json");
+    std::string flushedDigest;
+    check(openshow::domain::manifestAuthoredDigest(flushed, &flushedDigest, &error) &&
+              flushedDigest == digest,
+          "TC.3: the flush leaves the authored half's identity alone");
+    {
+        Documents loaded;
+        openshow::domain::ThumbnailCache loadedCache;
+        check(loadService(&loaded, service, &error, &loadedCache) && loadedCache.entries.size() == 2,
+              "TC.3: the flushed block is what a load sees");
+        check(sameService(docs, loaded), "TC.3: the flush did not disturb the document");
+    }
+    check(mergeThumbnailCache(service, written, digest, &error) &&
+              readFile(service / "service.json") == flushed,
+          "TC.3: an unchanged block is not rewritten");
+    check(!mergeThumbnailCache(service, written, std::string(64, '0'), &error),
+          "TC.3: a stale digest refuses the flush");
+    check(error.find("changed after it was loaded") != std::string::npos,
+          "TC.3: the refusal names the external change");
+    check(readFile(service / "service.json") == flushed,
+          "TC.3: a refused flush leaves the manifest untouched");
+    {
+        openshow::domain::ThumbnailCache none;
+        check(mergeThumbnailCache(service, none, digest, &error) &&
+                  readFile(service / "service.json").find("thumbnailCache") ==
+                      std::string::npos,
+              "TC.3: an empty cache removes the block");
+    }
+    {
+        // Deriving the digest from bytes already on disk must equal the
+        // document's: that is what makes the external-change test honest.
+        const std::string manifest = readFile(service / "service.json");
+        std::string onDisk;
+        check(openshow::domain::manifestAuthoredDigest(manifest, &onDisk, &error) && onDisk == digest,
+              "TC.3: the on-disk digest equals the document's");
+        check(!openshow::domain::manifestAuthoredDigest("{not json", &onDisk, &error),
+              "TC.3: malformed bytes have no authored digest");
+    }
+
+    // --- an unusable block is a MISS, never a failed load ----------------
+    {
+        std::string manifest = readFile(service / "service.json");
+        check(replaceOnce(manifest, "\"nextOrdinal\"", "\"thumbnailCache\":{\"format\":99,"
+                                          "\"entries\":[]},\"nextOrdinal\""),
+              "TC.3: the fixture can inject a block");
+        check(writeFile(service / "service.json", manifest), "TC.3: the fixture writes");
+        Documents loaded;
+        openshow::domain::ThumbnailCache loadedCache;
+        check(loadService(&loaded, service, &error, &loadedCache),
+              "TC.3: another block version still loads the document");
+        check(loadedCache.entries.empty(), "TC.3: another block version is a miss");
+        check(sameService(docs, loaded), "TC.3: the document is intact");
+    }
+    {
+        // One good record, one with a broken picture, one duplicate of the
+        // good one: the good record survives, the rest are misses.
+        std::string manifest = readFile(service / "service.json");
+        const std::string goodBlock =
+            "\"thumbnailCache\":{\"format\":1,\"entries\":[" +
+            boost::json::serialize(boost::json::value(1)) + "," +
+            std::string("{}") + "]}";
+        (void)goodBlock;
+        // Rebuild the block from real records with one corruption.
+        openshow::domain::ThumbnailCache mixed = written;
+        mixed.entries[1].pngBase64 = "not base64!!";
+        mixed.entries.push_back(written.entries[0]);
+        boost::json::object root = boost::json::parse(manifest).as_object();
+        boost::json::object block;
+        block.emplace("format", 1);
+        boost::json::array entries;
+        for (const openshow::domain::ThumbnailCacheEntry& entry : mixed.entries) {
+            boost::json::object record;
+            record.emplace("showId", entry.showId);
+            record.emplace("slideId", entry.slideId);
+            record.emplace("fingerprint", entry.fingerprint);
+            record.emplace("renderer", entry.renderer);
+            record.emplace("width", entry.width);
+            record.emplace("height", entry.height);
+            record.emplace("pngBytes", entry.pngBytes);
+            record.emplace("checksum", entry.checksum);
+            record.emplace("pngBase64", entry.pngBase64);
+            entries.push_back(std::move(record));
+        }
+        block.emplace("entries", std::move(entries));
+        root["thumbnailCache"] = block;
+        check(writeFile(service / "service.json", boost::json::serialize(root)),
+              "TC.3: the mixed block is written");
+        Documents loaded;
+        openshow::domain::ThumbnailCache loadedCache;
+        check(loadService(&loaded, service, &error, &loadedCache),
+              "TC.3: a block with bad records still loads");
+        check(loadedCache.entries.size() == 1 && loadedCache.entries[0].slideId == slide,
+              "TC.3: the valid record survives and the broken/duplicate ones are misses");
+        check(sameService(docs, loaded), "TC.3: authored content still loads intact");
+    }
+
+    // --- a failed cache write leaves the previous manifest usable --------
+    {
+        check(mergeThumbnailCache(service, written, digest, &error),
+              "TC.3: the fixture reinstalls the block");
+        const std::string before = readFile(service / "service.json");
+        // A DIFFERENT cache, so the flush really has to rewrite the manifest.
+        openshow::domain::ThumbnailCache changed = written;
+        changed.entries.push_back(recordFor(docs.appendSlide(show), 'c'));
+        ::setenv("OPENSHOW_STORAGE_FAULT", "manifest-write", 1);
+        const bool refused = mergeThumbnailCache(service, changed, digest, &error);
+        ::unsetenv("OPENSHOW_STORAGE_FAULT");
+        check(!refused, "TC.3: an injected write failure refuses the flush");
+        check(readFile(service / "service.json") == before,
+              "TC.3: the previous manifest is still installed");
+        Documents loaded;
+        openshow::domain::ThumbnailCache loadedCache;
+        check(loadService(&loaded, service, &error, &loadedCache) && loadedCache.entries.size() == 2,
+              "TC.3: the previous package still loads with its cache");
+    }
+}
+
 int main() {
     const std::string_view version = openshow::domain::applicationVersion();
     bool ok = check(!version.empty(), "applicationVersion is not empty");
@@ -5929,6 +6113,7 @@ int main() {
     exerciseDefaultThemeFloor(tempRoot);
     exerciseScriptureShows(tempRoot);
     exerciseSongReference(tempRoot);
+    exerciseThumbnailCacheCodec(tempRoot / "thumbnail-codec");
     std::filesystem::remove_all(tempRoot);
 
     exerciseHistory();

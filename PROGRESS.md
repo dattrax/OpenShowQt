@@ -23,8 +23,13 @@ The bucket was chosen from measurements of all 162 repository card renders
 plus each referenced asset's size and 8 KiB content probe, so save/reopen and
 package moves hit while replaced bytes and edited words miss (new
 `thumbnail_cache_tests`; `DocumentController::thumbnailSourceForSlide` returns
-scene and fingerprint from one compile). TC.3–TC.10 remain TODO; no runtime
-cold/warm evidence is claimed yet.
+scene and fingerprint from one compile). TC.3 is DONE: the Qt-free service codec
+writes/reads the optional independently versioned `thumbnailCache` block, a
+cache-only `mergeThumbnailCache()` reuses the manifest commit and refuses a
+manifest whose canonical authored digest changed, and a stale/corrupt/oversized
+block is only ever a miss (domain_tests cover round-trip, corrupt records,
+external changes and injected write failure). TC.4–TC.10 remain TODO; no
+runtime cold/warm evidence is claimed yet.
 
 **Edit follow-up (EW.11, 2026-11-19): corrected.** Upward/no-op drops used
 `dragFrom = -1` after drag cleanup and subtracted a slot incorrectly; compute

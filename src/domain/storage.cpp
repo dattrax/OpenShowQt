@@ -10,6 +10,8 @@
 
 #include "openshow/domain/storage.h"
 
+#include "openshow/domain/thumbnails.h"
+
 #include <boost/json.hpp>
 
 #include <fcntl.h>
@@ -444,6 +446,157 @@ boost::json::object reflowSourceJson(const openshow::domain::ReflowSource& sourc
     }
     out.emplace("blocks", std::move(blocks));
     return out;
+}
+
+// --- TC.3: the optional thumbnail block ------------------------------------
+
+// The writer's shape for one refused-by-nobody record. Written in a fixed key
+// order so a save round-trips byte for byte, like every authored member here.
+boost::json::object thumbnailCacheJson(const openshow::domain::ThumbnailCache& cache) {
+    boost::json::object block;
+    block.emplace("format", cache.format);
+    boost::json::array entries;
+    for (const openshow::domain::ThumbnailCacheEntry& entry : cache.entries) {
+        boost::json::object record;
+        record.emplace("showId", entry.showId);
+        record.emplace("slideId", entry.slideId);
+        record.emplace("fingerprint", entry.fingerprint);
+        record.emplace("renderer", entry.renderer);
+        record.emplace("width", entry.width);
+        record.emplace("height", entry.height);
+        record.emplace("pngBytes", entry.pngBytes);
+        record.emplace("checksum", entry.checksum);
+        record.emplace("pngBase64", entry.pngBase64);
+        entries.push_back(std::move(record));
+    }
+    block.emplace("entries", std::move(entries));
+    return block;
+}
+
+// A tolerant member reader: the cache block is derived data, so a record with
+// a missing or ill-typed field is dropped rather than made to refuse the
+// document. Unknown keys are ignored for the same reason (a newer build's
+// record is a miss, not an error).
+bool cacheString(const boost::json::object& obj, const char* key, std::string* out) {
+    const boost::json::value* value = obj.if_contains(key);
+    if (value == nullptr || !value->is_string()) {
+        return false;
+    }
+    *out = std::string(value->as_string());
+    return true;
+}
+
+bool cacheUint(const boost::json::object& obj, const char* key, std::uint64_t* out) {
+    const boost::json::value* value = obj.if_contains(key);
+    if (value == nullptr || !value->is_int64()) {
+        return false;
+    }
+    const long long number = value->as_int64();
+    if (number < 0) {
+        return false;
+    }
+    *out = static_cast<std::uint64_t>(number);
+    return true;
+}
+
+void readThumbnailCache(const boost::json::object& root, openshow::domain::ThumbnailCache* out) {
+    out->format = openshow::domain::kThumbnailCacheFormat;
+    out->entries.clear();
+    const boost::json::value* block = root.if_contains("thumbnailCache");
+    if (block == nullptr || !block->is_object()) {
+        return;  // absent or unusable: every card is simply a miss
+    }
+    const boost::json::object& cache = block->as_object();
+    std::uint64_t format = 0;
+    if (!cacheUint(cache, "format", &format) ||
+        format != openshow::domain::kThumbnailCacheFormat) {
+        return;  // another build's version: unusable, never a load failure
+    }
+    const boost::json::value* entries = cache.if_contains("entries");
+    if (entries == nullptr || !entries->is_array()) {
+        return;
+    }
+    for (const boost::json::value& item : entries->as_array()) {
+        if (!item.is_object()) {
+            continue;
+        }
+        const boost::json::object& record = item.as_object();
+        openshow::domain::ThumbnailCacheEntry entry;
+        std::uint64_t width = 0;
+        std::uint64_t height = 0;
+        std::uint64_t pngBytes = 0;
+        if (!cacheString(record, "slideId", &entry.slideId) ||
+            !cacheString(record, "fingerprint", &entry.fingerprint) ||
+            !cacheString(record, "renderer", &entry.renderer) ||
+            !cacheUint(record, "width", &width) || !cacheUint(record, "height", &height) ||
+            !cacheUint(record, "pngBytes", &pngBytes) ||
+            !cacheString(record, "checksum", &entry.checksum) ||
+            !cacheString(record, "pngBase64", &entry.pngBase64)) {
+            continue;
+        }
+        cacheString(record, "showId", &entry.showId);  // optional for a Library variant
+        if (width > 0xffffffffULL || height > 0xffffffffULL || pngBytes > 0xffffffffULL) {
+            continue;
+        }
+        entry.width = static_cast<std::uint32_t>(width);
+        entry.height = static_cast<std::uint32_t>(height);
+        entry.pngBytes = pngBytes;
+        out->entries.push_back(std::move(entry));
+    }
+    // Bounds, spelling, duplicate ownership and the byte budget are enforced
+    // here in one place: what survives is what the rest of the app may use.
+    openshow::domain::sanitizeThumbnailCache(out);
+}
+
+// The authored bytes' identity: everything the manifest says except the cache
+// block. Object member order is NOT stable across a parse and a re-serialize
+// (boost::json may move an assigned or erased member), so the digest walks a
+// canonical, key-sorted spelling: a manifest compares equal to the documents it
+// was written from, and to itself after a cache-only replacement, whatever the
+// file's member order happens to be.
+void appendCanonicalJson(const boost::json::value& value, std::string* out) {
+    if (value.is_object()) {
+        std::vector<std::pair<std::string, const boost::json::value*>> members;
+        for (const auto& member : value.as_object()) {
+            members.emplace_back(std::string(member.key()), &member.value());
+        }
+        std::sort(members.begin(), members.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+        out->push_back('{');
+        bool first = true;
+        for (const auto& member : members) {
+            if (!first) {
+                out->push_back(',');
+            }
+            first = false;
+            out->append(boost::json::serialize(boost::json::value(member.first)));
+            out->push_back(':');
+            appendCanonicalJson(*member.second, out);
+        }
+        out->push_back('}');
+        return;
+    }
+    if (value.is_array()) {
+        out->push_back('[');
+        bool first = true;
+        for (const boost::json::value& element : value.as_array()) {
+            if (!first) {
+                out->push_back(',');
+            }
+            first = false;
+            appendCanonicalJson(element, out);
+        }
+        out->push_back(']');
+        return;
+    }
+    out->append(boost::json::serialize(value));
+}
+
+std::string digestOfAuthored(boost::json::object root) {
+    root.erase("thumbnailCache");
+    std::string canonical;
+    appendCanonicalJson(boost::json::value(std::move(root)), &canonical);
+    return openshow::domain::sha256Hex(canonical);
 }
 
 // --- read-side field helpers ------------------------------------------------
@@ -1084,19 +1237,29 @@ bool insidePackage(const std::filesystem::path& root, const std::filesystem::pat
 // touch fAssets/fShows/... without any of it becoming API.
 class ServiceCodec {
 public:
-    static boost::json::value toJson(const Documents& documents);
-    static bool fromJson(const boost::json::value& value, Documents* out, std::string* error);
+    // TC.3: `cache`, when given, is written as the manifest's optional,
+    // independently versioned "thumbnailCache" block. It never enters
+    // Documents, so history and autosave snapshots keep their old cost.
+    static boost::json::value toJson(const Documents& documents,
+                                     const ThumbnailCache* cache = nullptr);
+    // `cache`, when given, receives the sanitised block. A block that is
+    // absent, of another format, or full of bad records is a MISS: loaded
+    // entries shrink, and the authored document is never refused for it.
+    static bool fromJson(const boost::json::value& value, Documents* out, std::string* error,
+                         ThumbnailCache* cache = nullptr);
     // `reuse`, when given, may skip copying an asset whose installed
     // bytes are still identified (task 6.14b; see storage.h). Callers
     // that own a package wholesale (saveService, saveServiceAndAdopt)
     // pass nothing and always copy.
     static bool save(const Documents& documents, const std::filesystem::path& directory,
-                     std::string* error, AssetReuse* reuse = nullptr);
+                     std::string* error, AssetReuse* reuse = nullptr,
+                     const ThumbnailCache* cache = nullptr);
     static bool load(Documents* documents, const std::filesystem::path& directory,
-                     std::string* error);
+                     std::string* error, ThumbnailCache* cache = nullptr);
 };
 
-boost::json::value ServiceCodec::toJson(const Documents& documents) {
+boost::json::value ServiceCodec::toJson(const Documents& documents,
+                                        const ThumbnailCache* cache) {
     boost::json::object root;
     root.emplace("format", kServiceFormat);
     root.emplace("nextOrdinal", documents.fNextOrdinal);
@@ -1402,11 +1565,19 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
     }
     root.emplace("playlists", std::move(playlists));
 
+    // TC.3: the derived picture block, last so every authored member keeps the
+    // order (and therefore the bytes) an earlier build wrote. Written only
+    // when it has something to say; an empty cache leaves the manifest it has
+    // always been. The store enforces the bounds, and the reader sanitises.
+    if (cache != nullptr && !cache->entries.empty()) {
+        root.emplace("thumbnailCache", thumbnailCacheJson(*cache));
+    }
+
     return root;
 }
 
 bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
-                            std::string* error) {
+                            std::string* error, ThumbnailCache* cache) {
     if (!value.is_object()) {
         fail(error, "service.json: top level must be an object");
         return false;
@@ -2655,97 +2826,28 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     out->fAssets = std::move(assets);
     out->fPlaylists = std::move(playlists);
     out->fNextOrdinal = nextOrdinal;
+    // TC.3: the derived picture block. Read ONLY after every authored rule has
+    // passed, so a package with a corrupt cache still loads its document and
+    // a package with a corrupt document is still refused for the document.
+    if (cache != nullptr) {
+        readThumbnailCache(root, cache);
+    }
     return true;
 }
 
 // --- package IO ---------------------------------------------------------------
 
-bool ServiceCodec::save(const Documents& documents, const std::filesystem::path& directory,
-                        std::string* error, AssetReuse* reuse) {
-    // Slow-storage seam (task 6.14b): the hold happens BEFORE any effect,
-    // so the whole save is one in-flight window a decision must order
-    // against — not a torn half.
-    const int delayMs = storageDelayMs();
-    if (delayMs > 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-    }
-    std::error_code ec;
-    std::filesystem::create_directories(directory, ec);
-    if (ec && !std::filesystem::is_directory(directory)) {
-        fail(error, "cannot create '" + directory.string() + "': " + ec.message());
-        return false;
-    }
-
-    // Assets first, staged: a service.json that exists must name only
-    // files that exist and are COMPLETE (task 6.13a, review R8). Each
-    // copy lands through its own staging file and atomic rename, so the
-    // file the previous manifest names is never written in place.
-    if (!documents.fAssets.empty()) {
-        std::filesystem::create_directories(directory / kAssetsDir, ec);
-        if (ec && !std::filesystem::is_directory(directory / kAssetsDir)) {
-            fail(error, "cannot create '" + (directory / kAssetsDir).string() +
-                            "': " + ec.message());
-            return false;
-        }
-    }
-    for (const Asset& asset : documents.fAssets) {
-        if (!asset.cameraSource.empty()) {
-            continue;  // a camera owns no bytes to copy into the package
-        }
-        const std::filesystem::path source =
-            std::filesystem::path(asset.sourcePath).lexically_normal();
-        const std::filesystem::path destination =
-            directory / kAssetsDir / assetFileName(asset);
-        if (!std::filesystem::is_regular_file(source, ec) || ec) {
-            fail(error, "asset '" + asset.name + "' has no readable file at '" +
-                            asset.sourcePath + "'");
-            return false;
-        }
-        if (std::filesystem::equivalent(source, destination, ec) && !ec) {
-            continue;  // already inside the package
-        }
-        // Asset copy reuse (task 6.14b, review R14): text edits must not
-        // re-copy unchanged media into the scratch package. Skip only
-        // when the destination still exists AND the source still
-        // identifies as the bytes last installed there; anything else —
-        // replaced file, new name, deleted destination — copies fresh.
-        AssetReuse::Stamp stamp;
-        const bool stamped = reuse != nullptr && stampOf(source, &stamp);
-        if (stamped) {
-            const auto previous = reuse->byDestination.find(destination.string());
-            std::error_code haveDest;
-            if (previous != reuse->byDestination.end() && previous->second == stamp &&
-                std::filesystem::is_regular_file(destination, haveDest) && !haveDest) {
-                continue;
-            }
-        }
-        if (!stageAndInstallAsset(asset, source, destination, error)) {
-            return false;
-        }
-        if (stamped) {
-            reuse->byDestination[destination.string()] = std::move(stamp);
-        }
-    }
-    // The renames above changed the assets directory's CONTENTS; those
-    // directory entries must be durable before any manifest that names
-    // them is committed (task 6.13a: "commit the manifest only after all
-    // referenced bytes are durable").
-    if (!documents.fAssets.empty() &&
-        !syncDirectory(directory / kAssetsDir, "assets-fsync", error)) {
-        return false;
-    }
-
-    // The manifest commits through a temporary in the same directory, so
-    // the rename is atomic against readers of service.json — and it is
-    // synced before that rename. Raw writes mean there is no user-space
-    // buffer left unsent when write() returns (the flush, in std::stream
-    // terms); fsync is the durability barrier; close is where deferred
-    // write-back errors surface, and its status is REPORTED — the old
-    // code checked good() before the destructor silently swallowed the
-    // close failure (task 6.13a, review R8).
+// The manifest commit (task 6.13a, review R8), split out for TC.3 so a
+// cache-only replacement travels through exactly these steps and fault seams:
+// a temporary in the same directory, raw write, fsync, close, atomic rename,
+// then the directory's own entry synced. A failure before the rename leaves the
+// previous manifest installed; the final directory sync is the one reported
+// failure that can leave the new manifest in place, already consistent.
+bool writeManifestFile(const std::filesystem::path& directory, const std::string& manifest,
+                       std::string* error) {
     const std::filesystem::path temporary =
         directory / (std::string(kManifestName) + ".tmp");
-    const std::string manifest = boost::json::serialize(toJson(documents));
+    std::error_code ec;
     if (storageFault("manifest-write")) {
         fail(error, "writing '" + temporary.string() +
                         "' failed: simulated fault at 'manifest-write'");
@@ -2834,8 +2936,96 @@ bool ServiceCodec::save(const Documents& documents, const std::filesystem::path&
     return syncDirectory(directory, "dir-fsync", error);
 }
 
+bool ServiceCodec::save(const Documents& documents, const std::filesystem::path& directory,
+                        std::string* error, AssetReuse* reuse,
+                        const ThumbnailCache* cache) {
+    // Slow-storage seam (task 6.14b): the hold happens BEFORE any effect,
+    // so the whole save is one in-flight window a decision must order
+    // against — not a torn half.
+    const int delayMs = storageDelayMs();
+    if (delayMs > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    if (ec && !std::filesystem::is_directory(directory)) {
+        fail(error, "cannot create '" + directory.string() + "': " + ec.message());
+        return false;
+    }
+
+    // Assets first, staged: a service.json that exists must name only
+    // files that exist and are COMPLETE (task 6.13a, review R8). Each
+    // copy lands through its own staging file and atomic rename, so the
+    // file the previous manifest names is never written in place.
+    if (!documents.fAssets.empty()) {
+        std::filesystem::create_directories(directory / kAssetsDir, ec);
+        if (ec && !std::filesystem::is_directory(directory / kAssetsDir)) {
+            fail(error, "cannot create '" + (directory / kAssetsDir).string() +
+                            "': " + ec.message());
+            return false;
+        }
+    }
+    for (const Asset& asset : documents.fAssets) {
+        if (!asset.cameraSource.empty()) {
+            continue;  // a camera owns no bytes to copy into the package
+        }
+        const std::filesystem::path source =
+            std::filesystem::path(asset.sourcePath).lexically_normal();
+        const std::filesystem::path destination =
+            directory / kAssetsDir / assetFileName(asset);
+        if (!std::filesystem::is_regular_file(source, ec) || ec) {
+            fail(error, "asset '" + asset.name + "' has no readable file at '" +
+                            asset.sourcePath + "'");
+            return false;
+        }
+        if (std::filesystem::equivalent(source, destination, ec) && !ec) {
+            continue;  // already inside the package
+        }
+        // Asset copy reuse (task 6.14b, review R14): text edits must not
+        // re-copy unchanged media into the scratch package. Skip only
+        // when the destination still exists AND the source still
+        // identifies as the bytes last installed there; anything else —
+        // replaced file, new name, deleted destination — copies fresh.
+        AssetReuse::Stamp stamp;
+        const bool stamped = reuse != nullptr && stampOf(source, &stamp);
+        if (stamped) {
+            const auto previous = reuse->byDestination.find(destination.string());
+            std::error_code haveDest;
+            if (previous != reuse->byDestination.end() && previous->second == stamp &&
+                std::filesystem::is_regular_file(destination, haveDest) && !haveDest) {
+                continue;
+            }
+        }
+        if (!stageAndInstallAsset(asset, source, destination, error)) {
+            return false;
+        }
+        if (stamped) {
+            reuse->byDestination[destination.string()] = std::move(stamp);
+        }
+    }
+    // The renames above changed the assets directory's CONTENTS; those
+    // directory entries must be durable before any manifest that names
+    // them is committed (task 6.13a: "commit the manifest only after all
+    // referenced bytes are durable").
+    if (!documents.fAssets.empty() &&
+        !syncDirectory(directory / kAssetsDir, "assets-fsync", error)) {
+        return false;
+    }
+
+    // The manifest commits through a temporary in the same directory, so
+    // the rename is atomic against readers of service.json — and it is
+    // synced before that rename. Raw writes mean there is no user-space
+    // buffer left unsent when write() returns (the flush, in std::stream
+    // terms); fsync is the durability barrier; close is where deferred
+    // write-back errors surface, and its status is REPORTED — the old
+    // code checked good() before the destructor silently swallowed the
+    // close failure (task 6.13a, review R8).
+    return writeManifestFile(directory, boost::json::serialize(toJson(documents, cache)),
+                             error);
+}
+
 bool ServiceCodec::load(Documents* documents, const std::filesystem::path& directory,
-                        std::string* error) {
+                        std::string* error, ThumbnailCache* cache) {
     std::ifstream in(directory / kManifestName, std::ios::binary);
     if (!in) {
         fail(error, "cannot open '" + manifestPath(directory) + "'");
@@ -2856,7 +3046,7 @@ bool ServiceCodec::load(Documents* documents, const std::filesystem::path& direc
     }
 
     Documents loaded;  // the target keeps its old contents on failure
-    if (!fromJson(parsed, &loaded, error)) {
+    if (!fromJson(parsed, &loaded, error, cache)) {
         return false;
     }
 
@@ -2934,25 +3124,29 @@ bool ServiceCodec::load(Documents* documents, const std::filesystem::path& direc
 // --- public entry points --------------------------------------------------------
 
 bool saveService(const Documents& documents, const std::filesystem::path& directory,
-                 std::string* error) {
-    return ServiceCodec::save(documents, directory, error);
+                 std::string* error, const ThumbnailCache* cache) {
+    return ServiceCodec::save(documents, directory, error, nullptr, cache);
 }
 
 bool loadService(Documents* documents, const std::filesystem::path& directory,
-                 std::string* error) {
+                 std::string* error, ThumbnailCache* cache) {
     if (documents == nullptr) {
         fail(error, "loadService needs a target");
         return false;
     }
-    if (!ServiceCodec::load(documents, directory, error)) {
+    if (cache != nullptr) {
+        cache->entries.clear();  // a failed load leaves no half-answer behind
+    }
+    if (!ServiceCodec::load(documents, directory, error, cache)) {
         return false;
     }
     return true;
 }
 
 bool saveServiceAndAdopt(Documents& documents, const std::filesystem::path& directory,
-                         std::vector<AssetRebind>* rebinds, std::string* error) {
-    if (!ServiceCodec::save(documents, directory, error)) {
+                         std::vector<AssetRebind>* rebinds, std::string* error,
+                         const ThumbnailCache* cache) {
+    if (!ServiceCodec::save(documents, directory, error, nullptr, cache)) {
         return false;  // nothing was copied: nothing has a new home
     }
     // A successful save means every asset's bytes are in the package under
@@ -2978,6 +3172,80 @@ bool saveServiceAndAdopt(Documents& documents, const std::filesystem::path& dire
         *rebinds = std::move(moved);
     }
     return true;
+}
+
+// --- TC.3: authored identity and cache-only replacement -------------------------
+
+std::string authoredManifestDigest(const Documents& documents) {
+    boost::json::value json = ServiceCodec::toJson(documents);
+    return digestOfAuthored(std::move(json.as_object()));
+}
+
+bool manifestAuthoredDigest(std::string_view manifest, std::string* digest,
+                            std::string* error) {
+    if (digest == nullptr) {
+        fail(error, "manifestAuthoredDigest needs a target");
+        return false;
+    }
+    boost::system::error_code parseError;
+    const boost::json::value parsed = boost::json::parse(manifest, parseError);
+    if (parseError || !parsed.is_object()) {
+        fail(error, "service.json: malformed JSON: " +
+                        std::string(parseError ? parseError.message() : "not an object"));
+        return false;
+    }
+    *digest = digestOfAuthored(parsed.as_object());
+    return true;
+}
+
+bool mergeThumbnailCache(const std::filesystem::path& directory, const ThumbnailCache& cache,
+                         std::string_view expectedAuthoredDigest, std::string* error) {
+    const std::filesystem::path manifest = directory / kManifestName;
+    std::ifstream in(manifest, std::ios::binary);
+    if (!in) {
+        fail(error, "cannot open '" + manifestPath(directory) + "'");
+        return false;
+    }
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    if (in.bad()) {
+        fail(error, "reading '" + manifestPath(directory) + "' failed");
+        return false;
+    }
+    boost::system::error_code parseError;
+    const boost::json::value parsed = boost::json::parse(buffer.str(), parseError);
+    if (parseError || !parsed.is_object()) {
+        fail(error, "service.json: malformed JSON: " +
+                        std::string(parseError ? parseError.message() : "not an object"));
+        return false;
+    }
+    boost::json::object root = parsed.as_object();
+    // The authored half must still be exactly what the session last wrote or
+    // loaded. Anything else is somebody else's service now: skip the flush
+    // rather than overwrite an edit this session never saw.
+    if (digestOfAuthored(root) != expectedAuthoredDigest) {
+        fail(error, "service.json changed after it was loaded; the thumbnail cache"
+                    " was not written");
+        return false;
+    }
+    ThumbnailCache clean = cache;
+    openshow::domain::sanitizeThumbnailCache(&clean);
+    const bool hadBlock = root.contains("thumbnailCache");
+    if (clean.entries.empty()) {
+        if (!hadBlock) {
+            return true;  // nothing to keep and nothing to remove
+        }
+        root.erase("thumbnailCache");
+    } else {
+        const boost::json::object block = thumbnailCacheJson(clean);
+        const boost::json::value* existing = root.if_contains("thumbnailCache");
+        if (existing != nullptr &&
+            boost::json::serialize(*existing) == boost::json::serialize(block)) {
+            return true;  // the file already says exactly this; do not touch it
+        }
+        root["thumbnailCache"] = block;
+    }
+    return writeManifestFile(directory, boost::json::serialize(root), error);
 }
 
 // --- autosave -----------------------------------------------------------------
