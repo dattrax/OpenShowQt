@@ -249,5 +249,14 @@ it does not own; with no store attached its behaviour is exactly today's.
 ## Status log
 
 - 2026-11-20 TC.1: contract above frozen; extent comparison measured; service
-  format stays 15 with an independently versioned block. No runtime evidence
-  is claimed yet.
+  format stays 15 with an independently versioned block.
+- 2026-11-20 TC.2–TC.9 landed: fingerprint/asset probes, service codec and
+  cache-only merge, bounded store lanes, persistence/autosave integration,
+  cache-first consumer, QML wiring with separate persisted availability,
+  fault injection, and catalog format 3 variants with bridge reuse.
+- 2026-11-20 TC.10 measured on the real worker (`thumbnail_reopen_tests`):
+  12-slide service 877 ms / 12 thumbnail renders cold; a separate-process
+  reopen 6 ms / 0 thumbnail renders / 12 persisted hits; 200-slide service
+  parse 51 031 B plain vs 790 220 B with a full block, ~1 ms both. The
+  256-record / 32 KiB / 1.5 MiB bounds and the resident LRU are unchanged.
+  TC closes with no speedup claim beyond these measurements.
