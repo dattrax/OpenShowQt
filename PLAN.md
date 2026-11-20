@@ -2715,8 +2715,8 @@ the real renderer path passes. Insertion's final text-focus handoff joins EW.5.
 User request (2026-11-20): retain rendered service-card pictures with the
 song/Bible data so subsequent runs can reuse them. This brief interprets
 "BCD PNG" as **Base64-encoded PNG** inside JSON. TC.1's frozen contract and
-measurements live in [the TC design note](docs/ui/thumbnail-cache-plan.md);
-TC.2–TC.10 remain TODO.
+measurements live in [the TC design note](docs/ui/thumbnail-cache-plan.md).
+Review corrections are tracked by TC.11 below.
 
 #### Findings from the current implementation
 
@@ -2838,6 +2838,7 @@ DONE solely because its own isolated fixtures pass.
 | TC.8 | DONE | Persistence | TC.5–TC.7 | Verify save/reopen, clean-service warming without manual save, autosave recovery, save/adopt path rebinding, Save/load cancellation and service deletion. Inject write/rename/sync failures and delayed old-epoch encode/decode completions. Read-only/missing caches fall back; unsaved authoring never leaks into a cache-only write. |
 | TC.9 | DONE | Persistence + coordinator | TC.2–TC.8 | Extend catalog format/strict key validation and its persistence overlay for bounded prepared-song variants. Through ServiceCatalogBridge, reuse only matching prepared layouts across services; lyric/theme/reflow changes miss, cache updates do not bump content/record revisions or reprepare songs, and deleting the Library does not break a saved service. |
 | TC.10 | DONE | Coordinator + owners | TC.8–TC.9 | Run integrated real-worker journeys and affected regressions; measure cold generation, warm reopen and large-service parse/save cost. Record size, peak resident/cache bytes, UI latency, hit/miss/render counts and audience timing. Reconcile architecture/PROGRESS and retain evidence before marking TC complete. |
+| TC.11 | DONE | Review follow-up | TC.10 | Correct fingerprint-only invalidation and stale completions, identify renderer/font environments, bound job queues, preserve actual render resolution, coalesce background Library writes and evict oldest variants. Focused regressions and real-worker/UI checks pass (18/18); current contracts and evidence are in the TC design note and PROGRESS. |
 
 #### Evidence (2026-11-20)
 
@@ -2858,6 +2859,11 @@ save-adopt and relocation and changes when an asset's bytes change;
 `thumbnail_cache_tests` pins each input separately, and
 `document_controller_tests` proves hit/save/reopen/move and text/picture misses
 through the real controller.
+
+TC.11 corrects the initial size/identity contract: native render resolution
+(up to 512x288), build/font-environment signatures, fingerprint-aware resident
+validity, bounded/cancelable jobs and coalesced background Library writes with
+newest-variant eviction. Targeted checks pass 18/18; see the current handoff.
 
 #### Agent assignments and integration rules
 

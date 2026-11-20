@@ -93,8 +93,8 @@ public:
     void request(const QString& slideId, const QString& fingerprint, qint64 width,
                  qint64 height);
 
-    // A finished worker render, at whatever extent the worker sent it. Scaled
-    // to the canonical bucket, encoded and merged on the background lane.
+    // Keep the actual render resolution. A larger display request misses until
+    // the worker supplies a sharper picture; persisted pixels are never enlarged.
     void record(const QString& showId, const QString& slideId, const QString& fingerprint,
                 const QImage& rendered);
     // Drops one slide's records (an edit made its fingerprints stale).
@@ -118,6 +118,9 @@ public:
     qint64 flushFailures() const { return fFlushFailures; }
     bool idle() const;   // no decode/encode work outstanding
     bool dirty() const { return fDirty; }
+    int pendingDecodes() const { return fDecoding.size(); }
+    int pendingEncodes() const { return fEncoding.size(); }
+    qint64 queuedEncodeBytes() const;
     // Waits (briefly, processing queued calls) until the lanes are idle.
     bool waitForIdle(int timeoutMs = 5000);
 
@@ -128,7 +131,7 @@ public:
     // caller outside this class should invoke them.
     void finishDecode(std::uint64_t generation, std::uint64_t serial, const QString& slideId,
                       const QString& fingerprint, const QImage& image, const QString& error);
-    void finishEncode(std::uint64_t generation, const QString& slideId,
+    void finishEncode(std::uint64_t generation, std::uint64_t serial, const QString& slideId,
                       const QString& fingerprint,
                       const openshow::domain::ThumbnailCacheEntry& entry, bool ok);
 
@@ -146,18 +149,23 @@ private:
         std::uint64_t serial = 0;
         qint64 width = 0;
         qint64 height = 0;
+        QString fingerprint;
     };
     struct PendingEncode {
         std::uint64_t generation = 0;
+        std::uint64_t serial = 0;
         QString showId;
         QString slideId;
         QString fingerprint;
+        qint64 width = 0;
+        qint64 height = 0;
         QImage picture;
     };
 
     void startDecode(const QString& slideId, const QString& fingerprint,
                      const PendingDecode& pending);
     void startEncode(PendingEncode pending);
+    void pumpJobs();
     void insertEntry(openshow::domain::ThumbnailCacheEntry entry);
     void touch(const QString& slideId, const QString& fingerprint);
     void pruneToBounds();
@@ -178,6 +186,10 @@ private:
     std::uint64_t fSerial = 0;
     QHash<QString, PendingDecode> fDecoding;
     QHash<QString, PendingEncode> fEncoding;
+    QStringList fDecodeQueue;
+    QStringList fEncodeQueue;
+    int fActiveDecodes = 0;
+    int fActiveEncodes = 0;
     qint64 fHits = 0;
     qint64 fMisses = 0;
     qint64 fDecoded = 0;
@@ -197,6 +209,8 @@ private:
     // The agreed ceilings, from the frozen contract.
     static constexpr int kDecodeThreads = 2;
     static constexpr int kEncodeThreads = 2;
+    static constexpr int kMaxPendingJobs = 128;
+    static constexpr qint64 kMaxQueuedEncodeBytes = 8 * 1024 * 1024;
     static constexpr qint64 kFlushDelayMs = 2000;
 };
 

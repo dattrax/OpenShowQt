@@ -25,7 +25,7 @@ public:
     std::uint64_t serial = 0;
     QString slideId;
     QString fingerprint;
-    QByteArray png;
+    std::string encoded;
     QByteArray checksum;
     std::uint32_t expectedWidth = 0;
     std::uint32_t expectedHeight = 0;
@@ -35,10 +35,17 @@ public:
     void run() override {
         QImage picture;
         QString error;
+        std::string decoded;
+        if (!openshow::domain::base64Decode(encoded, &decoded)) {
+            error = QStringLiteral("thumbnail record: invalid Base64");
+        }
+        const QByteArray png(decoded.data(), static_cast<qsizetype>(decoded.size()));
         // The record is trusted only after its bytes prove they are the bytes
         // that were recorded, and only after the PNG header proves the size the
         // record declares. A corrupt blob never reaches the decoder.
-        if (openshow::domain::pngChecksum(
+        if (!error.isEmpty()) {
+            // A malformed record is a miss without invoking the PNG decoder.
+        } else if (openshow::domain::pngChecksum(
                 std::string_view(png.constData(), static_cast<std::size_t>(png.size()))) !=
             std::string_view(checksum.constData(), static_cast<std::size_t>(checksum.size()))) {
             error = QStringLiteral("thumbnail record: the checksum does not match the picture");
@@ -95,6 +102,7 @@ class EncodeJob : public QRunnable {
 public:
     QPointer<ThumbnailStore> store;
     std::uint64_t generation = 0;
+    std::uint64_t serial = 0;
     QString showId;
     QString slideId;
     QString fingerprint;
@@ -106,12 +114,7 @@ public:
         bool ok = false;
         QImage bucket = rendered;
         if (!bucket.isNull()) {
-            // The canonical bucket: one record serves every card extent, so a
-            // resize or a move between Show and Edit never misses.
-            bucket = bucket.convertToFormat(QImage::Format_ARGB32_Premultiplied)
-                         .scaled(static_cast<int>(openshow::domain::kThumbnailWidth),
-                                 static_cast<int>(openshow::domain::kThumbnailHeight),
-                                 Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            bucket = bucket.convertToFormat(QImage::Format_ARGB32_Premultiplied);
             QByteArray png;
             {
                 QBuffer buffer(&png);
@@ -139,6 +142,7 @@ public:
         }
         const QPointer<ThumbnailStore> target = store;
         const std::uint64_t jobGeneration = generation;
+        const std::uint64_t jobSerial = serial;
         const QString jobSlide = slideId;
         const QString jobFingerprint = fingerprint;
         if (target.isNull() || QCoreApplication::instance() == nullptr) {
@@ -146,9 +150,9 @@ public:
         }
         QMetaObject::invokeMethod(
             QCoreApplication::instance(),
-            [target, jobGeneration, jobSlide, jobFingerprint, entry, ok] {
+            [target, jobGeneration, jobSerial, jobSlide, jobFingerprint, entry, ok] {
                 if (!target.isNull()) {
-                    target->finishEncode(jobGeneration, jobSlide, jobFingerprint, entry, ok);
+                    target->finishEncode(jobGeneration, jobSerial, jobSlide, jobFingerprint, entry, ok);
                 }
             },
             Qt::QueuedConnection);
@@ -188,6 +192,8 @@ void ThumbnailStore::raiseGeneration() {
     ++fGeneration;
     fDecoding.clear();
     fEncoding.clear();
+    fDecodeQueue.clear();
+    fEncodeQueue.clear();
 }
 
 void ThumbnailStore::adopt(const openshow::domain::ThumbnailCache& cache,
@@ -237,6 +243,18 @@ void ThumbnailStore::setEnabled(bool enabled) {
 }
 
 void ThumbnailStore::pruneToSlides(const QSet<QString>& slideIds) {
+    for (const QString& id : fEncoding.keys()) {
+        if (!slideIds.contains(id)) {
+            fEncoding.remove(id);
+            fEncodeQueue.removeAll(id);
+        }
+    }
+    for (const QString& id : fDecoding.keys()) {
+        if (!slideIds.contains(id)) {
+            fDecoding.remove(id);
+            fDecodeQueue.removeAll(id);
+        }
+    }
     const std::size_t before = fCache.entries.size();
     std::vector<openshow::domain::ThumbnailCacheEntry> kept;
     kept.reserve(fCache.entries.size());
@@ -270,9 +288,16 @@ void ThumbnailStore::request(const QString& slideId, const QString& fingerprint,
     const openshow::domain::ThumbnailCacheEntry* entry =
         openshow::domain::findThumbnail(fCache, slideId.toStdString(),
                                         fingerprint.toStdString());
-    if (entry == nullptr) {
+    if (entry == nullptr || width <= 0 || height <= 0 ||
+        width > entry->width || height > entry->height ||
+        (!fDecoding.contains(slideId) && fDecoding.size() >= kMaxPendingJobs)) {
         ++fMisses;
         emit pictureMissed(slideId, fingerprint);
+        return;
+    }
+    const auto previous = fDecoding.constFind(slideId);
+    if (previous != fDecoding.constEnd() && previous->fingerprint == fingerprint &&
+        previous->width == width && previous->height == height) {
         return;
     }
     PendingDecode pending;
@@ -280,8 +305,11 @@ void ThumbnailStore::request(const QString& slideId, const QString& fingerprint,
     pending.serial = ++fSerial;
     pending.width = width;
     pending.height = height;
+    pending.fingerprint = fingerprint;
     fDecoding.insert(slideId, pending);
-    startDecode(slideId, fingerprint, pending);
+    fDecodeQueue.removeAll(slideId);
+    fDecodeQueue.push_back(slideId);
+    pumpJobs();
 }
 
 void ThumbnailStore::startDecode(const QString& slideId, const QString& fingerprint,
@@ -290,12 +318,8 @@ void ThumbnailStore::startDecode(const QString& slideId, const QString& fingerpr
         openshow::domain::findThumbnail(fCache, slideId.toStdString(),
                                         fingerprint.toStdString());
     if (entry == nullptr) {
-        return;
-    }
-    std::string png;
-    if (!openshow::domain::base64Decode(entry->pngBase64, &png)) {
         fDecoding.remove(slideId);
-        ++fFailures;
+        --fActiveDecodes;
         ++fMisses;
         emit pictureMissed(slideId, fingerprint);
         return;
@@ -307,7 +331,7 @@ void ThumbnailStore::startDecode(const QString& slideId, const QString& fingerpr
     job->serial = pending.serial;
     job->slideId = slideId;
     job->fingerprint = fingerprint;
-    job->png = QByteArray(png.data(), static_cast<qsizetype>(png.size()));
+    job->encoded = entry->pngBase64;
     job->checksum = QByteArray(entry->checksum.data(), static_cast<qsizetype>(entry->checksum.size()));
     job->expectedWidth = entry->width;
     job->expectedHeight = entry->height;
@@ -319,12 +343,12 @@ void ThumbnailStore::startDecode(const QString& slideId, const QString& fingerpr
 void ThumbnailStore::finishDecode(std::uint64_t generation, std::uint64_t serial,
                                   const QString& slideId, const QString& fingerprint,
                                   const QImage& image, const QString& error) {
-    if (generation != fGeneration) {
-        return;  // another document (or a disabled cache) retired this ask
-    }
+    --fActiveDecodes;
     const auto pending = fDecoding.constFind(slideId);
-    if (pending == fDecoding.constEnd() || pending->serial != serial) {
-        return;  // a newer ask for this slide owns the row now
+    if (generation != fGeneration || pending == fDecoding.constEnd() ||
+        pending->serial != serial) {
+        pumpJobs();
+        return;
     }
     fDecoding.erase(pending);
     if (!error.isEmpty() || image.isNull()) {
@@ -332,6 +356,7 @@ void ThumbnailStore::finishDecode(std::uint64_t generation, std::uint64_t serial
         ++fMisses;
         emit pictureMissed(slideId, fingerprint);
         emit countersChanged();
+        pumpJobs();
         return;
     }
     touch(slideId, fingerprint);
@@ -339,23 +364,46 @@ void ThumbnailStore::finishDecode(std::uint64_t generation, std::uint64_t serial
     ++fHits;
     emit pictureReady(slideId, fingerprint, image);
     emit countersChanged();
+    pumpJobs();
 }
 
 void ThumbnailStore::record(const QString& showId, const QString& slideId,
                             const QString& fingerprint, const QImage& rendered) {
-    if (!fEnabled || rendered.isNull() || slideId.isEmpty() || fingerprint.isEmpty()) {
+    if (!fEnabled || rendered.isNull() || slideId.isEmpty() || fingerprint.isEmpty() ||
+        rendered.width() > static_cast<int>(openshow::domain::kThumbnailWidth) ||
+        rendered.height() > static_cast<int>(openshow::domain::kThumbnailHeight)) {
         return;
+    }
+    const auto* existing = find(slideId, fingerprint);
+    if (existing != nullptr && existing->width >= static_cast<unsigned>(rendered.width()) &&
+        existing->height >= static_cast<unsigned>(rendered.height())) {
+        return;  // never replace a sharp record with a smaller proxy
+    }
+    const auto old = fEncoding.constFind(slideId);
+    if (old != fEncoding.constEnd() && old->fingerprint == fingerprint &&
+        old->width >= rendered.width() && old->height >= rendered.height()) {
+        return;
+    }
+    const qint64 replacedBytes = old == fEncoding.constEnd() ? 0 : old->picture.sizeInBytes();
+    if ((!fEncoding.contains(slideId) && fEncoding.size() >= kMaxPendingJobs) ||
+        queuedEncodeBytes() - replacedBytes + rendered.sizeInBytes() > kMaxQueuedEncodeBytes) {
+        return;  // optional persistence defers rather than growing a job backlog
     }
     // The newest render for a slide supersedes an encode still in flight: the
     // older pixels describe a scene the operator has already changed.
     PendingEncode pending;
     pending.generation = fGeneration;
+    pending.serial = ++fSerial;
     pending.showId = showId;
     pending.slideId = slideId;
     pending.fingerprint = fingerprint;
+    pending.width = rendered.width();
+    pending.height = rendered.height();
     pending.picture = rendered;
     fEncoding.insert(slideId, pending);
-    startEncode(pending);
+    fEncodeQueue.removeAll(slideId);
+    fEncodeQueue.push_back(slideId);
+    pumpJobs();
 }
 
 void ThumbnailStore::startEncode(PendingEncode pending) {
@@ -363,6 +411,7 @@ void ThumbnailStore::startEncode(PendingEncode pending) {
     job->setAutoDelete(true);
     job->store = this;
     job->generation = pending.generation;
+    job->serial = pending.serial;
     job->showId = pending.showId;
     job->slideId = pending.slideId;
     job->fingerprint = pending.fingerprint;
@@ -370,26 +419,57 @@ void ThumbnailStore::startEncode(PendingEncode pending) {
     fEncodePool->start(job);
 }
 
-void ThumbnailStore::finishEncode(std::uint64_t generation, const QString& slideId,
-                                  const QString& fingerprint,
+void ThumbnailStore::finishEncode(std::uint64_t generation, std::uint64_t serial,
+                                  const QString& slideId, const QString& fingerprint,
                                   const openshow::domain::ThumbnailCacheEntry& entry, bool ok) {
-    if (generation != fGeneration) {
-        return;  // the document or the cache went away while the PNG encoded
-    }
+    --fActiveEncodes;
     const auto pending = fEncoding.constFind(slideId);
-    if (pending != fEncoding.constEnd() && pending->fingerprint == fingerprint) {
-        fEncoding.erase(pending);
-    }
-    if (!ok) {
-        ++fFailures;
-        emit countersChanged();
+    if (generation != fGeneration || pending == fEncoding.constEnd() ||
+        pending->serial != serial || pending->fingerprint != fingerprint) {
+        pumpJobs();
         return;
     }
-    insertEntry(entry);
-    fDirty = true;
-    scheduleFlush();
-    emit recordStored(QString::fromStdString(entry.showId), slideId, fingerprint);
+    fEncoding.erase(pending);
+    if (ok) {
+        insertEntry(entry);
+        fDirty = true;
+        scheduleFlush();
+        emit recordStored(QString::fromStdString(entry.showId), slideId, fingerprint);
+    } else {
+        ++fFailures;
+    }
     emit countersChanged();
+    pumpJobs();
+}
+
+qint64 ThumbnailStore::queuedEncodeBytes() const {
+    qint64 bytes = 0;
+    for (const auto& pending : fEncoding) {
+        bytes += pending.picture.sizeInBytes();
+    }
+    return bytes;
+}
+
+void ThumbnailStore::pumpJobs() {
+    // Only submit a job when its lane has a permit. QThreadPool's internal
+    // queue never accumulates images; the bounded maps own pending work.
+    while (fActiveDecodes < kDecodeThreads && !fDecodeQueue.isEmpty()) {
+        const QString id = fDecodeQueue.takeFirst();
+        auto pending = fDecoding.find(id);
+        if (pending == fDecoding.end()) continue;
+        const auto job = *pending;
+        ++fActiveDecodes;
+        startDecode(id, job.fingerprint, job);
+    }
+    while (fActiveEncodes < kEncodeThreads && !fEncodeQueue.isEmpty()) {
+        const QString id = fEncodeQueue.takeFirst();
+        auto pending = fEncoding.find(id);
+        if (pending == fEncoding.end()) continue;
+        const auto job = *pending;
+        pending->picture = QImage();
+        ++fActiveEncodes;
+        startEncode(job);
+    }
 }
 
 void ThumbnailStore::adoptEntry(const openshow::domain::ThumbnailCacheEntry& entry) {
@@ -478,6 +558,9 @@ void ThumbnailStore::forget(const QString& slideId) {
         }
     }
     fEncoding.remove(slideId);
+    fDecoding.remove(slideId);
+    fEncodeQueue.removeAll(slideId);
+    fDecodeQueue.removeAll(slideId);
     if (fCache.entries.size() != before) {
         fDirty = true;
         scheduleFlush();
@@ -486,8 +569,8 @@ void ThumbnailStore::forget(const QString& slideId) {
 }
 
 bool ThumbnailStore::idle() const {
-    return fDecoding.isEmpty() && fEncoding.isEmpty() && fDecodePool->activeThreadCount() == 0 &&
-           fEncodePool->activeThreadCount() == 0;
+    return fDecoding.isEmpty() && fEncoding.isEmpty() && fActiveDecodes == 0 &&
+           fActiveEncodes == 0;
 }
 
 bool ThumbnailStore::waitForIdle(int timeoutMs) {

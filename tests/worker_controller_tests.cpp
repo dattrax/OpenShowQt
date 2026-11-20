@@ -5499,6 +5499,23 @@ void scenarioPersistedThumbnails() {
               "persisted: an all-hit window sends no preview.thumbnails command");
     }
 
+    // Asset/font identity can change while the compiled scene is identical.
+    {
+        const QString changed = QString::fromStdString(sha256Hex("asset-replacement"));
+        pictures.record("show1", "row-one", changed, card(0x11cc33u));
+        check(pictures.waitForIdle(), "fingerprint replacement fixture encodes");
+        controller.requestThumbnailWindow({row("row-one", sceneOne, changed)}, 64, 36);
+        check(waitUntil([&] {
+                  const auto image = controller.thumbnail("row-one");
+                  return !image.isNull() && image.pixelColor(0, 0).rgb() == QColor(0x11, 0xcc, 0x33).rgb();
+              }), "a fingerprint-only change replaces the resident picture without changing scene JSON");
+        controller.requestThumbnailWindow({row("row-one", sceneOne, fingerprintOne)}, 64, 36);
+        check(waitUntil([&] {
+                  const auto image = controller.thumbnail("row-one");
+                  return !image.isNull() && image.pixelColor(0, 0).rgb() == QColor(0xff, 0x88, 0).rgb();
+              }), "returning to a prior identity cannot retain the newer resident picture");
+    }
+
     // --- mixed: only the miss reaches the worker -------------------------
     {
         const std::int64_t opsBefore = jsonSize(readReportNow(report), "thumbnailOps");

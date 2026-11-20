@@ -125,8 +125,8 @@ void exerciseEncodeDecodeAndFlush() {
     check(store.encodedPictures() == 1 && store.entryCount() == 1,
           "TC.4: exactly one picture is recorded");
     const ThumbnailCacheEntry& entry = store.cache().entries.front();
-    check(entry.width == 512 && entry.height == 288,
-          "TC.4: the record is the canonical bucket, not the display extent");
+    check(entry.width == 320 && entry.height == 180,
+          "the persisted record preserves the actual render resolution");
     check(entry.pngBase64.size() <= openshow::domain::kMaxThumbnailPngBytes &&
               entry.pngBytes <= openshow::domain::kMaxThumbnailPngBytes,
           "TC.4: the encoded picture is inside the per-record bound");
@@ -366,6 +366,56 @@ void exerciseBoundsAndPruning() {
     check(pruned.entryCount() == 0, "TC.4: forgetting a slide removes its pictures");
 }
 
+void exerciseCanceledAndBoundedJobs() {
+    ThumbnailStore store;
+    const QString fp = QString::fromStdString(fingerprint("queued"));
+    QImage red(160, 90, QImage::Format_ARGB32_Premultiplied);
+    red.fill(Qt::red);
+    QImage blue(512, 288, QImage::Format_ARGB32_Premultiplied);
+    blue.fill(Qt::blue);
+    store.record("show1", "slide1", fp, red);
+    store.forget("slide1");
+    check(store.waitForIdle() && !store.has("slide1", fp),
+          "forget cancels an encode already running before its completion lands");
+    store.record("show1", "slide1", fp, red);
+    store.record("show1", "slide1", fp, blue);
+    check(store.waitForIdle(), "superseded encodes finish");
+    const auto* latest = store.find("slide1", fp);
+    check(latest && latest->width == 512, "the newest encode wins even for the same fingerprint");
+    store.record("show1", "slide1", fp, red);
+    check(store.waitForIdle() && store.find("slide1", fp)->width == 512,
+          "a smaller render cannot downgrade a sharp persisted picture");
+
+    store.adopt({}, "digest", false);
+    store.record("show1", "slide1", fp, red);
+    check(store.waitForIdle(), "the small picture encodes");
+    int misses = 0;
+    QObject::connect(&store, &ThumbnailStore::pictureMissed,
+                     [&](const QString&, const QString&) { ++misses; });
+    store.request("slide1", fp, 512, 288);
+    check(misses == 1, "growing a card requests a sharp render instead of upscaling a persisted proxy");
+    for (int i = 0; i < 500; ++i) {
+        store.record("show1", QString("slide%1").arg(i + 10), fp, blue);
+        check(store.pendingEncodes() <= 128 && store.queuedEncodeBytes() <= 8 * 1024 * 1024,
+              "encode bursts keep both queued jobs and queued image bytes bounded");
+    }
+    store.pruneToSlides({});
+    check(store.waitForIdle() && store.entryCount() == 0,
+          "pruning cancels pending and running encodes, including slides without finished records");
+
+    ThumbnailCache cache;
+    for (int i = 0; i < 256; ++i) {
+        cache.entries.push_back(validEntry("slide" + std::to_string(i), fp.toStdString(), blue));
+    }
+    store.adopt(cache, "digest", false);
+    for (int i = 0; i < 1000; ++i) {
+        store.request(QString("slide%1").arg(i % 256), fp, 160 + i % 32, 90);
+        check(store.pendingDecodes() <= 128, "decode bursts have a bounded backlog");
+    }
+    store.adopt({}, "next-document", false);
+    check(store.waitForIdle(), "retired bounded decode work drains without painting");
+}
+
 void exerciseDisabled() {
     ThumbnailStore store;
     QList<QString> missed;
@@ -394,6 +444,7 @@ int main(int argc, char** argv) {
     exerciseSupersedingAndGeneration();
     exerciseRetiredEncode();
     exerciseBoundsAndPruning();
+    exerciseCanceledAndBoundedJobs();
     exerciseDisabled();
     if (gFailed) {
         return 1;

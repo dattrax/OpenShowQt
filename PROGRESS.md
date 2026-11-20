@@ -1,6 +1,6 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-11-19 (Europe/London).
+Updated: 2026-11-20 (Europe/London).
 
 This file is the CURRENT handoff. Earlier checkpoint narratives — the media
 library, the type/effects review, the CS/TV/TS/TR series and the M6 milestones —
@@ -11,10 +11,33 @@ archive is a current instruction.
 
 ## Current checkpoint
 
+**Thumbnail review corrections (TC.11, 2026-11-20): DONE.** Resident
+validity now includes the fingerprint, worker batches retain captured identity,
+and encode serials reject canceled/superseded work. Native-resolution PNGs
+serve smaller cards; larger cards request a sharper render. Decode/encode
+backlogs are capped by count and queued encode bytes. Renderer identity includes
+render-source and Fontconfig configuration/directory/face/file signatures.
+Library cache writes coalesce on one background snapshot, serialize with
+authored edits, flush at shutdown and retain the six newest variants.
+New regressions cover fingerprint-only changes, font install/replacement,
+queue bursts, canceled encodes, resolution upgrades, Library write coalescing,
+restart/quit survival and eviction. UI/worker and affected test builds passed.
+Verification: **18/18 targeted checks passed**, comprising domain/catalog,
+thumbnail codec/store/reopen, document/catalog/worker controllers, theme/reflow,
+preview ownership/selection/budget, worker Qt independence, UI load and the
+real Show/Edit/Library/service journeys. The final runs were 12/12 with `-j2`
+and 6/6 desktop journeys serially; `git diff --check` passed. The reopen fixture
+measured 789 ms / 12 worker renders cold and 2 ms / 0 worker renders / 12 hits
+warm, with a 25,313 B native-resolution manifest. These are thumbnail-demand
+intervals after startup/load, not whole-application startup or p95/audience
+soak measurements. Initial failures exposed a Fontconfig directory-cache edge,
+an old fixture relying on upscaling, and a local cancellation consuming a wire
+generation; each was corrected before the passing final runs.
+
 **Persistent service-card thumbnails (TC.1–TC.10, 2026-11-20): DONE.**
 `docs/ui/thumbnail-cache-plan.md` fixes the optional, independently versioned
 `thumbnailCache` block in `service.json` (service format stays 15), the entry
-bounds (256 records / 32 KiB PNG / 1.5 MiB encoded), the single 512x288 bucket,
+bounds (256 records / 32 KiB PNG / 1.5 MiB encoded), native-resolution PNGs up to 512x288 (the original bucket corrected by TC.11),
 the fingerprint inputs (normalized scene JSON, asset size + 8 KiB content probe,
 renderer identity), the Qt-free DTO/codec API and the overlay read/write rules.
 The bucket was chosen from measurements of all 162 repository card renders

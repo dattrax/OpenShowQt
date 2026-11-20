@@ -440,6 +440,8 @@ int main(int argc, char* argv[]) {
                       before.value(QStringLiteral("contentRevision")),
               "TC.9: remembering a picture moves no revision");
 
+        check(catalog.flushThumbnailVariants(nullptr),
+              "TC.9: the coalesced Library write is durable before simulating a restart");
         CatalogController reopenedLibrary(nullptr, root);
         check(reopenedLibrary.thumbnailVariantCount() >= recorded,
               "TC.9: the remembered looks survive a Library restart");

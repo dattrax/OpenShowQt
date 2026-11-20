@@ -30,12 +30,15 @@
 #include <QStringList>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QTimer>
 
 #include <filesystem>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
+#include <future>
 
 #include "openshow/catalog/catalog.h"
 #include "openshow/catalog/catalogstorage.h"
@@ -70,6 +73,7 @@ public:
     // tests pass a scratch directory. A missing catalog begins empty.
     explicit CatalogController(QObject* parent = nullptr,
                                std::filesystem::path baseDirectory = {});
+    ~CatalogController() override;
 
     QVariantList items() const { return fItems; }
     int songCount() const;
@@ -94,7 +98,7 @@ public:
     std::vector<openshow::domain::ThumbnailCacheEntry> thumbnailVariantsFor(
         const QString& id) const;
     // Keeps one prepared look for the item (deduplicated by fingerprint,
-    // sanitised and bounded) and writes the block cache-only.
+    // sanitised and bounded), coalescing a background cache-only write.
     bool rememberThumbnailVariant(const QString& id,
                                   const openshow::domain::ThumbnailCacheEntry& variant);
     bool flushThumbnailVariants(QString* error);
@@ -173,6 +177,8 @@ private:
     // digest that follows it.
     bool persist(const openshow::catalog::Catalog& catalog, std::string* error);
     void pruneThumbnailVariants(const openshow::catalog::Catalog& catalog);
+    void startThumbnailFlush();
+    void finishThumbnailFlush(bool wait);
     static std::vector<openshow::catalog::Stanza> stanzasFromVariant(
         const QVariantList& rows, std::string* error);
     static QVariantList stanzasToVariant(const std::vector<openshow::catalog::Stanza>& stanzas);
@@ -191,6 +197,13 @@ private:
     bool fWriteBlocked = false;
     openshow::catalog::CatalogThumbnailCache fThumbnailVariants;
     std::string fThumbnailDigest;
+    struct ThumbnailFlushResult { bool ok; std::string error; };
+    std::future<ThumbnailFlushResult> fThumbnailWrite;
+    QTimer fThumbnailFlushTimer;
+    QTimer fThumbnailWritePoll;
+    std::uint64_t fThumbnailRevision = 0;
+    std::uint64_t fPersistedThumbnailRevision = 0;
+    std::uint64_t fWritingThumbnailRevision = 0;
 };
 
 }  // namespace openshow::ui

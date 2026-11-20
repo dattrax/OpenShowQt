@@ -756,8 +756,8 @@ These limit what historical DONE statuses prove. The review linked above adds
   surface only — Base64 PNG, checksum, declared size, render fingerprint — never
   card numbering, captions or operator chrome. Identity is a canonical hash of
   the compiled scene with paths and service ids emptied, each referenced
-  asset's size and 8 KiB content probe, the renderer identity and the 512x288
-  bucket, so a moved package and a save-adopt hit while replaced bytes, words,
+  asset's size and 8 KiB content probe, the renderer build/font-environment
+  identity and the thumbnail policy, so a moved package and a save-adopt hit while replaced bytes, words,
   theme, reflow and font/renderer eras miss. `ThumbnailStore` decodes and
   encodes on two bounded background lanes, validates checksum/IHDR/size before
   a picture can be shown, keeps the record list under 256 records / 32 KiB per
@@ -770,6 +770,13 @@ These limit what historical DONE statuses prove. The review linked above adds
   failure can never fail an authored save. A prepared Library slide copies a
   matching variant under its new ids; the id-free identity is what lets a
   re-preparation reuse pixels while a different theme or lyric misses.
+  Since TC.11, records retain native render resolution (at most 512x288): a
+  larger card gets a sharper worker render instead of an enlarged proxy.
+  Memory validity includes the fingerprint; batch identity and encode serials
+  retire stale results. Each image lane has two active jobs, at most 128 pending
+  slides, and at most 8 MiB of queued encode images. Library writes coalesce
+  onto one background snapshot, serialize with authored saves and join at quit;
+  eviction keeps the six newest per-item variants.
   Evidence: `thumbnail_cache_tests`, `thumbnail_store_tests`,
   `worker_controller_tests` (persisted band), `document_controller_tests`
   (save/reopen/faults), `catalog_tests`, `song_service_tests` (look crossing

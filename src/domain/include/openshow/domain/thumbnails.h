@@ -14,7 +14,7 @@
  * authored content, and the runtime overlay (src/ui/ThumbnailStore.h) turns
  * entries into QImages.
  *
- * The frozen decisions — one 512x288 bucket, 256 records, 32 KiB per PNG,
+ * The bounds — native renders up to 512x288, 256 records, 32 KiB per PNG,
  * 1.5 MiB encoded, which scene members enter the fingerprint — are written
  * down in docs/ui/thumbnail-cache-plan.md.
  */
@@ -41,8 +41,8 @@ struct ThumbnailCacheEntry {
     std::string slideId;     // the owning slide; occurrences share this record
     std::string fingerprint; // renderFingerprint(): 64 lowercase hex
     std::string renderer;    // rendererIdentity() at render time
-    std::uint32_t width = 0; // 512 (the canonical bucket)
-    std::uint32_t height = 0;  // 288
+    std::uint32_t width = 0; // actual render width, at most 512
+    std::uint32_t height = 0;  // actual render height, at most 288
     std::uint64_t pngBytes = 0;  // decoded PNG length, before Base64
     std::string checksum;    // sha256Hex(png bytes), 64 lowercase hex
     std::string pngBase64;   // the picture itself
@@ -53,13 +53,13 @@ struct ThumbnailCache {
     std::vector<ThumbnailCacheEntry> entries;
 };
 
-// The canonical bucket: the largest frame the thumbnail envelope accepts at
-// 16:9, so one record serves Show, Edit and every card extent by downscaling.
+// The maximum 16:9 extent. Records keep their native resolution and may serve
+// smaller Show/Edit cards by downscaling; larger requests need a fresh render.
 inline constexpr std::uint32_t kThumbnailWidth = 512;
 inline constexpr std::uint32_t kThumbnailHeight = 288;
 inline constexpr std::uint32_t kMinThumbnailWidth = 2;
 inline constexpr std::uint32_t kMinThumbnailHeight = 2;
-inline constexpr const char* kThumbnailPolicy = "card-surface/1";
+inline constexpr const char* kThumbnailPolicy = "card-surface/2";
 
 // Bounds checked before anything is allocated or decoded.
 inline constexpr std::size_t kMaxThumbnailCacheEntries = 256;
@@ -90,11 +90,12 @@ bool pngDimensions(std::string_view png, std::uint32_t* width, std::uint32_t* he
 
 // --- render identity -------------------------------------------------------
 
-// "openshow-scene-card/1;app=<applicationVersion>". Fonts, fallbacks and
-// renderer behaviour change only with a build, and a build bumps the version,
-// so this is the conservative renderer identity the plan allows until the
-// worker reports a font environment of its own.
+// Build signature plus the process's Fontconfig configuration, face mappings
+// and font file stamps. Cached once per process, like the worker's font manager.
+// Failure to identify the environment disables persistence (empty identity).
 std::string rendererIdentity();
+// Recompute for an isolated Fontconfig environment; also used by regressions.
+std::string fontEnvironmentIdentity();
 
 // One referenced asset's identity: the id the scene names, the byte length and
 // a probe hash over the first 4 KiB, the last 4 KiB and the size. Content
@@ -157,8 +158,8 @@ inline constexpr std::size_t kMaxThumbnailVariantsPerItem = 6;
 inline constexpr std::uint64_t kMaxThumbnailVariantBytesPerItem = 192 * 1024;
 
 bool validThumbnailVariant(const ThumbnailCacheEntry& entry, std::string* error);
-// Drops malformed, duplicate and excess variants, keeping file order and the
-// per-item count/byte ceilings. Returns how many were removed.
+// Keep the newest valid variants under the count/byte ceilings, returning
+// them in oldest-to-newest order. Returns how many were removed.
 std::size_t sanitizeThumbnailVariants(std::vector<ThumbnailCacheEntry>* variants);
 const ThumbnailCacheEntry* findThumbnailVariant(
     const std::vector<ThumbnailCacheEntry>& variants, std::string_view fingerprint);

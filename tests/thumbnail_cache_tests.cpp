@@ -16,6 +16,9 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <cstdlib>
+#include <optional>
+#include <chrono>
 
 #include <unistd.h>
 
@@ -147,7 +150,7 @@ void exerciseFingerprint() {
           "changed words miss");
     check(renderFingerprint(sceneA, stamp, "openshow-scene-card/2;app=9.9") != base,
           "a different renderer misses");
-    check(renderFingerprint(sceneA, stamp, {}, "card-surface/2") != base,
+    check(renderFingerprint(sceneA, stamp, {}, "test-other-policy") != base,
           "a different thumbnail policy misses");
     check(renderFingerprint(sceneA, stamp, {}, {}, 256, 144) != base,
           "a different bucket misses");
@@ -329,6 +332,48 @@ void exerciseValidation() {
     check(doomed.entries.size() == fit, "only records that fit the budget are kept");
 }
 
+void exerciseFontEnvironment(const fs::path& root) {
+    fs::create_directories(root / "fonts");
+    fs::create_directories(root / "cache");
+    const char* previous = std::getenv("FONTCONFIG_FILE");
+    const std::optional<std::string> saved = previous ? std::optional<std::string>(previous) : std::nullopt;
+    const fs::path config = root / "fonts.conf";
+    auto writeConfig = [&](const std::string& family) {
+        std::ofstream file(config);
+        file << "<?xml version=\"1.0\"?><!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">"
+             << "<fontconfig><dir>" << (root / "fonts").string()
+             << "</dir><cachedir>" << (root / "cache").string()
+             << "</cachedir><alias><family>sans-serif</family><prefer><family>"
+             << family << "</family></prefer></alias></fontconfig>";
+    };
+    writeConfig("First fallback");
+    ::setenv("FONTCONFIG_FILE", config.c_str(), 1);
+    const auto first = openshow::domain::fontEnvironmentIdentity();
+    check(!first.empty() && first == openshow::domain::fontEnvironmentIdentity(),
+          "an unchanged isolated font environment has a stable identity");
+    writeConfig("Other fallback");
+    const auto second = openshow::domain::fontEnvironmentIdentity();
+    check(!second.empty() && first != second,
+          "changing fallback configuration invalidates persisted text pixels");
+    // Exercise discovery and font-file stamps using a real locally available
+    // face, without changing the operator's installed fonts.
+    std::error_code error;
+    for (const auto& entry : fs::recursive_directory_iterator("/usr/share/fonts", error)) {
+        if (!entry.is_regular_file() ||
+            (entry.path().extension() != ".ttf" && entry.path().extension() != ".otf")) continue;
+        const auto face = root / "fonts" / entry.path().filename();
+        fs::copy_file(entry.path(), face);
+        const auto added = openshow::domain::fontEnvironmentIdentity();
+        check(!added.empty() && second != added, "installing a font changes the environment identity");
+        fs::last_write_time(face, fs::last_write_time(face) + std::chrono::seconds(2));
+        check(added != openshow::domain::fontEnvironmentIdentity(),
+              "a replaced font file invalidates its persisted pictures");
+        break;
+    }
+    if (saved) ::setenv("FONTCONFIG_FILE", saved->c_str(), 1);
+    else ::unsetenv("FONTCONFIG_FILE");
+}
+
 }  // namespace
 
 int main() {
@@ -340,6 +385,7 @@ int main() {
                           ("openshow-thumbnail-tests-" + std::to_string(getpid()));
     fs::remove_all(root);
     exerciseAssetStamp(root / "assets");
+    exerciseFontEnvironment(root / "font-environment");
     fs::remove_all(root);
     exerciseValidation();
 

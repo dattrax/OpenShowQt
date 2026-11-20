@@ -465,7 +465,7 @@ void exerciseThumbnailFingerprint(const std::filesystem::path& root) {
 void exerciseThumbnailCacheLifecycle(const std::filesystem::path& root) {
     using openshow::ui::ThumbnailStore;
     const auto picture = [](QColor colour) {
-        QImage image(64, 36, QImage::Format_ARGB32_Premultiplied);
+        QImage image(320, 180, QImage::Format_ARGB32_Premultiplied);
         image.fill(colour);
         return image;
     };

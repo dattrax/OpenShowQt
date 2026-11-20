@@ -6,6 +6,10 @@
 #include <cstring>
 #include <fstream>
 #include <set>
+#include <cstdlib>
+#include <sstream>
+#include <sys/stat.h>
+#include <fontconfig/fontconfig.h>
 
 #include <boost/json.hpp>
 #include <boost/system/error_code.hpp>
@@ -358,9 +362,108 @@ bool pngDimensions(std::string_view png, std::uint32_t* width, std::uint32_t* he
     return true;
 }
 
+std::string fontEnvironmentIdentity() {
+    // Use a private config: do not mutate Qt's or the worker's Fontconfig
+    // globals. The list includes fallback faces, not just requested families.
+    FcConfig* config = FcInitLoadConfigAndFonts();
+    if (config == nullptr) return {};
+    std::vector<std::string> records;
+    std::set<std::string> stampedPaths;
+    bool valid = true;
+    auto stamp = [&](const char* path) {
+        if (!stampedPaths.insert(path).second) return;
+        struct stat info{};
+        if (::stat(path, &info) != 0) { valid = false; return; }
+        records.emplace_back(std::string(path) + "\n" + std::to_string(info.st_size) + "\n" +
+                             std::to_string(info.st_mtim.tv_sec) + ":" +
+                             std::to_string(info.st_mtim.tv_nsec) + ":" +
+                             std::to_string(info.st_ctim.tv_sec) + ":" +
+                             std::to_string(info.st_ctim.tv_nsec));
+    };
+    FcStrList* files = FcConfigGetConfigFiles(config);
+    if (files == nullptr) valid = false;
+    if (files != nullptr) {
+        while (FcChar8* file = FcStrListNext(files)) {
+            stamp(reinterpret_cast<const char*>(file));
+            std::ifstream in(reinterpret_cast<const char*>(file), std::ios::binary);
+            std::ostringstream content;
+            content << in.rdbuf();
+            if (!in || in.bad()) valid = false;
+            records.push_back(sha256Hex(content.str()));
+        }
+        FcStrListDone(files);
+    }
+    // Fontconfig may reuse a directory cache within this process. Observe the
+    // configured trees as well, so newly installed/replaced files invalidate
+    // pixels even before that cache is rebuilt.
+    FcStrList* directories = FcConfigGetFontDirs(config);
+    if (directories == nullptr) valid = false;
+    if (directories != nullptr) {
+        while (FcChar8* raw = FcStrListNext(directories)) {
+            const std::filesystem::path directory(reinterpret_cast<const char*>(raw));
+            std::error_code ec;
+            if (!std::filesystem::exists(directory, ec)) {
+                records.push_back(directory.string() + "\nmissing");
+                if (ec) valid = false;
+                continue;
+            }
+            stamp(directory.c_str());
+            std::filesystem::recursive_directory_iterator it(
+                directory, std::filesystem::directory_options::skip_permission_denied, ec), end;
+            for (; !ec && it != end; it.increment(ec)) {
+                if (it->is_regular_file(ec)) stamp(it->path().c_str());
+            }
+            if (ec) valid = false;
+        }
+        FcStrListDone(directories);
+    }
+    for (FcSetName set : {FcSetSystem, FcSetApplication}) {
+        const FcFontSet* fonts = FcConfigGetFonts(config, set);
+        if (fonts == nullptr) continue;
+        for (int i = 0; i < fonts->nfont; ++i) {
+            FcChar8* file = nullptr;
+            if (FcPatternGetString(fonts->fonts[i], FC_FILE, 0, &file) != FcResultMatch) {
+                valid = false;
+                continue;
+            }
+            stamp(reinterpret_cast<const char*>(file));
+            FcChar8* pattern = FcNameUnparse(fonts->fonts[i]);
+            if (pattern == nullptr) valid = false;
+            else {
+                records.emplace_back(reinterpret_cast<const char*>(pattern));
+                FcStrFree(pattern);
+            }
+        }
+    }
+    // SceneText also has direct-file fallbacks when a Fontconfig environment
+    // has no matching faces (for example, a custom FONTCONFIG_FILE).
+    for (const char* path : {"/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+                             "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Bold.ttf",
+                             "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+                             "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"}) {
+        std::error_code ec;
+        if (std::filesystem::exists(path, ec)) stamp(path);
+        if (ec) valid = false;
+    }
+    FcConfigDestroy(config);
+    if (!valid) return {};
+    std::sort(records.begin(), records.end());
+    std::string identity = std::to_string(FcGetVersion());
+    for (const char* name : {"FONTCONFIG_FILE", "FONTCONFIG_PATH", "FONTCONFIG_SYSROOT", "LANG", "LC_ALL"}) {
+        const char* value = std::getenv(name);
+        identity += "\n" + std::string(name) + "=" + (value == nullptr ? "" : value);
+    }
+    for (const auto& record : records) identity += "\n" + std::to_string(record.size()) + ":" + record;
+    return sha256Hex(identity);
+}
+
 std::string rendererIdentity() {
-    std::string identity = "openshow-scene-card/1;app=";
-    identity.append(applicationVersion());
+    static const std::string identity = [] {
+        const auto fonts = fontEnvironmentIdentity();
+        if (fonts.empty()) return std::string{};
+        return "card/2;" + sha256Hex(std::string(applicationVersion()) + "\n" +
+                                    OPENSHOW_THUMBNAIL_RENDERER_SIGNATURE + "\n" + fonts).substr(0, 56);
+    }();
     return identity;
 }
 
@@ -438,10 +541,12 @@ std::string renderFingerprint(std::string_view sceneJson,
     if (!normalizeSceneForFingerprint(sceneJson, &normalized, nullptr)) {
         return {};
     }
+    const std::string identity = renderer.empty() ? rendererIdentity() : std::string(renderer);
+    if (identity.empty()) return {};
     std::string canonical;
     canonical.append("openshow-thumbnail-fingerprint/1\n");
     canonical.append("renderer\n");
-    canonical.append(renderer.empty() ? rendererIdentity() : std::string(renderer));
+    canonical.append(identity);
     canonical.push_back('\n');
     canonical.append("policy\n");
     canonical.append(policy.empty() ? kThumbnailPolicy : std::string(policy));
@@ -563,7 +668,10 @@ std::size_t sanitizeThumbnailVariants(std::vector<ThumbnailCacheEntry>* variants
     kept.reserve(std::min(variants->size(), kMaxThumbnailVariantsPerItem));
     std::uint64_t encoded = 0;
     std::set<std::string> seen;
-    for (const ThumbnailCacheEntry& entry : *variants) {
+    // Input order is oldest first. Prefer the most recently remembered pixels
+    // so a full item can learn new slides and theme variants.
+    for (auto it = variants->rbegin(); it != variants->rend(); ++it) {
+        const ThumbnailCacheEntry& entry = *it;
         if (kept.size() >= kMaxThumbnailVariantsPerItem) {
             ++removed;
             continue;
@@ -583,6 +691,7 @@ std::size_t sanitizeThumbnailVariants(std::vector<ThumbnailCacheEntry>* variants
         encoded += entry.pngBase64.size();
         kept.push_back(entry);
     }
+    std::reverse(kept.begin(), kept.end());
     *variants = std::move(kept);
     return removed;
 }

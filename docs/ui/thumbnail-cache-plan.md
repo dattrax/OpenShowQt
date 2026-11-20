@@ -1,8 +1,7 @@
 # Service-card thumbnails in JSON (TC)
 
-Status: TC.1 contract frozen 2026-11-20. Implementation leaves TC.2–TC.10
-remain open; the section brief in `PLAN.md` is the authority for intent, this
-file for the frozen shapes.
+Status: TC.1–TC.10 implemented 2026-11-20; review corrections are TC.11.
+`PLAN.md` owns the task ledger; this file records the current storage/runtime contract.
 
 ## What is being kept
 
@@ -26,7 +25,7 @@ record stores exactly the pixels the worker rendered for a scene.
       "showId": "show3",
       "slideId": "slide17",
       "fingerprint": "<64 lowercase hex>",
-      "renderer": "openshow-scene-card/1;app=0.1.0",
+      "renderer": "card/2;<build-and-font-environment-digest>",
       "width": 512,
       "height": 288,
       "pngBytes": 3809,
@@ -65,24 +64,23 @@ decoded byte length. Base64 is the standard alphabet with padding and a strict
 decoder (no whitespace, no URL alphabet). The checksum is verified on the
 decode lane before PNG decoding, so a corrupt blob costs no allocation.
 
-## Size policy (frozen)
+## Size policy (corrected after review)
 
-One canonical 16:9 bucket: **512x288** — the largest frame the current
-thumbnail envelope accepts at 16:9. A finished render is recorded by scaling it
-to this bucket (down or up; a proxy picture is what this cache is for). A
-persisted hit is decoded at 512x288 and smooth-scaled to the extent the list
-asked for. Consequences:
+**512x288 is the maximum, not a synthetic canonical image.** Store the actual
+worker-rendered dimensions, and downscale only when a consumer asks for a
+smaller card. A larger request misses and obtains a fresh render at that size;
+a smaller render cannot overwrite a sharper record for the same fingerprint.
+The display extent remains outside the fingerprint, allowing reuse between
+Show/Edit and smaller sizes without upscaling low-resolution text. Policy
+`card-surface/2` retires old upscaled records once.
 
-- Window/zoom changes and moving between Show and Edit reuse the same record;
-  the display extent is no longer part of the fingerprint.
-- Resident images stay exactly as they are today: the *scaled* display-size
-  image enters the existing 128-entry / 8 MiB LRU, so the 8 MiB budget is not
-  raised and a 30-row window at a small cell keeps all its pictures. (At
-  512x288 each resident image is 576 KiB; the old exact-size behaviour hit the
-  same ceiling, which is why the persisted picture is not kept at that size in
-  the LRU.)
-- Re-encoding is capped at the 32 KiB per-entry bound; a picture that exceeds
-  it is simply not persisted (a miss on the next run, never a failure).
+The resident LRU remains 128 entries / 8 MiB. Decode/encode each have at most
+two active jobs and 128 outstanding slide requests; queued encode images are
+also capped at 8 MiB. Pending requests coalesce per slide, and only jobs with
+an available lane permit enter the thread pool. Retirement removes queued
+images immediately, and completions must match both document epoch and request
+serial before they can publish. Base64 and PNG work run on the background lane.
+A PNG over 32 KiB is not persisted.
 
 ### Measurements that chose it
 
@@ -95,12 +93,12 @@ Real worker card renders (the repository's 162 `scene-render-*.png` outputs,
 | 320x180 | 2 128 B | 10 571 B | 2 838 B | 0.01 ms | 0.11 ms |
 | 512x288 | 3 809 B | 19 531 B | 5 080 B | 0.02 ms | 0.25 ms |
 
-JSON costs 282 bytes per entry beyond its Base64 string; a full 200-card cache
-at 512x288 is ~1.0 MiB of manifest. Because 512x288 costs only ~1.3 ms/100
-cards of decode and buys one shared bucket for every consumer, exact-dimension
-records and a second smaller bucket were both rejected. Base64 inflates the
-PNG by 33.4%; the plan's "no speedup is claimed" still holds — TC.10 measures
-the end-to-end effect.
+These historical measurements describe encoding at each candidate size, not
+proof that enlarging a small render produces a sharp large card. Base64 adds
+about 33% to PNG size; 0.27 ms/card is about 27 ms for 100 serial decodes.
+The corrected policy retains native render resolution within the same bounds.
+End-to-end measurements below cover the fixture's thumbnail-demand interval,
+which begins after worker startup and document loading.
 
 ## Fingerprint
 
@@ -109,7 +107,7 @@ the end-to-end effect.
 ```text
 openshow-thumbnail-fingerprint/1\n
 renderer\n  <renderer identity>\n
-policy\n    card-surface/1\n
+policy\n    card-surface/2\n
 extent\n    512x288\n
 scene\n     <normalized scene JSON>\n
 assets\n    <assetId>\x1f<byte size>\x1f<content probe>\n ... sorted
@@ -127,11 +125,14 @@ assets\n    <assetId>\x1f<byte size>\x1f<content probe>\n ... sorted
   byte-identical, its mtime is irrelevant) and detects in-place replacement
   with the same caveat as `AssetReuse`: a change that preserves size and both
   probed ends is invisible.
-- **Renderer identity**: `openshow-scene-card/1;app=<applicationVersion>`.
-  Fonts, fallbacks and renderer behaviour change only with a build, and a build
-  bumps the version. Until the worker reports a font-environment identity this
-  is the conservative substitution the plan allows; a scene needs no new
-  worker metadata.
+- **Renderer identity**: `card/2;` plus a build/font-environment digest. The
+  build signature hashes worker render sources and headers, independently of
+  release version. Font identity includes Fontconfig version, loaded config
+  content, face mappings, font file size/mtime/ctime, configured directory trees, direct-file fallbacks
+  and locale/config environment. It is captured once per process, matching the
+  renderer's process-lifetime font manager. Failure to identify it bypasses
+  persistence. A font install, replacement, fallback/config change or different
+  machine therefore invalidates old text pictures on the next application run.
 - Video, camera and time-driven content is **not persisted** (`bypass` in the
   policy): a still of live content is a lie, and it would never hit.
 
@@ -187,14 +188,15 @@ class ThumbnailStore : public QObject {
     void adopt(domain::ThumbnailCache cache, std::string authoredDigest, bool writable);
     // Demand lane: deduped by (slideId, fingerprint); bounded 2 threads; latest
     // wins per slide; a request for a picture already queued is a no-op.
-    void request(const QString& showId, const QString& slideId,
-                 const QString& fingerprint, qint64 displayWidth, qint64 displayHeight);
-    // A finished worker render, still at the extent the worker sent it.
+    void request(const QString& slideId, const QString& fingerprint,
+                 qint64 displayWidth, qint64 displayHeight);
+    // A finished worker render, retained at the extent the worker sent it.
     void record(const QString& showId, const QString& slideId,
                 const QString& fingerprint, const QImage& rendered);
     // Coalesced cache-only flush request (2 s idle, >= 5 s apart); the store
     // calls the host's save hook only when its snapshot is still durable.
-    std::function<bool(const domain::ThumbnailCache&, QString* error)> flush;
+    using FlushHook = std::function<bool(const domain::ThumbnailCache&, QString* error)>;
+    void setFlushHook(FlushHook hook);
 signals:
     void pictureReady(QString slideId, QString fingerprint, QImage image);
     void pictureMissed(QString slideId, QString fingerprint);
@@ -202,9 +204,11 @@ signals:
 };
 ```
 
-`PreviewConsumer` consults the store through two injected callbacks
-(`lookup(slideId, fingerprint, w, h)` and `record(...)`), never through a QObject
-it does not own; with no store attached its behaviour is exactly today's.
+`PreviewConsumer::setThumbnailPictures()` connects the shared store's keyed
+ready/miss signals. With no store attached it uses the existing worker path.
+Resident images and accepted worker batches carry their captured fingerprints;
+changed windows retire old batch IDs before any delayed frame can be recorded
+under the new row's identity.
 
 ## Read, write and lifecycle rules
 
@@ -224,11 +228,16 @@ it does not own; with no store attached its behaviour is exactly today's.
    serialized against save/load/recovery epochs through `DocumentPersistence`.
    An external manifest change makes it skip, never overwrite.
 5. Unsaved, new or read-only packages keep entries in memory only.
-6. Cache write failure leaves the previous manifest valid and never fails an
+6. Library variants coalesce for 2 seconds and write through one background
+   snapshot. Authored edits join that writer before their durable save; quit
+   joins it and flushes remaining pictures. Cache arrivals perform no sync IO,
+   and an unchanged explicit flush does not rewrite the catalog. Per-item
+   eviction retains the six newest variants (oldest first on disk).
+7. Cache write failure leaves the previous manifest valid and never fails an
    otherwise good save (retry the save without the block).
-7. Pruned: deleted shows/slides, stale fingerprints, excess count/bytes (oldest
+8. Pruned: deleted shows/slides, stale fingerprints, excess count/bytes (oldest
    last-used first). The manifest is never rewritten per frame.
-8. `catalog.json` gains bounded per-item variants under the same entry contract
+9. `catalog.json` gains bounded per-item variants under the same entry contract
    (TC.9, format 3). A variant names the exact prepared-layout fingerprint;
    cached pixels never establish slide boundaries or bypass preparation.
 
@@ -260,3 +269,10 @@ it does not own; with no store attached its behaviour is exactly today's.
   parse 51 031 B plain vs 790 220 B with a full block, ~1 ms both. The
   256-record / 32 KiB / 1.5 MiB bounds and the resident LRU are unchanged.
   TC closes with no speedup claim beyond these measurements.
+
+- 2026-11-20 TC.11: review corrections validated by 18/18 targeted checks,
+  including real Show/Edit/Library journeys and fresh-process reopen. The
+  final 12-card fixture measured 789 ms / 12 renders cold versus 2 ms / zero
+  renders / 12 persisted hits warm, with a 25,313 B manifest. Its timer begins
+  after startup/load; these measurements do not establish p95 UI latency or
+  audience deadline behavior under a prolonged soak.

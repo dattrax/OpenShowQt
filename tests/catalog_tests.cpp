@@ -716,6 +716,9 @@ void testRenderVariants() {
               "TC.9: the per-item count and duplicate rule refuse the excess");
         check(many.size() == openshow::domain::kMaxThumbnailVariantsPerItem,
               "TC.9: exactly the bound survives");
+        check(many.back().fingerprint == openshow::domain::sha256Hex("capped-0") &&
+                  many.front().fingerprint == openshow::domain::sha256Hex("capped-5"),
+              "the newest six variants survive, including a refreshed older fingerprint");
         std::vector<openshow::domain::ThumbnailCacheEntry> heavy;
         openshow::domain::ThumbnailCacheEntry big = variant("heavy", 'i');
         for (int i = 0; i < 8; ++i) {

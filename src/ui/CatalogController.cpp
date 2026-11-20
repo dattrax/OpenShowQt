@@ -101,16 +101,38 @@ CatalogController::CatalogController(QObject* parent, std::filesystem::path base
     // TC.9: the derived block's digest is taken from the file's own authored
     // shape; a cache-only write compares it so an external edit wins.
     fThumbnailDigest = openshow::catalog::catalogAuthoredDigest(fCatalog);
+    fThumbnailFlushTimer.setSingleShot(true);
+    connect(&fThumbnailFlushTimer, &QTimer::timeout, this, &CatalogController::startThumbnailFlush);
+    fThumbnailWritePoll.setInterval(25);
+    connect(&fThumbnailWritePoll, &QTimer::timeout, this,
+            [this] { finishThumbnailFlush(false); });
     rebuildRows();
+}
+
+CatalogController::~CatalogController() {
+    fThumbnailFlushTimer.stop();
+    fThumbnailWritePoll.stop();
+    finishThumbnailFlush(true);
+    // One final, bounded flush at shutdown; no callback or write outlives its
+    // owner. Ordinary picture arrivals never wait for disk IO.
+    if (fThumbnailRevision != fPersistedThumbnailRevision) {
+        flushThumbnailVariants(nullptr);
+    }
 }
 
 bool CatalogController::persist(const openshow::catalog::Catalog& catalog,
                                 std::string* error) {
+    // Authored edits already have a synchronous durability boundary. Join the
+    // one background cache writer before it, so an old cache can never replace
+    // a newly authored manifest.
+    finishThumbnailFlush(true);
+    fThumbnailFlushTimer.stop();
     pruneThumbnailVariants(catalog);
     if (!openshow::catalog::saveCatalog(catalog, fDirectory, error, &fThumbnailVariants)) {
         return false;
     }
     fThumbnailDigest = openshow::catalog::catalogAuthoredDigest(catalog);
+    fPersistedThumbnailRevision = fThumbnailRevision;
     return true;
 }
 
@@ -162,11 +184,43 @@ bool CatalogController::rememberThumbnailVariant(
     if (list.empty()) {
         fThumbnailVariants.variants.erase(id.toStdString());
     }
-    QString error;
-    return flushThumbnailVariants(&error);
+    ++fThumbnailRevision;
+    if (!fThumbnailFlushTimer.isActive() && !fThumbnailWrite.valid()) {
+        fThumbnailFlushTimer.start(2000);
+    }
+    return true;
+}
+
+void CatalogController::startThumbnailFlush() {
+    if (fWriteBlocked || fThumbnailWrite.valid() ||
+        fThumbnailRevision == fPersistedThumbnailRevision) return;
+    fWritingThumbnailRevision = fThumbnailRevision;
+    // The worker owns immutable value copies only; it never reads QObject
+    // state, and there is at most one in-flight snapshot and one latest state.
+    fThumbnailWrite = std::async(std::launch::async,
+        [directory = fDirectory, variants = fThumbnailVariants, digest = fThumbnailDigest] {
+            ThumbnailFlushResult result{};
+            result.ok = openshow::catalog::mergeCatalogThumbnails(directory, variants, digest,
+                                                                  &result.error);
+            return result;
+        });
+    fThumbnailWritePoll.start();
+}
+
+void CatalogController::finishThumbnailFlush(bool wait) {
+    if (!fThumbnailWrite.valid()) return;
+    if (!wait && fThumbnailWrite.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    const auto result = fThumbnailWrite.get();
+    fThumbnailWritePoll.stop();
+    if (result.ok) fPersistedThumbnailRevision = fWritingThumbnailRevision;
+    if (fThumbnailRevision != fPersistedThumbnailRevision) {
+        fThumbnailFlushTimer.start(result.ok ? 2000 : 5000);
+    }
 }
 
 bool CatalogController::flushThumbnailVariants(QString* error) {
+    finishThumbnailFlush(true);
+    fThumbnailFlushTimer.stop();
     if (fWriteBlocked) {
         if (error != nullptr) {
             *error = QStringLiteral("the Library could not be read");
@@ -181,6 +235,7 @@ bool CatalogController::flushThumbnailVariants(QString* error) {
         }
         return false;
     }
+    fPersistedThumbnailRevision = fThumbnailRevision;
     return true;
 }
 

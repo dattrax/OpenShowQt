@@ -719,8 +719,9 @@ bool mergeCatalogThumbnails(const std::filesystem::path& directory,
         return false;
     }
     boost::json::object root = parsed.as_object();
-    root.erase("thumbnailVariants");
-    if (openshow::domain::canonicalJsonDigest(boost::json::value(root)) !=
+    auto authored = root;
+    authored.erase("thumbnailVariants");
+    if (openshow::domain::canonicalJsonDigest(boost::json::value(authored)) !=
         expectedAuthoredDigest) {
         fail(error, "catalog.json changed after it was loaded; the thumbnail variants"
                     " were not written");

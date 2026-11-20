@@ -5,6 +5,8 @@
  */
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QThread>
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
@@ -354,6 +356,64 @@ void testWriteFailureChangesNothing() {
     std::filesystem::remove_all(dir, ignored);
 }
 
+void testCoalescedThumbnailVariants() {
+    const auto dir = scratchDirectory();
+    QString id;
+    auto variant = [](int index) {
+        openshow::domain::ThumbnailCacheEntry entry;
+        entry.fingerprint = openshow::domain::sha256Hex("look-" + std::to_string(index));
+        entry.renderer = openshow::domain::rendererIdentity();
+        entry.width = 160; entry.height = 90;
+        const std::string bytes(24, static_cast<char>('a' + index));
+        entry.pngBytes = bytes.size();
+        entry.checksum = openshow::domain::pngChecksum(bytes);
+        entry.pngBase64 = openshow::domain::base64Encode(bytes);
+        return entry;
+    };
+    const auto manifest = dir / "catalog" / "catalog.json";
+    auto read = [&] {
+        std::ifstream file(manifest, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    {
+        CatalogController library(nullptr, dir);
+        id = library.addSong("Cache writes", stanzas({"words"}), {}, {}, {});
+        const auto before = library.itemOf(id);
+        const auto plain = read();
+        for (int i = 0; i < 8; ++i) {
+            check(library.rememberThumbnailVariant(id, variant(i)), "a new Library variant is accepted");
+        }
+        check(read() == plain, "a burst of pictures performs no synchronous catalog writes");
+        check(library.itemOf(id) == before, "cache arrivals change no authored fields or revisions");
+        QElapsedTimer timer; timer.start();
+        while (read() == plain && timer.elapsed() < 6000) {
+            QCoreApplication::processEvents(); QThread::msleep(1);
+        }
+        check(read() != plain, "the coalesced background write eventually becomes durable");
+        CatalogController reopened(nullptr, dir);
+        const auto variants = reopened.thumbnailVariantsFor(id);
+        check(variants.size() == 6 && variants.front().fingerprint == variant(2).fingerprint &&
+                  variants.back().fingerprint == variant(7).fingerprint,
+              "the six newest prepared pictures survive a Library restart");
+        library.rememberThumbnailVariant(id, variant(8));
+        check(library.renameItem(id, "Authored edit"), "an authored edit serializes with the cache writer");
+        library.rememberThumbnailVariant(id, variant(9));
+    } // destruction joins the worker and flushes the final pending snapshot
+    {
+        CatalogController reopened(nullptr, dir);
+        check(reopened.itemOf(id).value("title").toString() == "Authored edit",
+              "a cache write cannot overwrite an authored edit");
+        const auto variants = reopened.thumbnailVariantsFor(id);
+        check(variants.size() == 6 && variants.back().fingerprint == variant(9).fingerprint,
+              "shutdown persists the last coalesced picture");
+        const auto written = std::filesystem::last_write_time(manifest);
+        check(reopened.flushThumbnailVariants(nullptr) &&
+                  std::filesystem::last_write_time(manifest) == written,
+              "an unchanged cache flush does not rewrite or sync the catalog");
+    }
+    std::filesystem::remove_all(dir);
+}
+
 void testUnreadableCatalogIsNotOverwritten() {
     const std::filesystem::path dir = scratchDirectory();
     std::filesystem::create_directories(dir / "catalog");
@@ -391,6 +451,7 @@ int main(int argc, char** argv) {
     testMovesUndoAndDuplicates();
     testRememberedLookAdapter();
     testWriteFailureChangesNothing();
+    testCoalescedThumbnailVariants();
     testUnreadableCatalogIsNotOverwritten();
     if (gFailed) {
         std::fprintf(stderr, "catalog_controller_tests: FAILED\n");

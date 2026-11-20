@@ -273,6 +273,8 @@ private:
     // the next time that slide is listed with different words its old picture
     // is recognised as stale and dropped instead of shown.
     QHash<QString, QString> fThumbnailAskedScenes;
+    QHash<QString, QString> fThumbnailAskedFingerprints;
+    QHash<QString, QString> fThumbnailAskedShows;
     // The pictures, LRU by arrival and bounded TWICE: by count and by decoded
     // bytes. A slide list is as long as a document, and "keep every picture we
     // were ever sent" is precisely the growth this task must not have.

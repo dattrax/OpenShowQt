@@ -331,6 +331,7 @@ void PreviewConsumer::storeThumbnail(const QString& key, QImage image) {
     ThumbnailPicture picture;
     picture.image = std::move(image);
     picture.sourceJson = fThumbnailAskedScenes.value(key);
+    picture.fingerprint = fThumbnailAskedFingerprints.value(key);
     fThumbnailBytes += picture.image.sizeInBytes();
     fThumbnailCache.insert(key, std::move(picture));
     fThumbnailOrder.push_back(key);
@@ -491,6 +492,14 @@ void PreviewConsumer::clearThumbnailPictures() {
 void PreviewConsumer::requestThumbnails(const QVariantList& slides, qint64 width,
                                         qint64 height) {
     stopThumbnailWindow();
+    fThumbnailRowFingerprints.clear();
+    fThumbnailRowShows.clear();
+    for (const auto& value : slides) {
+        const auto row = value.toMap();
+        const auto key = row.value(QStringLiteral("key")).toString();
+        fThumbnailRowFingerprints.insert(key, row.value(QStringLiteral("fingerprint")).toString());
+        fThumbnailRowShows.insert(key, row.value(QStringLiteral("showId")).toString());
+    }
     requestThumbnailBatch(slides, width, height);
 }
 
@@ -498,6 +507,7 @@ bool PreviewConsumer::thumbnailCurrent(const QString& key, const QString& scene,
                                        qint64 w, qint64 h) const {
     const auto entry = fThumbnailCache.constFind(key);
     return entry != fThumbnailCache.constEnd() && entry->sourceJson == scene &&
+           entry->fingerprint == fThumbnailRowFingerprints.value(key) &&
            entry->image.width() == w && entry->image.height() == h;
 }
 
@@ -533,6 +543,13 @@ void PreviewConsumer::requestThumbnailWindow(const QVariantList& slides, qint64 
         fThumbnailWindowWidth = width;
         fThumbnailWindowHeight = height;
         fThumbnailWindowActive = true;
+        // An accepted batch belongs to the old window. Retire its frame ids
+        // now, even if this window is all persisted hits and sends no new RPC.
+        fThumbnailKeys.clear();
+        fThumbnailIds.clear();
+        fThumbnailAwaitAck = false;
+        fThumbnailAskedPayload.clear();
+        fThumbnailWantedPayload.clear();
         // TC.6: a new window retires the previous identity bookkeeping. A
         // decode still in flight for the old window can no longer paint,
         // because this row's fingerprint is no longer the one it asked with.
@@ -614,6 +631,8 @@ void PreviewConsumer::requestThumbnailBatch(const QVariantList& slides, qint64 w
     // ends with pictures rather than text lines forever.
     boost::json::array scenes;
     QHash<QString, QString> askedScenes;
+    QHash<QString, QString> askedFingerprints;
+    QHash<QString, QString> askedShows;
     for (const QVariant& entry : slides) {
         const QVariantMap slide = entry.toMap();
         const QString key = slide.value(QStringLiteral("key")).toString();
@@ -651,6 +670,8 @@ void PreviewConsumer::requestThumbnailBatch(const QVariantList& slides, qint64 w
         item.emplace("scene", parsed);
         scenes.push_back(std::move(item));
         askedScenes.insert(key, sceneJson);
+        askedFingerprints.insert(key, slide.value(QStringLiteral("fingerprint")).toString());
+        askedShows.insert(key, slide.value(QStringLiteral("showId")).toString());
     }
     if (scenes.size() > proto::kMaxThumbnailBatch) {
         // The cap is the bound on what one ask can cost the worker, so it is
@@ -672,10 +693,12 @@ void PreviewConsumer::requestThumbnailBatch(const QVariantList& slides, qint64 w
     }
     if (payload == fThumbnailAskedPayload && width == fThumbnailAskedWidth &&
         height == fThumbnailAskedHeight && fThumbnailAcked == fThumbnailRequest &&
-        !fThumbnailAwaitAck) {
+        askedFingerprints == fThumbnailAskedFingerprints && !fThumbnailAwaitAck) {
         return;  // the newest ask already carries exactly this band
     }
     fThumbnailAskedScenes = askedScenes;
+    fThumbnailAskedFingerprints = askedFingerprints;
+    fThumbnailAskedShows = askedShows;
     sendThumbnailBatch(payload, width, height);
 }
 
@@ -747,7 +770,7 @@ void PreviewConsumer::handleThumbnailsAck(const ScenePrepareAsk& intent,
     // only while it is still the newest ask this client made — an ack for
     // a band the operator has since scrolled past would otherwise map a
     // frame of nothing onto a row that is on screen.
-    if (intent.thumbnailRequest != fThumbnailRequest) {
+    if (intent.thumbnailRequest != fThumbnailRequest || !fThumbnailAwaitAck) {
         return;  // superseded: the ids it names are already nobody's
     }
     fThumbnailAwaitAck = false;
@@ -998,7 +1021,20 @@ void PreviewConsumer::handleReady(const boost::json::object& params) {
                         // checks above and here if a batch was accepted
                         // mid-copy, on this same thread — which it cannot be.
                         // Belt: a frame with nowhere to go is dropped.
-                        if (!key.isEmpty()) {
+                        const bool current = !key.isEmpty() &&
+                            (!fThumbnailWindowActive ||
+                             (fThumbnailRowFingerprints.contains(key)
+                                  ? fThumbnailRowFingerprints.value(key) == fThumbnailAskedFingerprints.value(key)
+                                  : fThumbnailAskedFingerprints.value(key).isEmpty()));
+                        bool sameScene = !fThumbnailWindowActive;
+                        for (const auto& value : fThumbnailWindow) {
+                            const auto row = value.toMap();
+                            if (row.value(QStringLiteral("key")).toString() == key) {
+                                sameScene = row.value(QStringLiteral("scene")).toString() == fThumbnailAskedScenes.value(key);
+                                break;
+                            }
+                        }
+                        if (current && sameScene) {
                             QImage picture = std::move(image);
                             storeThumbnail(key, picture);
                             // TC.6: keep the pixels for the overlay once the
@@ -1036,8 +1072,8 @@ void PreviewConsumer::handleReady(const boost::json::object& params) {
     // no owner and is simply dropped, like any other stale picture.
     if (!pendingRecordKey.isEmpty() && fPictures != nullptr &&
         fThumbnailCache.contains(pendingRecordKey)) {
-        const QString fingerprint = fThumbnailRowFingerprints.value(pendingRecordKey);
-        const QString showId = fThumbnailRowShows.value(pendingRecordKey);
+        const QString fingerprint = fThumbnailAskedFingerprints.value(pendingRecordKey);
+        const QString showId = fThumbnailAskedShows.value(pendingRecordKey);
         if (!fingerprint.isEmpty()) {
             fPictures->record(showId, pendingRecordKey, fingerprint, pendingRecord);
         }
