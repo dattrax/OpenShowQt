@@ -44,6 +44,7 @@
 namespace openshow::ui {
 
 class PreviewConsumer;
+class ThumbnailStore;
 
 class WorkerController : public QObject {
     Q_OBJECT
@@ -278,6 +279,9 @@ public:
     // them in its bounded 128-picture/8-MiB cache. A changed window replaces
     // the old queue; clearThumbnails and a legacy batch stand it down.
     Q_INVOKABLE void requestThumbnailWindow(const QVariantList& slides, qint64 width, qint64 height);
+    // TC.6: the persisted-picture overlay the list's rows are looked up in
+    // before the worker is asked. Non-owning; the host constructs one store.
+    void setThumbnailPictures(ThumbnailStore* store);
     Q_INVOKABLE void clearThumbnails();
 
     // Text measurement (task BI.4): ask the worker's OWN layout engine how

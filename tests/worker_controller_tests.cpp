@@ -142,12 +142,14 @@
 #include <QString>
 #include <QVariant>
 
+#include "openshow/domain/thumbnails.h"
 #include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
 #include "openshow/scene/scene.h"
 
 #include "openshow/domain/documents.h"  // TransitionOptions (task TR.1)
 
+#include "ThumbnailStore.h"
 #include "WorkerController.h"
 
 namespace {
@@ -5413,6 +5415,145 @@ void scenarioPreviewCadence() {
     controller.shutdownNow();
 }
 
+
+// --- TC.6: persisted pictures answer before the worker ----------------------
+//
+// The rows of the slide list now carry the slide's render fingerprint. A row
+// whose picture is already in the service's cache must be painted WITHOUT a
+// preview.thumbnails command; a mixed window must ask for exactly the rows the
+// cache could not answer; and a render the worker does send must be recorded
+// again, under the identity that produced it, so the next run starts warmer.
+void scenarioPersistedThumbnails() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "preview", 1);
+    const std::string report = tempPath("persisted");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    using openshow::domain::ThumbnailCache;
+    using openshow::domain::sha256Hex;
+    using openshow::ui::ThumbnailStore;
+
+    ThumbnailStore pictures;
+    pictures.adopt(ThumbnailCache{}, QString::fromStdString(sha256Hex("manifest")), false);
+    const auto card = [](unsigned colour) {
+        QImage image(64, 36, QImage::Format_ARGB32_Premultiplied);
+        image.fill(QColor::fromRgb(colour));
+        return image;
+    };
+    const QString fingerprintOne = QString::fromStdString(sha256Hex("row-one"));
+    const QString fingerprintTwo = QString::fromStdString(sha256Hex("row-two"));
+    const QString fingerprintThree = QString::fromStdString(sha256Hex("row-three"));
+    pictures.record(QStringLiteral("show1"), QStringLiteral("row-one"), fingerprintOne,
+                    card(0xff8800u));
+    pictures.record(QStringLiteral("show1"), QStringLiteral("row-two"), fingerprintTwo,
+                    card(0x0088ffu));
+    if (!check(pictures.waitForIdle(), "persisted: the fixture's pictures encode")) {
+        return;
+    }
+
+    const auto row = [](const QString& key, const QString& scene, const QString& fingerprint) {
+        return QVariantMap{{QStringLiteral("key"), key},
+                           {QStringLiteral("scene"), scene},
+                           {QStringLiteral("fingerprint"), fingerprint},
+                           {QStringLiteral("showId"), QStringLiteral("show1")}};
+    };
+
+    WorkerController controller;
+    controller.setThumbnailPictures(&pictures);
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "persisted: handshake with the scripted producer")) {
+        controller.shutdownNow();
+        return;
+    }
+    if (!check(waitUntil([&controller] { return controller.previewActive(); }),
+               "persisted: the stream is mapped")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(waitUntil([&controller] { return controller.previewFrames() >= 1; }),
+          "persisted: the audience's mirror arrives");
+
+    const QString sceneOne = QString::fromStdString(sceneForSelection("R", "one", 0x101030u));
+    const QString sceneTwo = QString::fromStdString(sceneForSelection("R", "two", 0x201010u));
+    const QString sceneThree = QString::fromStdString(sceneForSelection("R", "three", 0x302010u));
+
+    // --- all hits: no worker command at all ------------------------------
+    {
+        const std::int64_t opsBefore = jsonSize(readReportNow(report), "thumbnailOps");
+        QVariantList band;
+        band.push_back(row(QStringLiteral("row-one"), sceneOne, fingerprintOne));
+        band.push_back(row(QStringLiteral("row-two"), sceneTwo, fingerprintTwo));
+        controller.requestThumbnailWindow(band, 64, 36);
+        check(waitUntil([&controller] {
+                  return !controller.thumbnail(QStringLiteral("row-one")).isNull() &&
+                         !controller.thumbnail(QStringLiteral("row-two")).isNull();
+              }),
+              "persisted: both rows paint from the service's pictures");
+        check(pictures.hits() == 2, "persisted: both rows were answered by the overlay");
+        check(controller.thumbnailFrames() == 0,
+              "persisted: no worker picture was copied for a persisted hit");
+        check(jsonSize(readReportNow(report), "thumbnailOps") == opsBefore,
+              "persisted: an all-hit window sends no preview.thumbnails command");
+    }
+
+    // --- mixed: only the miss reaches the worker -------------------------
+    {
+        const std::int64_t opsBefore = jsonSize(readReportNow(report), "thumbnailOps");
+        QVariantList band;
+        band.push_back(row(QStringLiteral("row-one"), sceneOne, fingerprintOne));
+        band.push_back(row(QStringLiteral("row-three"), sceneThree, fingerprintThree));
+        controller.requestThumbnailWindow(band, 64, 36);
+        check(waitUntil([&controller] {
+                  return !controller.thumbnail(QStringLiteral("row-three")).isNull();
+              }),
+              "persisted: the uncached row is drawn by the worker");
+        check(!controller.thumbnail(QStringLiteral("row-one")).isNull(),
+              "persisted: the cached row is drawn without the worker");
+        const boost::json::object body = readReportNow(report);
+        const auto ops = body.find("thumbnailOps");
+        bool oneAsked = false;
+        if (ops != body.end() && ops->value().is_array() && !ops->value().as_array().empty() &&
+            jsonSize(body, "thumbnailOps") == opsBefore + 1) {
+            const boost::json::value& last = ops->value().as_array().back();
+            const auto asked = last.as_object().find("asked");
+            const auto keys = last.as_object().find("keys");
+            oneAsked = asked != last.as_object().end() &&
+                       asked->value().to_number<std::int64_t>() == 1 &&
+                       keys != last.as_object().end() && keys->value().is_array() &&
+                       keys->value().as_array().size() == 1 &&
+                       std::string(keys->value().as_array().front().as_string()) == "row-three";
+        }
+        check(oneAsked,
+              "persisted: a mixed window asks for exactly the row the cache missed");
+        check(controller.thumbnailFrames() == 1,
+              "persisted: only the missed row cost a worker picture");
+        check(pictures.waitForIdle(), "persisted: the worker's picture encodes");
+        check(pictures.has(QStringLiteral("row-three"), fingerprintThree),
+              "persisted: the worker's own render is recorded for the next run");
+    }
+
+    // --- an edit invalidates the picture ---------------------------------
+    {
+        const std::int64_t opsBefore = jsonSize(readReportNow(report), "thumbnailOps");
+        QVariantList band;
+        band.push_back(row(QStringLiteral("row-one"),
+                           QString::fromStdString(sceneForSelection("R", "one, edited", 0x999999u)),
+                           QString::fromStdString(sha256Hex("row-one-edited"))));
+        controller.requestThumbnailWindow(band, 64, 36);
+        check(waitUntil([&report, opsBefore] {
+                  return jsonSize(readReportNow(report), "thumbnailOps") > opsBefore;
+              }),
+              "persisted: a changed fingerprint misses and reaches the worker");
+        check(pictures.misses() > 0, "persisted: the overlay counts the miss");
+    }
+
+    pictures.setEnabled(false);  // retire the store's timer before the fixture ends
+    controller.shutdownNow();
+}
+
 void scenarioGradientClear() {
     ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
     const std::string report = tempPath("gradient");
@@ -5659,6 +5800,7 @@ int main(int argc, char* argv[]) {
     scenarioSelectionPreview();
     scenarioPreviewCadence();
     scenarioThumbnailPreview();
+    scenarioPersistedThumbnails();
     scenarioGradientClear();
     scenarioForegroundFaults();
 

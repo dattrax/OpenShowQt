@@ -37,7 +37,11 @@ a clean writable service gets one coalesced cache-only flush under the
 authored-digest gate, a cache-carrying save that fails retries without the
 block, and an external manifest change makes the flush skip. A cache arrival
 provably changes no dirty state, history or generation
-(document_controller_tests). TC.6–TC.10 remain TODO; no runtime cold/warm
+(document_controller_tests). TC.6 is DONE: PreviewConsumer asks the store before
+the worker, holds decode-pending rows out of batches, sends no
+`preview.thumbnails` for an all-hit window, asks only for misses in a mixed
+one, and records worker renders after the slot is released
+(worker_controller_tests). TC.7–TC.10 remain TODO; no runtime cold/warm
 evidence is claimed yet.
 
 **Edit follow-up (EW.11, 2026-11-19): corrected.** Upward/no-op drops used

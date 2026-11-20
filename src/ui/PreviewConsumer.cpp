@@ -16,6 +16,8 @@
 
 #include "openshow/protocol/preview_wire.h"
 
+#include "ThumbnailStore.h"
+
 namespace openshow::ui {
 
 namespace proto = openshow::protocol;
@@ -347,6 +349,118 @@ void PreviewConsumer::storeThumbnail(const QString& key, QImage image) {
     emit thumbnailReady(key);
 }
 
+void PreviewConsumer::storePersistedThumbnail(const QString& key, const QImage& image,
+                                              const QString& sceneJson,
+                                              const QString& fingerprint) {
+    dropThumbnailPicture(key);
+    ThumbnailPicture picture;
+    picture.image = image;
+    picture.sourceJson = sceneJson;
+    picture.fingerprint = fingerprint;
+    fThumbnailBytes += picture.image.sizeInBytes();
+    fThumbnailCache.insert(key, std::move(picture));
+    fThumbnailOrder.push_back(key);
+    // Same ceiling as a worker-rendered picture: a persisted hit is still a
+    // resident image, and a list cannot hold more of them than the budget.
+    while (fThumbnailOrder.size() > static_cast<int>(kThumbnailCacheEntries) ||
+           fThumbnailBytes > kThumbnailCacheBytes) {
+        if (fThumbnailOrder.isEmpty()) {
+            break;
+        }
+        dropThumbnailPicture(fThumbnailOrder.front());
+    }
+    ++fPersistedHits;
+    emit thumbnailReady(key);
+}
+
+void PreviewConsumer::setThumbnailPictures(ThumbnailStore* store) {
+    if (fPictures == store) {
+        return;
+    }
+    if (fPictures != nullptr) {
+        disconnect(fPictures, nullptr, this, nullptr);
+    }
+    fPictures = store;
+    if (store != nullptr) {
+        connect(store, &ThumbnailStore::pictureReady, this, &PreviewConsumer::onPersistedPicture);
+        connect(store, &ThumbnailStore::pictureMissed, this, &PreviewConsumer::onPersistedMiss);
+    }
+    fPersistedPending.clear();
+    fPersistedTried.clear();
+}
+
+void PreviewConsumer::requestPersistedPictures() {
+    if (fPictures == nullptr || !fThumbnailWindowActive) {
+        return;
+    }
+    for (const auto& value : fThumbnailWindow) {
+        const auto row = value.toMap();
+        const auto key = row.value(QStringLiteral("key")).toString();
+        const auto scene = row.value(QStringLiteral("scene")).toString();
+        const auto fingerprint = row.value(QStringLiteral("fingerprint")).toString();
+        if (key.isEmpty() || fingerprint.isEmpty()) {
+            continue;  // no durable identity: the worker path as before
+        }
+        if (thumbnailCurrent(key, scene, fThumbnailWindowWidth, fThumbnailWindowHeight)) {
+            continue;
+        }
+        if (fPersistedPending.contains(key)) {
+            continue;
+        }
+        const QString tried = key + QChar(0x1f) + fingerprint;
+        if (fPersistedTried.contains(tried)) {
+            continue;  // this window already got its answer
+        }
+        fPersistedTried.insert(tried);
+        fPersistedPending.insert(key);
+        ++fPersistedRequests;
+        fPictures->request(key, fingerprint, fThumbnailWindowWidth, fThumbnailWindowHeight);
+    }
+}
+
+void PreviewConsumer::onPersistedPicture(const QString& slideId, const QString& fingerprint,
+                                         const QImage& image) {
+    if (!fThumbnailWindowActive || fThumbnailRowFingerprints.value(slideId) != fingerprint) {
+        return;  // a picture for a row (or a look) this window no longer lists
+    }
+    fPersistedPending.remove(slideId);
+    QVariantMap row;
+    for (const auto& value : fThumbnailWindow) {
+        const auto candidate = value.toMap();
+        if (candidate.value(QStringLiteral("key")).toString() == slideId) {
+            row = candidate;
+            break;
+        }
+    }
+    if (row.isEmpty()) {
+        return;
+    }
+    // Only a picture decoded at this window's own extent may be painted: the
+    // store answers the extent it was asked with, and a mismatched size means
+    // the window moved while the decode ran.
+    if (image.isNull() || image.width() != fThumbnailWindowWidth ||
+        image.height() != fThumbnailWindowHeight) {
+        fThumbnailWindowTimer.start(0);
+        return;
+    }
+    storePersistedThumbnail(slideId, image, row.value(QStringLiteral("scene")).toString(),
+                            fingerprint);
+    emit changed();
+}
+
+void PreviewConsumer::onPersistedMiss(const QString& slideId, const QString& fingerprint) {
+    if (fThumbnailRowFingerprints.value(slideId) != fingerprint) {
+        return;
+    }
+    fPersistedPending.remove(slideId);
+    ++fPersistedMisses;
+    // The row may now join a worker batch: the persisted answer was "there is
+    // no usable picture", not "wait longer".
+    if (fThumbnailWindowActive) {
+        fThumbnailWindowTimer.start(0);
+    }
+}
+
 void PreviewConsumer::dropThumbnailPicture(const QString& key) {
     const auto entry = fThumbnailCache.find(key);
     if (entry != fThumbnailCache.end()) {
@@ -411,6 +525,23 @@ void PreviewConsumer::requestThumbnailWindow(const QVariantList& slides, qint64 
         fThumbnailWindowWidth = width;
         fThumbnailWindowHeight = height;
         fThumbnailWindowActive = true;
+        // TC.6: a new window retires the previous identity bookkeeping. A
+        // decode still in flight for the old window can no longer paint,
+        // because this row's fingerprint is no longer the one it asked with.
+        fPersistedTried.clear();
+        fPersistedPending.clear();
+        fThumbnailRowFingerprints.clear();
+        fThumbnailRowShows.clear();
+        for (const auto& value : wanted) {
+            const auto row = value.toMap();
+            const auto key = row.value(QStringLiteral("key")).toString();
+            const auto fingerprint = row.value(QStringLiteral("fingerprint")).toString();
+            if (fingerprint.isEmpty()) {
+                continue;
+            }
+            fThumbnailRowFingerprints.insert(key, fingerprint);
+            fThumbnailRowShows.insert(key, row.value(QStringLiteral("showId")).toString());
+        }
         // Retire stale pictures across the WHOLE window immediately, including
         // rows that will only be sent in a later batch.
         for (const auto& value : wanted) {
@@ -440,10 +571,12 @@ void PreviewConsumer::pumpThumbnailWindow() {
         }
         fThumbnailWindowWaiting = false;
     }
+    requestPersistedPictures();
     QVariantList batch;
     for (const auto& value : fThumbnailWindow) {
         const auto row = value.toMap();
         const auto key = row.value(QStringLiteral("key")).toString();
+        if (fPersistedPending.contains(key)) continue;  // the overlay answers this row
         if (fThumbnailWindowAttempted.contains(key) ||
             thumbnailCurrent(key, row.value(QStringLiteral("scene")).toString(),
                              fThumbnailWindowWidth, fThumbnailWindowHeight)) continue;
@@ -666,6 +799,10 @@ void PreviewConsumer::clearThumbnails() {
     fThumbnailIds.clear();
     fThumbnailKeys.clear();
     fThumbnailAwaitAck = false;
+    fPersistedPending.clear();
+    fPersistedTried.clear();
+    fThumbnailRowFingerprints.clear();
+    fThumbnailRowShows.clear();
     clearThumbnailPictures();
     if (hadAsk) {
         emit changed();
@@ -816,6 +953,8 @@ void PreviewConsumer::handleReady(const boost::json::object& params) {
     // only for thumbnails left the panel painting whatever the 500 ms status
     // poll happened to read, so a 30 fps stream looked like 2 fps.
     bool fresh = false;
+    QString pendingRecordKey;
+    QImage pendingRecord;
     if (!superseded && !unmapped && fMap && slot < fPreviewSlotCount &&
         rowBytes == width * 4 && width > 0 && height > 0 && width <= 4096 && height <= 4096 &&
         sizeof(proto::PreviewSlotHeader) + rowBytes * height <= fPreviewSlotStride) {
@@ -848,7 +987,13 @@ void PreviewConsumer::handleReady(const boost::json::object& params) {
                         // mid-copy, on this same thread — which it cannot be.
                         // Belt: a frame with nowhere to go is dropped.
                         if (!key.isEmpty()) {
-                            storeThumbnail(key, std::move(image));
+                            QImage picture = std::move(image);
+                            storeThumbnail(key, picture);
+                            // TC.6: keep the pixels for the overlay once the
+                            // shared-memory slot has been released, never
+                            // before. A copy here is a refcount, not a memcpy.
+                            pendingRecordKey = key;
+                            pendingRecord = picture;
                             fresh = true;
                         }
                     } else if (forSelection) {
@@ -873,6 +1018,18 @@ void PreviewConsumer::handleReady(const boost::json::object& params) {
                       boost::json::object{{"slot", static_cast<std::int64_t>(slot)},
                                           {"seq", static_cast<std::int64_t>(seq)},
                                           {"stream", fPendingPreviewName}});
+    // The slot is free before any of this: encoding a PNG is not something a
+    // producer should wait behind. Only a render whose row, identity and
+    // extent still match is kept — a late frame of a band that moved on has
+    // no owner and is simply dropped, like any other stale picture.
+    if (!pendingRecordKey.isEmpty() && fPictures != nullptr &&
+        fThumbnailCache.contains(pendingRecordKey)) {
+        const QString fingerprint = fThumbnailRowFingerprints.value(pendingRecordKey);
+        const QString showId = fThumbnailRowShows.value(pendingRecordKey);
+        if (!fingerprint.isEmpty()) {
+            fPictures->record(showId, pendingRecordKey, fingerprint, pendingRecord);
+        }
+    }
     if (fresh) {
         emit changed();
     }

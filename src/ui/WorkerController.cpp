@@ -1639,6 +1639,10 @@ void WorkerController::clearThumbnails() {
     fPreview->clearThumbnails();
 }
 
+void WorkerController::setThumbnailPictures(ThumbnailStore* store) {
+    fPreview->setThumbnailPictures(store);
+}
+
 void WorkerController::requestThumbnailWindow(const QVariantList& slides, qint64 width, qint64 height) {
     fPreview->requestThumbnailWindow(slides, width, height);
 }

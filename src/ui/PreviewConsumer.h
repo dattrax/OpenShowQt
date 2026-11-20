@@ -39,6 +39,8 @@
 
 namespace openshow::ui {
 
+class ThumbnailStore;
+
 class PreviewConsumer : public QObject {
     Q_OBJECT
 public:
@@ -83,6 +85,18 @@ public:
     // are retained; each missing row is attempted once until the window moves.
     void requestThumbnailWindow(const QVariantList& slides, qint64 width, qint64 height);
     void clearThumbnails();
+    // TC.6: the persisted-picture overlay. Rows carrying a non-empty
+    // `fingerprint` are looked up there FIRST; a hit is painted and never
+    // enters a worker batch, while a miss lets the row join the next one. A
+    // finished worker render is recorded only while its row, fingerprint and
+    // extent still match. With no overlay attached every rule here is the one
+    // it always was.
+    void setThumbnailPictures(ThumbnailStore* store);
+    // Counters (tests and diagnostics): persisted lookups answered as hits or
+    // misses. Neither is a worker frame.
+    qint64 thumbnailPersistedRequests() const { return fPersistedRequests; }
+    qint64 thumbnailPersistedHits() const { return fPersistedHits; }
+    qint64 thumbnailPersistedMisses() const { return fPersistedMisses; }
 
     // The transport's preview-typed events, handed over by the session that
     // routes replies by the method they went out under.
@@ -147,6 +161,16 @@ signals:
 private:
     void requestThumbnailBatch(const QVariantList& slides, qint64 width, qint64 height);
     void pumpThumbnailWindow();
+    // TC.6: ask the overlay for every visible row whose picture is not already
+    // in memory, once per (row, fingerprint). Pending rows are held out of
+    // worker batches until the decode answers.
+    void requestPersistedPictures();
+    void onPersistedPicture(const QString& slideId, const QString& fingerprint, const QImage& image);
+    void onPersistedMiss(const QString& slideId, const QString& fingerprint);
+    // A picture that came from the overlay instead of the stream: same cache,
+    // same keyed repaint, no worker frame counted.
+    void storePersistedThumbnail(const QString& key, const QImage& image, const QString& sceneJson,
+                                 const QString& fingerprint);
     bool thumbnailCurrent(const QString& key, const QString& scene, qint64 w, qint64 h) const;
     void stopThumbnailWindow();
     // The batch's own send: serialize what the UI wants, advance this client's
@@ -250,6 +274,8 @@ private:
     // were ever sent" is precisely the growth this task must not have.
     struct ThumbnailPicture {
         QImage image;
+        // The render fingerprint the picture answers, when the row carried one.
+        QString fingerprint;
         // The scene text this picture was rendered from, so re-asking for a
         // slide whose content changed drops the old picture instead of
         // showing it under a new one.
@@ -266,6 +292,18 @@ private:
     static constexpr qint64 kThumbnailCacheBytes = 8 * 1024 * 1024;
     QVariantList fThumbnailWindow;
     QSet<QString> fThumbnailWindowAttempted;
+    // TC.6: the overlay, the rows it is decoding, the (row, fingerprint) pairs
+    // this window has already asked it for, and the identity each visible row
+    // is cached under. A picture may only be recorded or adopted while all
+    // three still agree.
+    ThumbnailStore* fPictures = nullptr;
+    QSet<QString> fPersistedPending;
+    QSet<QString> fPersistedTried;
+    QHash<QString, QString> fThumbnailRowFingerprints;
+    QHash<QString, QString> fThumbnailRowShows;
+    qint64 fPersistedRequests = 0;
+    qint64 fPersistedHits = 0;
+    qint64 fPersistedMisses = 0;
     qint64 fThumbnailWindowWidth = 0;
     qint64 fThumbnailWindowHeight = 0;
     bool fThumbnailWindowActive = false;

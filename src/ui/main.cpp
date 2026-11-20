@@ -55,13 +55,15 @@ int main(int argc, char* argv[]) {
     // from Main.qml; shared compact buttons provide the flat toolbar style.
     QQuickStyle::setStyle("Material");
 
-    openshow::ui::WorkerController worker;
-    worker.start();
-
-    // TC.5: the derived service-card pictures. One overlay for the session:
-    // the document session adopts and records them, and the preview consumer
-    // asks it before rendering. It is never part of Documents or History.
+    // TC.5/TC.6: the derived service-card pictures. One overlay for the
+    // session: the document session adopts and records them, and the preview
+    // consumer asks it before rendering. It is never part of Documents or
+    // History.
     openshow::ui::ThumbnailStore cardPictures;
+
+    openshow::ui::WorkerController worker;
+    worker.setThumbnailPictures(&cardPictures);
+    worker.start();
 
     // Task 3.3: the editable documents. Constructed after the application
     // object so QStandardPaths resolves; the lyric panel binds to it.
