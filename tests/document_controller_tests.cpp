@@ -34,6 +34,7 @@
 #include <QTimer>
 
 #include <sys/stat.h>
+#include <sys/types.h>
 
 #include "openshow/domain/documents.h"
 #include "openshow/domain/storage.h"
@@ -635,6 +636,171 @@ void exerciseThumbnailCacheLifecycle(const std::filesystem::path& root) {
             savedEntries = cache.entries.size();
         }
         check(savedEntries > 0, "TC.5: the recovered pictures reach the saved service");
+        pictures.setEnabled(false);
+    }
+}
+
+
+// --- TC.8: cache-only durability at its edges -----------------------------
+//
+// The cache is derived data next to an authored document, so its writes must
+// be allowed to fail without ever costing that document: a manifest-write,
+// fsync or rename failure leaves the previous package readable; a read-only
+// tree and a deleted service simply keep the pictures in memory; and an
+// unsaved edit in this session never leaks into a cache-only write (only the
+// block changes, the authored bytes stay the last durable snapshot's).
+void exerciseThumbnailCacheFaults(const std::filesystem::path& root) {
+    using openshow::ui::ThumbnailStore;
+    const auto picture = [](QColor colour) {
+        QImage image(64, 36, QImage::Format_ARGB32_Premultiplied);
+        image.fill(colour);
+        return image;
+    };
+    const std::filesystem::path manifest = root / "service" / "service.json";
+    QString slideId;
+    QString fingerprint;
+    {
+        ThumbnailStore pictures;
+        DocumentController docs(nullptr, root, &pictures);
+        docs.createSong(QStringLiteral("Fault Cards"));
+        docs.addSlide();
+        docs.selectSlide(0);
+        docs.setSlideText(QStringLiteral("the durable words"));
+        docs.flushText();
+        slideId = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+        fingerprint = docs.thumbnailSourceForSlide(slideId)
+                          .value(QStringLiteral("fingerprint"))
+                          .toString();
+        check(!fingerprint.isEmpty(), "TC.8: the slide has a fingerprint before the save");
+        check(docs.save(), "TC.8: the first save succeeds");
+        // Save-adopt retargeted every asset and rebuilt the manifest, yet the
+        // slide's render identity is the same one the pre-save session had.
+        check(docs.thumbnailSourceForSlide(slideId)
+                  .value(QStringLiteral("fingerprint"))
+                  .toString() == fingerprint,
+              "TC.8: save-adopt keeps the render fingerprint");
+        check(docs.save(), "TC.8: the adopted service re-saves");
+
+        // --- unsaved authoring never leaks into a cache-only write -------
+        std::string authoredBefore;
+        check(openshow::domain::manifestAuthoredDigest(readFile(manifest), &authoredBefore),
+              "TC.8: the manifest digest is readable");
+        docs.setSlideText(QStringLiteral("words that are NOT saved yet"));
+        docs.flushText();
+        check(docs.dirty(), "TC.8: the edit is unsaved");
+        pictures.record(QStringLiteral("show1"), slideId,
+                        QString::fromStdString(openshow::domain::sha256Hex("unsaved-look")),
+                        picture(Qt::cyan));
+        check(pictures.waitForIdle(), "TC.8: the picture encodes");
+        QElapsedTimer timer;
+        timer.start();
+        while (pictures.flushWrites() == 0 && timer.elapsed() < 8000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        check(pictures.flushWrites() == 1, "TC.8: the cache-only flush ran");
+        std::string authoredAfter;
+        check(openshow::domain::manifestAuthoredDigest(readFile(manifest), &authoredAfter) &&
+                  authoredAfter == authoredBefore,
+              "TC.8: the unsaved words did not ride the cache-only write");
+        check(docs.dirty(), "TC.8: the session is still dirty after the flush");
+
+        // --- a cache manifest failure never fails the document save ------
+        pictures.record(QStringLiteral("show1"), slideId,
+                        QString::fromStdString(openshow::domain::sha256Hex("saved-look")),
+                        picture(Qt::darkBlue));
+        check(pictures.waitForIdle(), "TC.8: the second picture encodes");
+        check(docs.save(), "TC.8: saving the edit succeeds");
+        const std::string withBlock = readFile(manifest);
+        check(withBlock.find("NOT saved") != std::string::npos,
+              "TC.8: the save wrote the edited words");
+
+        // A failing cache-only write leaves the previous manifest installed.
+        const char* steps[] = {"manifest-write", "manifest-fsync", "manifest-rename",
+                               "dir-fsync"};
+        for (const char* step : steps) {
+            pictures.record(QStringLiteral("show1"), slideId,
+                            QString::fromStdString(openshow::domain::sha256Hex(
+                                std::string("fault-") + step)),
+                            picture(Qt::darkGreen));
+            check(pictures.waitForIdle(), "TC.8: the fault fixture encodes");
+            const std::string before = readFile(manifest);
+            const qint64 failures = pictures.flushFailures();
+            const qint64 writes = pictures.flushWrites();
+            ::setenv("OPENSHOW_STORAGE_FAULT", step, 1);
+            timer.restart();
+            while (pictures.flushFailures() == failures && timer.elapsed() < 8000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            }
+            ::unsetenv("OPENSHOW_STORAGE_FAULT");
+            check(pictures.flushFailures() == failures + 1,
+                  "TC.8: the injected cache write failure is reported");
+            check(pictures.flushWrites() == writes,
+                  "TC.8: a failed flush is not counted as a write");
+            if (std::string_view(step) == "dir-fsync") {
+                // The documented exception: the rename committed and the
+                // directory entry is what failed, so the NEW, complete block
+                // is installed (and reported as a failure).
+                check(readFile(manifest) != before,
+                      "TC.8: a final directory-sync failure leaves the new manifest");
+            } else {
+                check(readFile(manifest) == before,
+                      "TC.8: the previous manifest is still installed");
+            }
+            check(!std::filesystem::exists(root / "service" / "service.json.tmp"),
+                  "TC.8: no staging file is left behind");
+            openshow::domain::Documents reloaded;
+            openshow::domain::ThumbnailCache reloadedCache;
+            std::string error;
+            check(openshow::domain::loadService(&reloaded, root / "service", &error,
+                                                &reloadedCache),
+                  "TC.8: the package still loads after every fault");
+            check(!reloadedCache.entries.empty(),
+                  "TC.8: the installed block is complete and valid");
+            pictures.setWritable(true);  // the fault is over; resume flushing
+        }
+        pictures.setEnabled(false);
+    }
+    {
+        // A read-only package: the pictures stay in memory, and nothing is
+        // written even though the session is clean and saved.
+        ::chmod(manifest.c_str(), 0444);
+        ThumbnailStore pictures;
+        DocumentController docs(nullptr, root, &pictures);
+        check(docs.thumbnailCacheEntries() > 0,
+              "TC.8: a read-only service still adopts its pictures");
+        pictures.record(QStringLiteral("show1"), slideId,
+                        QString::fromStdString(openshow::domain::sha256Hex("read-only")),
+                        picture(Qt::gray));
+        check(pictures.waitForIdle(), "TC.8: the read-only fixture encodes");
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < 2600) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        check(pictures.flushWrites() == 0 && pictures.dirty(),
+              "TC.8: a read-only service is never flushed");
+        ::chmod(manifest.c_str(), 0644);
+        pictures.setEnabled(false);
+    }
+    {
+        // The service is deleted under a live session: the flush must not
+        // recreate it, and the records stay in memory.
+        ThumbnailStore pictures;
+        DocumentController docs(nullptr, root, &pictures);
+        std::filesystem::remove_all(root / "service");
+        pictures.record(QStringLiteral("show1"), slideId,
+                        QString::fromStdString(openshow::domain::sha256Hex("deleted")),
+                        picture(Qt::darkRed));
+        check(pictures.waitForIdle(), "TC.8: the deleted-service fixture encodes");
+        QElapsedTimer timer;
+        timer.start();
+        while (pictures.flushFailures() == 0 && timer.elapsed() < 8000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        check(pictures.flushFailures() == 1 && !std::filesystem::exists(root / "service"),
+              "TC.8: a deleted service is not recreated by a cache flush");
+        check(pictures.dirty() && pictures.entryCount() > 0,
+              "TC.8: the pictures survive in memory");
         pictures.setEnabled(false);
     }
 }
@@ -5607,6 +5773,7 @@ int main(int argc, char* argv[]) {
     exercisePersistence(tempRoot / "persist");
     exerciseThumbnailFingerprint(tempRoot / "thumbnail-identity");
     exerciseThumbnailCacheLifecycle(tempRoot / "thumbnail-lifecycle");
+    exerciseThumbnailCacheFaults(tempRoot / "thumbnail-faults");
     exerciseRecoveredAssetOwnership(tempRoot / "adopt");
     exerciseShowAudioAdoption(tempRoot / "audio-adopt");
     exercisePlaylistAndLibrary(tempRoot / "playlist");

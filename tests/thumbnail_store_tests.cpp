@@ -257,6 +257,25 @@ void exerciseSupersedingAndGeneration() {
     check(ready.isEmpty(), "TC.4: a decode from the previous document never paints");
 }
 
+void exerciseRetiredEncode() {
+    ThumbnailStore store;
+    store.adopt(ThumbnailCache{}, QString::fromStdString(openshow::domain::sha256Hex("first")),
+                false);
+    // Record, then swap the document before the encode lane reports: the PNG
+    // describes a document that is no longer open and must never be recorded
+    // into the new one's cache.
+    store.record(QStringLiteral("show1"), QStringLiteral("slide1"),
+                 QString::fromStdString(fingerprint("retired")),
+                 samplePicture(320, 180, "retired"));
+    store.adopt(ThumbnailCache{}, QString::fromStdString(openshow::domain::sha256Hex("second")),
+                false);
+    check(store.waitForIdle(), "TC.8: the retired encode finishes");
+    check(store.entryCount() == 0,
+          "TC.8: an encode finishing after the document changed records nothing");
+    check(!store.has(QStringLiteral("slide1"), QString::fromStdString(fingerprint("retired"))),
+          "TC.8: the retired picture is not in the new document's cache");
+}
+
 void exerciseBoundsAndPruning() {
     ThumbnailStore store;
     store.adopt(ThumbnailCache{}, QString::fromStdString(openshow::domain::sha256Hex("manifest")), false);
@@ -373,6 +392,7 @@ int main(int argc, char** argv) {
     exerciseEncodeDecodeAndFlush();
     exerciseFailures();
     exerciseSupersedingAndGeneration();
+    exerciseRetiredEncode();
     exerciseBoundsAndPruning();
     exerciseDisabled();
     if (gFailed) {

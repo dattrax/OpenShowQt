@@ -44,8 +44,13 @@ one, and records worker renders after the slot is released
 (worker_controller_tests). TC.7 is DONE: Show and Edit rows carry scene,
 fingerprint and owning show from one compile, QML's placeholder distinguishes
 persisted availability from the worker capability, and a warmed service can
-paint with no thumbnail-capable stream (workspace_ui_tests). TC.8–TC.10 remain
-TODO; no runtime cold/warm evidence is claimed yet. The long
+paint with no thumbnail-capable stream (workspace_ui_tests). TC.8 is DONE: the
+store drops encodes that finish after a document swap, save-adopt keeps every
+fingerprint, an unsaved edit never leaks into a cache-only write, injected
+manifest write/fsync/rename failures leave the previous package loadable, and
+read-only/deleted packages keep pictures in memory without writing
+(thumbnail_store_tests, document_controller_tests). TC.9–TC.10 remain TODO; no
+runtime cold/warm evidence is claimed yet. The long
 `workspace_ui_tests` interaction sequence showed intermittent focus/click
 failures on this live desktop (Delete, Shift+F10, box menu) across repeated
 runs, including with these QML files reverted; each failure differs and a
