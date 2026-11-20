@@ -748,6 +748,32 @@ These limit what historical DONE statuses prove. The review linked above adds
   sends through the transport its host injects and applies the same scene budget
   a present passes, so authoring-side refusal stays one rule (R11), and it
   interprets no reply except the acks its own asks expect (R5).
+- Since **TC** (2026-11-20) a service keeps its finished card pictures beside
+  the shows: an optional, independently versioned `thumbnailCache` block in
+  `service.json` (service format stays 15; an older build ignores the key), and
+  a bounded `thumbnailVariants` block in `catalog.json` (format 3) for looks a
+  Library song has already been prepared under. A record is the rendered slide
+  surface only — Base64 PNG, checksum, declared size, render fingerprint — never
+  card numbering, captions or operator chrome. Identity is a canonical hash of
+  the compiled scene with paths and service ids emptied, each referenced
+  asset's size and 8 KiB content probe, the renderer identity and the 512x288
+  bucket, so a moved package and a save-adopt hit while replaced bytes, words,
+  theme, reflow and font/renderer eras miss. `ThumbnailStore` decodes and
+  encodes on two bounded background lanes, validates checksum/IHDR/size before
+  a picture can be shown, keeps the record list under 256 records / 32 KiB per
+  PNG / 1.5 MiB and answers `PreviewConsumer` before it asks the worker: an
+  all-hit window sends no `preview.thumbnails` RPC at all, a mixed window asks
+  only for its misses, and a worker render is recorded after its slot is
+  released. Records never enter `Documents` or history; saves and autosave
+  snapshots carry them, a clean writable service may be flushed cache-only
+  under a canonical authored-digest gate (an external edit wins), and a cache
+  failure can never fail an authored save. A prepared Library slide copies a
+  matching variant under its new ids; the id-free identity is what lets a
+  re-preparation reuse pixels while a different theme or lyric misses.
+  Evidence: `thumbnail_cache_tests`, `thumbnail_store_tests`,
+  `worker_controller_tests` (persisted band), `document_controller_tests`
+  (save/reopen/faults), `catalog_tests`, `song_service_tests` (look crossing
+  datasets) and the measured `thumbnail_reopen_tests` journey.
 - Since **6.19a3** the acknowledged output model is `PresentationModel`, and the
   truth it holds is the one R3 and R5 were about: a QML scene property reads a
   single owner, so an indicator cannot light from a request that was refused and

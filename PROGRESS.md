@@ -11,7 +11,7 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Persistent service-card thumbnails (TC.1, 2026-11-20): contract frozen.**
+**Persistent service-card thumbnails (TC.1–TC.10, 2026-11-20): DONE.**
 `docs/ui/thumbnail-cache-plan.md` fixes the optional, independently versioned
 `thumbnailCache` block in `service.json` (service format stays 15), the entry
 bounds (256 records / 32 KiB PNG / 1.5 MiB encoded), the single 512x288 bucket,
@@ -54,8 +54,13 @@ format 3 stores bounded per-item render variants beside the model (no revision,
 history or re-preparation is touched by a picture), the bridge copies a
 matching look onto freshly prepared slides and remembers finished renders back,
 and a saved service keeps its cards after the Library is deleted
-(catalog_tests, song_service_tests). TC.10 remains TODO; no runtime cold/warm
-evidence is claimed yet. `library_service_ui_tests` could not paste its fixture
+(catalog_tests, song_service_tests). **TC is complete** with measured runtime
+evidence: `thumbnail_reopen_tests` cold-opens a 12-slide service in 877 ms with
+12 worker thumbnail renders, reopens it in a separate process after warming in
+6 ms with zero worker renders and 12 persisted hits, and parses a 200-slide
+service in +1 ms with a full 200-card block (790 220 B versus 51 031 B plain).
+No memory budget was raised: the store keeps the frozen 256/32 KiB/1.5 MiB
+ceilings and a resident LRU identical to the pre-TC one. `library_service_ui_tests` could not paste its fixture
 in this session — `QGuiApplication::clipboard()->setText` leaves the selection
 empty without a focused owner in this Wayland session — so that journey is
 recorded as an environment limitation here, not a TC result; its sidebar/scroll

@@ -552,6 +552,18 @@ if(OPENSHOW_BUILD_UI)
   add_test(NAME song_service_tests COMMAND song_service_tests)
   set_tests_properties(song_service_tests PROPERTIES LABELS display TIMEOUT 240)
 
+  # TC.10: the measured end-to-end claim — cold generation, a real warm reopen
+  # in a SEPARATE process with zero worker thumbnail renders, and the JSON cost
+  # of a full 200-card block. Real worker, display.
+  qt_add_executable(thumbnail_reopen_tests thumbnail_reopen_tests.cpp)
+  target_link_libraries(thumbnail_reopen_tests PRIVATE openshow::ui-core Qt6::Gui)
+  target_compile_definitions(thumbnail_reopen_tests PRIVATE
+    OPENSHOW_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  add_test(NAME thumbnail_reopen_tests COMMAND thumbnail_reopen_tests)
+  set_tests_properties(thumbnail_reopen_tests PROPERTIES
+    LABELS display
+    TIMEOUT 300)
+
   # Task PT.5: optional reflow preparation against the chosen future look,
   # through the production planner and the REAL worker. Display: the worker
   # opens its output window.
