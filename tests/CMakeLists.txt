@@ -10,6 +10,14 @@ add_executable(catalog_tests catalog_tests.cpp)
 target_link_libraries(catalog_tests PRIVATE openshow::catalog)
 add_test(NAME catalog_tests COMMAND catalog_tests)
 
+# TC.2/TC.4: the Qt-free thumbnail record contract — fixed SHA-256/Base64
+# vectors, PNG header bounds, a fingerprint whose inputs are checked one at a
+# time (relocation, asset bytes, words, renderer, bucket) and record sanitising
+# that turns a hand-edited block into misses instead of a failed load.
+add_executable(thumbnail_cache_tests thumbnail_cache_tests.cpp)
+target_link_libraries(thumbnail_cache_tests PRIVATE openshow::domain)
+add_test(NAME thumbnail_cache_tests COMMAND thumbnail_cache_tests)
+
 # Milestone BI (task BI.1): the passage parser's regressions on synthetic
 # fixtures — the live shapes are recorded in docs/ui/bible-import-plan.md,
 # and no fetched passage is ever stored here. Qt-free like the domain.

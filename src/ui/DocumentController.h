@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QTimer>
@@ -47,6 +48,7 @@
 #include "openshow/domain/documents.h"
 #include "openshow/domain/history.h"
 #include "openshow/domain/storage.h"
+#include "openshow/domain/thumbnails.h"
 
 #include "DocumentPersistence.h"
 #include "DocumentViews.h"
@@ -753,6 +755,14 @@ public:
     // Scene JSON for one slide of the current song (per-slide Present
     // buttons); "" on failure.
     Q_INVOKABLE QString sceneJsonForSlide(const QString& slideId);
+    // TC.2: a slide's compiled scene and the fingerprint its card is cached
+    // under, from ONE compile: {scene, fingerprint}. Both empty when the slide
+    // does not compile; the fingerprint is empty for live (video/camera)
+    // content, whose still must never be persisted. The fingerprint hashes the
+    // scene with package-local asset paths emptied plus every referenced
+    // asset's size and 8 KiB content probe, so a moved package hits and
+    // replaced bytes miss (docs/ui/thumbnail-cache-plan.md).
+    Q_INVOKABLE QVariantMap thumbnailSourceForSlide(const QString& slideId);
 
     // --- persistence (the durability itself is DocumentPersistence's) ---
 
@@ -910,6 +920,19 @@ private:
     int fPptxIndex = -1;
     openshow::domain::Id fCurrentSongId;
     openshow::domain::Id fCurrentPlaylistId;
+    // TC.2: asset identity memo for fingerprints. Keyed by the current path;
+    // size and mtime say whether the probe may be reused, so a row that does
+    // not change costs no file reads. The stored probe itself is content-only
+    // (size + first/last 4 KiB), never a path or a time.
+    struct AssetProbe {
+        std::uintmax_t size = 0;
+        std::int64_t modified = 0;
+        openshow::domain::ThumbnailAssetStamp stamp;
+    };
+    QHash<QString, AssetProbe> fAssetProbes;
+    bool stampAsset(const std::string& assetId, const std::string& sourcePath,
+                    std::vector<openshow::domain::ThumbnailAssetStamp>* stamps);
+
     int fCurrentSlide = 0;
     openshow::domain::Id fCurrentBoxId;
     SlideClip fClip;

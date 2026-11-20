@@ -2829,7 +2829,7 @@ DONE solely because its own isolated fixtures pass.
 | ID | Status | Owner | Depends on | Work and acceptance |
 |---|---|---|---|---|
 | TC.1 | DONE | Coordinator | Current EW/PT baseline | Capture cold/reopen/page-switch timings and render counts on a representative song/Bible service. Compare PNG sizes and exact/bucket sizing; freeze entry DTO, limits, format strategy, source/font signature, overlay API, write policy and fixtures. Record measured choices before agents implement. |
-| TC.2 | TODO | Cache runtime | TC.1 | Implement deterministic render fingerprints and asset/font/environment invalidation in focused helpers. Save/reload and package relocation hit; visual changes miss; repeated occurrences share. Add worker identity metadata only if existing information is insufficient. |
+| TC.2 | DONE | Cache runtime | TC.1 | Implement deterministic render fingerprints and asset/font/environment invalidation in focused helpers. Save/reload and package relocation hit; visual changes miss; repeated occurrences share. Add worker identity metadata only if existing information is insufficient. |
 | TC.3 | TODO | Persistence | TC.1 | Extend the Qt-free service codec with optional cache-overlay input/output and an explicit format decision. Old files load; invalid/unknown cache records fall back without losing authored content; deterministic round-trip and encoded-size/count bounds pass. Do not put PNGs in undo snapshots. |
 | TC.4 | TODO | Cache runtime | TC.1 | Implement bounded background PNG encode/decode, checksum/header validation, cancellation and overlay eviction. Corrupt Base64/PNG, oversized dimensions, byte-budget exhaustion and canceled work become misses without UI stalls or unbounded allocation. |
 | TC.5 | TODO | Coordinator | TC.2–TC.4 | Integrate the overlay with explicit save, autosave/recovery and coalesced cache-only flushes through the existing owner. Prove no authoring dirty/undo change, no implicit saving of edits, safe epoch/external-change rejection and durable fault fallback. Cache blobs do not enter normal history copies. |
@@ -2849,6 +2849,15 @@ read/write/prune rules. Extent choice is backed by measurements of all 162
 repository card renders (512x288: 3 809 B PNG / 5 080 B Base64 average, 0.27 ms
 decode; 256x144: 1 723 B / 2 298 B). Runtime cold/warm timings and render
 counts belong to TC.10 and are not claimed here.
+
+TC.2 is DONE: `openshow/domain/thumbnails.h` provides SHA-256, canonical
+Base64, the PNG IHDR check and `renderFingerprint()` over the normalized scene
+(asset paths emptied), referenced assets (id, size, first/last 4 KiB probe),
+the renderer identity, the 512x288 bucket and the policy. The probe survives
+save-adopt and relocation and changes when an asset's bytes change;
+`thumbnail_cache_tests` pins each input separately, and
+`document_controller_tests` proves hit/save/reopen/move and text/picture misses
+through the real controller.
 
 #### Agent assignments and integration rules
 

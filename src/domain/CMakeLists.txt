@@ -5,6 +5,7 @@ add_library(openshow_domain STATIC
   reflowsource.cpp
   storage.cpp
   themesnapshot.cpp
+  thumbnails.cpp
   version.cpp
 )
 add_library(openshow::domain ALIAS openshow_domain)

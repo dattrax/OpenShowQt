@@ -340,6 +340,94 @@ void exercisePersistence(const std::filesystem::path& root) {
     }
 }
 
+// --- TC.2: the render fingerprint behind persisted card pictures ----------
+
+// The fingerprint decides whether a stored picture still describes the scene
+// it is listed under, so it must survive exactly what is not visual — the
+// package's location, a save that adopts assets — and change for everything
+// that is. This drives the real controller and its real package.
+void exerciseThumbnailFingerprint(const std::filesystem::path& root) {
+    const std::filesystem::path service = root / "service";
+    QString slideId;
+    std::string fingerprintAfterEdit;
+    {
+        DocumentController docs(nullptr, root);
+        check(docs.createSong(QStringLiteral("Warm Cache")), "fingerprint: the song exists");
+        check(docs.addSlide(), "fingerprint: the slide exists");
+        docs.selectSlide(0);
+        slideId = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+        check(!slideId.isEmpty(), "fingerprint: the first slide has an id");
+        docs.setSlideText(QStringLiteral("the first verse"));
+        docs.flushText();
+
+        QVariantMap source = docs.thumbnailSourceForSlide(slideId);
+        const QString scene = source.value(QStringLiteral("scene")).toString();
+        const QString fingerprint = source.value(QStringLiteral("fingerprint")).toString();
+        check(!scene.isEmpty(), "fingerprint: the slide compiles to a scene");
+        check(fingerprint.size() == 64, "fingerprint: a card has a 64-character identity");
+        check(docs.thumbnailSourceForSlide(slideId).value(QStringLiteral("fingerprint")) ==
+                  fingerprint,
+              "fingerprint: asking twice describes the same pixels");
+        check(docs.thumbnailSourceForSlide(QStringLiteral("slide999"))
+                  .value(QStringLiteral("fingerprint"))
+                  .toString()
+                  .isEmpty(),
+              "fingerprint: a slide that does not compile has none");
+
+        // A picture on the slide is part of the render, so replacing its bytes
+        // must miss even though the words did not change.
+        { std::ofstream f(root / "plate.png"); f << "PNGBYTES"; }
+        check(docs.importMediaFile(QString::fromStdWString((root / "plate.png").wstring())),
+              "fingerprint: the still is imported");
+        const QString plateId =
+            docs.assets().at(0).toMap().value(QStringLiteral("id")).toString();
+        check(docs.setSlideBackground(plateId), "fingerprint: the still becomes the background");
+        docs.flushText();
+        const QString withPicture =
+            docs.thumbnailSourceForSlide(slideId).value(QStringLiteral("fingerprint")).toString();
+        check(withPicture.size() == 64 && withPicture != fingerprint,
+              "fingerprint: adding a picture changes the render");
+        check(docs.thumbnailSourceForSlide(slideId)
+                  .value(QStringLiteral("scene"))
+                  .toString()
+                  .contains(QStringLiteral("plate.png")),
+              "fingerprint: the scene names the asset's file");
+
+        docs.setSlideText(QStringLiteral("the first verse, edited"));
+        docs.flushText();
+        const QString edited =
+            docs.thumbnailSourceForSlide(slideId).value(QStringLiteral("fingerprint")).toString();
+        check(edited != withPicture, "fingerprint: edited words miss");
+        fingerprintAfterEdit = edited.toStdString();
+        check(docs.save(), "fingerprint: the service saves");
+    }
+    {
+        DocumentController docs(nullptr, root);
+        const QVariantMap source = docs.thumbnailSourceForSlide(slideId);
+        check(source.value(QStringLiteral("fingerprint")).toString().toStdString() ==
+                  fingerprintAfterEdit,
+              "fingerprint: a fresh process hits the saved service");
+        const QString scene = source.value(QStringLiteral("scene")).toString();
+        check(scene.contains(QStringLiteral("/service/assets/")),
+              "fingerprint: the reopened scene names the package's own copy");
+    }
+    {
+        // Moving the package changes every asset path and must change nothing
+        // else: identity is the asset's bytes, not where they live.
+        std::filesystem::create_directories(root / "moved");
+        std::filesystem::copy(service, root / "moved" / "service",
+                              std::filesystem::copy_options::recursive |
+                                  std::filesystem::copy_options::overwrite_existing);
+        DocumentController docs(nullptr, root / "moved");
+        const QVariantMap source = docs.thumbnailSourceForSlide(slideId);
+        check(!source.value(QStringLiteral("scene")).toString().isEmpty(),
+              "fingerprint: the moved service loads its slide");
+        check(source.value(QStringLiteral("fingerprint")).toString().toStdString() ==
+                  fingerprintAfterEdit,
+              "fingerprint: moving the package keeps every card's identity");
+    }
+}
+
 // --- task 6.12 (review R7): the package owns the bytes after a save --------
 
 // R7's exact sequence with real files: import, an interrupted session
@@ -5306,6 +5394,7 @@ int main(int argc, char* argv[]) {
     exerciseUndoRedo(tempRoot / "undo");
     exerciseGeometryEdits(tempRoot / "geometry");
     exercisePersistence(tempRoot / "persist");
+    exerciseThumbnailFingerprint(tempRoot / "thumbnail-identity");
     exerciseRecoveredAssetOwnership(tempRoot / "adopt");
     exerciseShowAudioAdoption(tempRoot / "audio-adopt");
     exercisePlaylistAndLibrary(tempRoot / "playlist");

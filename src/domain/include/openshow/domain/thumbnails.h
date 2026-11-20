@@ -1,0 +1,152 @@
+/*
+ * Service-card thumbnails kept with the service (TC.2): the Qt-free half.
+ *
+ * The worker paints a slide's card, the frontend keeps the finished PNG beside
+ * the authoritative shows in service.json, and the next run can show the same
+ * picture without asking the renderer for it. This header is the value
+ * contract both halves share: the entry records, their bounds, the checksum
+ * and Base64 helpers, and the deterministic fingerprint that decides whether a
+ * stored picture still describes the scene it is listed under.
+ *
+ * It is deliberately Qt-free and free of the document model: a cache record is
+ * derived data, never part of Documents or its history. The service codec
+ * (storage.h) and the catalog codec each carry a ThumbnailCache beside their
+ * authored content, and the runtime overlay (src/ui/ThumbnailStore.h) turns
+ * entries into QImages.
+ *
+ * The frozen decisions — one 512x288 bucket, 256 records, 32 KiB per PNG,
+ * 1.5 MiB encoded, which scene members enter the fingerprint — are written
+ * down in docs/ui/thumbnail-cache-plan.md.
+ */
+
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace openshow::domain {
+
+// The block's OWN version, independent of the service manifest's format: the
+// block is derived data and travels with the authored document rather than
+// defining it.
+inline constexpr unsigned long long kThumbnailCacheFormat = 1;
+
+// One finished card picture, as it lives in JSON.
+struct ThumbnailCacheEntry {
+    std::string showId;      // the owning show (empty for a Library variant)
+    std::string slideId;     // the owning slide; occurrences share this record
+    std::string fingerprint; // renderFingerprint(): 64 lowercase hex
+    std::string renderer;    // rendererIdentity() at render time
+    std::uint32_t width = 0; // 512 (the canonical bucket)
+    std::uint32_t height = 0;  // 288
+    std::uint64_t pngBytes = 0;  // decoded PNG length, before Base64
+    std::string checksum;    // sha256Hex(png bytes), 64 lowercase hex
+    std::string pngBase64;   // the picture itself
+};
+
+struct ThumbnailCache {
+    unsigned long long format = kThumbnailCacheFormat;
+    std::vector<ThumbnailCacheEntry> entries;
+};
+
+// The canonical bucket: the largest frame the thumbnail envelope accepts at
+// 16:9, so one record serves Show, Edit and every card extent by downscaling.
+inline constexpr std::uint32_t kThumbnailWidth = 512;
+inline constexpr std::uint32_t kThumbnailHeight = 288;
+inline constexpr std::uint32_t kMinThumbnailWidth = 2;
+inline constexpr std::uint32_t kMinThumbnailHeight = 2;
+inline constexpr const char* kThumbnailPolicy = "card-surface/1";
+
+// Bounds checked before anything is allocated or decoded.
+inline constexpr std::size_t kMaxThumbnailCacheEntries = 256;
+inline constexpr std::uint64_t kMaxThumbnailPngBytes = 32 * 1024;
+inline constexpr std::uint64_t kMaxThumbnailEncodedBytes = 1536 * 1024;
+
+// --- hashing and encodings -------------------------------------------------
+
+// Lowercase hexadecimal SHA-256 of the given bytes.
+std::string sha256Hex(std::string_view bytes);
+
+// Standard-alphabet Base64 with padding, and the strict inverse. The encoder
+// never wraps lines; the decoder accepts only that spelling (no whitespace, no
+// URL alphabet), because a record is a value rather than a payload to guess at.
+std::string base64Encode(std::string_view bytes);
+bool base64Decode(std::string_view text, std::string* out);
+// Length the encoder produces, and a charset/padding check that does not
+// allocate — the parse path judges a record with these, never by decoding it.
+std::size_t base64EncodedSize(std::size_t rawBytes);
+bool base64IsCanonical(std::string_view text, std::size_t* decodedBytes);
+
+// The checksum an entry carries: sha256Hex of the PNG bytes.
+std::string pngChecksum(std::string_view png);
+
+// PNG signature + IHDR dimensions, without decoding the picture. False for
+// anything that is not a PNG or whose header is too short.
+bool pngDimensions(std::string_view png, std::uint32_t* width, std::uint32_t* height);
+
+// --- render identity -------------------------------------------------------
+
+// "openshow-scene-card/1;app=<applicationVersion>". Fonts, fallbacks and
+// renderer behaviour change only with a build, and a build bumps the version,
+// so this is the conservative renderer identity the plan allows until the
+// worker reports a font environment of its own.
+std::string rendererIdentity();
+
+// One referenced asset's identity: the id the scene names, the byte length and
+// a probe hash over the first 4 KiB, the last 4 KiB and the size. Content
+// identity rather than path identity, so save-adopt and package relocation
+// still hit; an in-place replacement that changes either end or the size
+// misses. Reading the probe is the caller's memoization problem (path, size
+// and mtime identify an unchanged file).
+struct ThumbnailAssetStamp {
+    std::string assetId;
+    std::uint64_t size = 0;
+    std::string probe;  // 64 lowercase hex
+};
+bool thumbnailAssetStamp(const std::filesystem::path& path, const std::string& assetId,
+                         ThumbnailAssetStamp* out, std::string* error);
+
+// The compiled scene with every "assetPath" member emptied, re-serialized.
+// Asset identity travels in ThumbnailAssetStamp, never as a package-local path.
+bool normalizeSceneForFingerprint(std::string_view sceneJson, std::string* out,
+                                  std::string* error);
+
+// Whether a still of this scene may be kept at all: a video or camera
+// background is live content, and a persisted still of it would be a lie.
+bool scenePersistable(std::string_view sceneJson);
+
+// A deterministic hash of everything that decides the pixels: the normalized
+// scene, the referenced asset identities (sorted by id), the renderer, the
+// static thumbnail policy and the bucket extent.
+std::string renderFingerprint(std::string_view sceneJson,
+                              const std::vector<ThumbnailAssetStamp>& assets,
+                              std::string_view renderer = {}, std::string_view policy = {},
+                              std::uint32_t width = kThumbnailWidth,
+                              std::uint32_t height = kThumbnailHeight);
+
+// --- validation ------------------------------------------------------------
+
+// Bounds and spelling of ONE record, without decoding its PNG. An invalid
+// record is a miss and never an authored-content failure.
+bool validateThumbnailEntry(const ThumbnailCacheEntry& entry, std::string* error);
+
+// The same over a block: format supported, entry count and total encoded bytes
+// inside their bounds, each record valid. Duplicate (slideId, fingerprint)
+// pairs are refused: one slide's one picture has one home.
+bool validateThumbnailCache(const ThumbnailCache& cache, std::string* error);
+
+// The record a row asks for, or nullptr.
+const ThumbnailCacheEntry* findThumbnail(const ThumbnailCache& cache, std::string_view slideId,
+                                         std::string_view fingerprint);
+
+// Drops malformed records in place and keeps the rest, in file order, within
+// the count and total-byte bounds (later records drop first). Returns how many
+// records were removed. This is the tolerant parse a hand-edited or
+// older-build block gets: a bad record costs its own picture, never the load.
+std::size_t sanitizeThumbnailCache(ThumbnailCache* cache);
+
+}  // namespace openshow::domain

@@ -19,7 +19,12 @@ the fingerprint inputs (normalized scene JSON, asset size + 8 KiB content probe,
 renderer identity), the Qt-free DTO/codec API and the overlay read/write rules.
 The bucket was chosen from measurements of all 162 repository card renders
 (512x288 average 3 809 B PNG / 5 080 B Base64, 0.27 ms decode; 256x144 1 723 B
-/ 2 298 B). TC.2–TC.10 remain TODO; no runtime evidence is claimed yet.
+/ 2 298 B). TC.2 is DONE: the Qt-free fingerprint hashes the normalized scene
+plus each referenced asset's size and 8 KiB content probe, so save/reopen and
+package moves hit while replaced bytes and edited words miss (new
+`thumbnail_cache_tests`; `DocumentController::thumbnailSourceForSlide` returns
+scene and fingerprint from one compile). TC.3–TC.10 remain TODO; no runtime
+cold/warm evidence is claimed yet.
 
 **Edit follow-up (EW.11, 2026-11-19): corrected.** Upward/no-op drops used
 `dragFrom = -1` after drag cleanup and subtracted a slot incorrectly; compute

@@ -4542,6 +4542,96 @@ QString DocumentController::sceneJsonForSlide(const QString& slideId) {
     return compileSlideJson(slideId.toStdString());
 }
 
+bool DocumentController::stampAsset(const std::string& assetId, const std::string& sourcePath,
+                                    std::vector<openshow::domain::ThumbnailAssetStamp>* stamps) {
+    const QString key = QString::fromStdString(sourcePath);
+    std::error_code code;
+    const std::uintmax_t size =
+        std::filesystem::file_size(std::filesystem::path(sourcePath), code);
+    if (code) {
+        return false;
+    }
+    const auto written = std::filesystem::last_write_time(std::filesystem::path(sourcePath), code);
+    const std::int64_t modified =
+        code ? 0
+             : std::chrono::duration_cast<std::chrono::nanoseconds>(written.time_since_epoch())
+                   .count();
+    const auto memo = fAssetProbes.constFind(key);
+    if (memo != fAssetProbes.constEnd() && memo->size == size && memo->modified == modified &&
+        memo->stamp.assetId == assetId) {
+        stamps->push_back(memo->stamp);
+        return true;
+    }
+    openshow::domain::ThumbnailAssetStamp stamp;
+    std::string error;
+    if (!openshow::domain::thumbnailAssetStamp(std::filesystem::path(sourcePath), assetId, &stamp,
+                                               &error)) {
+        return false;
+    }
+    fAssetProbes.insert(key, AssetProbe{size, modified, stamp});
+    stamps->push_back(stamp);
+    return true;
+}
+
+QVariantMap DocumentController::thumbnailSourceForSlide(const QString& slideId) {
+    flushText();
+    QVariantMap row;
+    const QString sceneJson = compileSlideJson(slideId.toStdString());
+    row.insert(QStringLiteral("scene"), sceneJson);
+    if (sceneJson.isEmpty()) {
+        return row;
+    }
+    const std::string scene = sceneJson.toStdString();
+    // Live content has no honest still: a persisted picture of a video or
+    // camera background would be shown as if it were today's content.
+    if (!openshow::domain::scenePersistable(scene)) {
+        return row;
+    }
+    boost::system::error_code parseError;
+    const boost::json::value parsed = boost::json::parse(scene, parseError);
+    if (parseError || !parsed.is_object()) {
+        return row;
+    }
+    // Every asset the scene names, wherever it sits: the background layer, the
+    // audio layer and each image item carry the same member name. Identity is
+    // the asset's id plus its bytes, never the path that happens to hold them.
+    QSet<QString> ids;
+    std::function<void(const boost::json::value&)> collect = [&](const boost::json::value& value) {
+        if (value.is_object()) {
+            const boost::json::object& object = value.as_object();
+            const auto assetId = object.if_contains("assetId");
+            if (assetId != nullptr && assetId->is_string() && !assetId->as_string().empty()) {
+                ids.insert(QString::fromStdString(std::string(assetId->as_string())));
+            }
+            for (const auto& member : object) {
+                collect(member.value());
+            }
+            return;
+        }
+        if (value.is_array()) {
+            for (const boost::json::value& element : value.as_array()) {
+                collect(element);
+            }
+        }
+    };
+    collect(parsed);
+    std::vector<openshow::domain::ThumbnailAssetStamp> stamps;
+    for (const QString& id : ids) {
+        const openshow::domain::Asset* asset = fDocuments.findAsset(id.toStdString());
+        if (asset == nullptr || !asset->cameraSource.empty()) {
+            continue;
+        }
+        if (!stampAsset(asset->id, asset->sourcePath, &stamps)) {
+            // An asset that cannot be read cannot be identified, and a
+            // fingerprint without its bytes would let a replacement hit.
+            return row;
+        }
+    }
+    row.insert(QStringLiteral("fingerprint"),
+               QString::fromStdString(openshow::domain::renderFingerprint(scene, stamps)));
+    return row;
+}
+
 bool DocumentController::save() {
     flushText();
     // The durability half is one call (task 6.19b1): quiesce, write, remove the
