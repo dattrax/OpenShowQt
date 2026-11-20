@@ -902,6 +902,44 @@ int main(int argc, char** argv) {
             docs.redo();
         }
 
+        // Upward drops use the captured source slot, and the gap before
+        // the source is a no-op rather than an accidental one-slot move.
+        {
+            const auto before = railPreviews();
+            auto* grab = handleAt(2);
+            auto* destination = tileAt(1);
+            check(grab && destination, "an upward rail drop is reachable");
+            if (grab && destination) {
+                const QPoint start = grab->mapToScene(QPointF(grab->width() / 2,
+                                                              grab->height() / 2)).toPoint();
+                const QPoint end = destination->mapToScene(QPointF(30, 1)).toPoint();
+                QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+                QTest::mouseMove(window, end, 20);
+                check(rail->property("dragGap").toInt() == 1,
+                      "the upward drop previews the gap before the second slide");
+                QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, end);
+                auto expected = before;
+                expected.insert(1, expected.takeAt(2));
+                check(railPreviews() == expected,
+                      "an upward drop lands at its displayed gap without subtracting twice");
+                docs.undo();
+                check(railPreviews() == before, "one undo restores the upward move");
+            }
+            grab = handleAt(2);
+            auto* source = tileAt(2);
+            check(grab && source, "the source's preceding gap is reachable");
+            if (grab && source) {
+                const QPoint start = grab->mapToScene(QPointF(grab->width() / 2,
+                                                              grab->height() / 2)).toPoint();
+                const QPoint end = source->mapToScene(QPointF(30, 1)).toPoint();
+                QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+                QTest::mouseMove(window, end, 20);
+                QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, end);
+                check(railPreviews() == before,
+                      "dropping in the source's preceding gap leaves the order unchanged");
+            }
+        }
+
         // Escape cancels a held gesture: no order change and no history.
         {
             const auto beforeCancel = railPreviews();

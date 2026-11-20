@@ -287,8 +287,6 @@ int main(int argc, char** argv) {
               "the worker's caret geometry arrives for the draft");
         check(inlineEditor->property("caretRect").toRectF().height() > 1.0,
               "the caret has the worker's real line height");
-        auto* done = findNamed(window->contentItem(), "inlineEditorDone");
-        check(done && done->isVisible(), "the explicit Done control is offered");
         // Typing edits the draft; the document keeps the emitted words after
         // the controller's own debounce, and the caret chrome follows.
         QTest::keyClick(window, Qt::Key_X);
@@ -355,15 +353,96 @@ int main(int argc, char** argv) {
         QTest::keyClick(window, Qt::Key_Escape);
         QTest::qWait(40);
         check(!canvas->property("textMode").toBool(), "Escape returns to box mode");
-        // The explicit Done control is the other honest exit.
+        // Clicking empty canvas finishes editing even though it is not a
+        // focusable field. There is no separate Done-button workflow.
         if (gesture) gesture->forceActiveFocus();
         QTest::keyClick(window, Qt::Key_Return);
         QTest::qWait(80);
-        auto* doneAgain = findNamed(window->contentItem(), "inlineEditorDone");
-        if (doneAgain) QMetaObject::invokeMethod(doneAgain, "clicked");
-        QTest::qWait(60);
-        check(!canvas->property("textMode").toBool(),
-              "Done leaves in-place editing with the words kept");
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          canvas->mapToScene(QPointF(2, 2)).toPoint());
+        check(waitFor([&] { return !canvas->property("textMode").toBool(); }),
+              "clicking outside the text box leaves editing and keeps its words");
+        check(docs.currentSlideText() == originalWords,
+              "clicking off the box never discards committed words");
+
+        // Up/Down follow rendered lines and retain the desired horizontal
+        // position across a short line; Shift extends the same selection.
+        docs.customizeCurrentSlide(QStringLiteral("fontFamily"), QStringLiteral("DejaVu Sans Mono"));
+        docs.customizeCurrentSlide(QStringLiteral("fontSize"), 60.0);
+        docs.customizeCurrentSlide(QStringLiteral("align"), QStringLiteral("left"));
+        const QString multiline = QStringLiteral("0123456789abcdef\nxy\n0123456789abcdef");
+        docs.setSlideText(multiline);
+        docs.flushText();
+        if (gesture) gesture->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Return);
+        check(waitFor([&] { return inlineEditor->property("geometryFresh").toBool(); }),
+              "the multiline editing geometry arrives");
+        inlineInput->setProperty("cursorPosition", 8);
+        check(waitFor([&] { return inlineEditor->property("pendingGeometry").toInt() == 0; }),
+              "the initial column is measured");
+        QTest::keyClick(window, Qt::Key_Down);
+        check(waitFor([&] { return inlineInput->property("cursorPosition").toInt() == 19; }),
+              "Down moves to the short line's end");
+        QTest::keyClick(window, Qt::Key_Down);
+        check(waitFor([&] { return inlineInput->property("cursorPosition").toInt() == 28; }),
+              "Down restores the remembered column on the following longer line");
+        QTest::keyClick(window, Qt::Key_Up);
+        QTest::keyClick(window, Qt::Key_Up);
+        check(waitFor([&] { return inlineInput->property("cursorPosition").toInt() == 8; }),
+              "rapid Up presses return to the original line and column");
+        QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
+        QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
+        check(waitFor([&] {
+                  return inlineInput->property("selectionStart").toInt() == 8 &&
+                         inlineInput->property("selectionEnd").toInt() == 28;
+              }), "Shift+Down extends the selection across rendered lines");
+        check(docs.currentSlideText() == multiline, "vertical navigation changes no words");
+        docs.setTextBoxGeometry(300, 100, 400, 800);
+        inlineInput->setProperty("cursorPosition", 3);
+        check(waitFor([&] {
+                  return inlineEditor->property("pendingGeometry").toInt() == 0 &&
+                         inlineEditor->property("caretLine").toInt() == 0;
+              }), "a narrow box provides a wrapped-line fixture");
+        QTest::keyClick(window, Qt::Key_Down);
+        check(waitFor([&] {
+                  const int offset = inlineInput->property("cursorPosition").toInt();
+                  return inlineEditor->property("caretLine").toInt() == 1 && offset > 3 && offset < 17;
+              }, 3000), "Down follows a soft wrap rather than the next authored newline");
+        QTest::keyClick(window, Qt::Key_Up);
+        check(waitFor([&] { return inlineInput->property("cursorPosition").toInt() == 3; }, 3000),
+              "Up returns to the same column across a soft wrap");
+        docs.revertCurrentSlideField(QStringLiteral("placement"));
+        inlineInput->setProperty("text", QStringLiteral("0123456789abcdef\n\n0123456789abcdef"));
+        inlineInput->setProperty("cursorPosition", 3);
+        check(waitFor([&] { return inlineEditor->property("pendingGeometry").toInt() == 0; }),
+              "empty-line navigation starts from matching geometry");
+        QTest::keyClick(window, Qt::Key_Down);
+        check(waitFor([&] { return inlineInput->property("cursorPosition").toInt() == 17; }, 3000),
+              "Down can enter an empty authored line");
+        QTest::keyClick(window, Qt::Key_Down);
+        check(waitFor([&] { return inlineInput->property("cursorPosition").toInt() == 21; }, 3000),
+              "Down leaves an empty line at the remembered column");
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          canvas->mapToScene(QPointF(stageX + 20 * zoom, stageY + 20 * zoom)).toPoint());
+        check(waitFor([&] { return !canvas->property("textMode").toBool(); }),
+              "clicking off a selected text range also finishes editing");
+        docs.setSlideText(originalWords);
+        docs.flushText();
+        docs.revertCurrentSlideField(QStringLiteral("fontFamily"));
+        docs.revertCurrentSlideField(QStringLiteral("fontSize"));
+        docs.revertCurrentSlideField(QStringLiteral("align"));
+        if (gesture) gesture->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(80);
+        auto* inspectorField = findNamed(window->contentItem(), "themeSizeField");
+        check(inspectorField != nullptr, "an inspector text field is available for focus handoff");
+        if (inspectorField) {
+            inspectorField->forceActiveFocus();
+            check(waitFor([&] { return !canvas->property("textMode").toBool(); }),
+                  "moving to an inspector ends inline editing");
+            check(window->activeFocusItem() == inspectorField,
+                  "finishing text editing does not steal focus back from the inspector");
+        }
         // The source drawer is still an explicit action on a capable worker.
         auto* sourceButton = findNamed(window->contentItem(), "sourceTextButton");
         check(sourceButton != nullptr, "the source-text action is offered");

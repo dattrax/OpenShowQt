@@ -11,6 +11,17 @@ archive is a current instruction.
 
 ## Current checkpoint
 
+**Edit follow-up (EW.11, 2026-11-19): corrected.** Upward/no-op drops used
+`dragFrom = -1` after drag cleanup and subtracted a slot incorrectly; compute
+the destination before clearing state and validate the release in both axes.
+Up/Down now use worker hit testing and a remembered horizontal position,
+including wrapped/empty lines, short lines, Shift selection and rapid keys.
+Clicking blank canvas outside the edited box commits/exits directly; inspector
+focus is preserved and the Done button is removed. UI rebuilt; workspace and
+UI-load checks passed (65.03/8.02 s), and the expanded real-worker editing
+journey passed at default scale and `QT_SCALE_FACTOR=1.5` (15.37/15.40 s).
+`git diff --check` passed.
+
 **WYSIWYG editing, slide ordering and insertion (2026-11-19): EW.1–EW.10 are
 DONE.** The Edit stage now edits the words on the slide, the rail reorders and
 inserts slides by pointer or keyboard, and both paths are one document history
@@ -31,7 +42,7 @@ stored, prepared, presented or cached.
 `TextInput` for IME/clipboard/navigation/line breaks, worker-derived caret,
 selection and composition chrome, and pointer selection by worker hit tests.
 Escape owns the session first (then the rail grab, then selection/output), and
-Done, focus exit, navigation, undo/redo, save and page leave commit or retire
+click-outside, focus exit, navigation, undo/redo, save and page leave commit or retire
 the session deterministically. The persistent bottom field became an explicit
 **Source text** drawer, opened automatically and labelled when the worker
 cannot answer geometry.

@@ -382,6 +382,25 @@ Item {
         }
     }
 
+    // Blank canvas and other boxes do not necessarily take keyboard focus.
+    // End text mode explicitly when a press misses the box being edited.
+    MouseArea {
+        objectName: "editTextOutsideClick"
+        anchors.fill: parent
+        visible: canvas.textMode
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        onPressed: function (mouse) {
+            const point = stage.mapFromItem(this, mouse.x, mouse.y)
+            canvas.endTextEditing()
+            const hit = docs.boxAt(point.x / canvas.zoom, point.y / canvas.zoom)
+            canvas.selected = hit >= 0
+            if (hit >= 0) {
+                docs.selectTextBox(hit)
+                canvas.syncFromDocuments()
+            }
+        }
+    }
+
     // The stage (task CS.2): a SlidePreviewSurface on the Selection target —
     // the worker's off-air render of THIS slide, letterboxed honestly — with
     // the box chrome riding the fitted content rectangle the pixels occupy.
@@ -616,7 +635,7 @@ Item {
         InlineTextEditor {
             id: inlineEditor
             anchors.fill: parent
-            onFinished: {
+            onFinished: function (restoreCanvasFocus) {
                 if (canvas.textSlideId !== "" && canvas.textBoxId !== "") {
                     canvas.caretMemory[canvas.textSlideId + "/" + canvas.textBoxId] =
                         inlineEditor.caretOffset
@@ -624,7 +643,7 @@ Item {
                 canvas.textMode = false
                 canvas.syncFromDocuments()
                 canvas.selected = true
-                gestureArea.forceActiveFocus()
+                if (restoreCanvasFocus) gestureArea.forceActiveFocus()
             }
             onGeometryLost: {
                 // No matching layout: keep the committed draft, clear the

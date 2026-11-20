@@ -1061,7 +1061,8 @@ selected text box enters a text session on double-click, Enter or the box
 menu's **Edit text**; the mode is identity-bound to one show/slide/box and the
 session commits its draft to the document through the ordinary debounce, so a
 typing burst is one document history entry and the native field never keeps an
-independent undo stack. Escape/Done/focus exit commit and leave; navigation, a
+independent undo stack. Escape, clicking outside the box and focus exit commit
+and leave; an inspector receiving focus keeps it. Navigation, a
 selection change, a removed target, undo/redo, save and page leave retire the
 session deterministically.
 
@@ -1070,7 +1071,10 @@ only an input sink and chrome: a transparent, focused `TextInput` for IME,
 clipboard, grapheme/word navigation and line breaks, plus a caret, selection
 rectangles and composition decoration. Pointer selection is done with the
 worker's hit test, so clicking and dragging select the glyphs under the
-pointer. When the worker cannot answer geometry — disconnected or too old —
+pointer. Up/Down use that geometry and hit test to move between rendered
+lines, retaining a preferred horizontal position through short/empty lines;
+Shift extends the selection and repeated keys wait for matching caret geometry.
+When the worker cannot answer geometry — disconnected or too old —
 the editor clears the chrome and Edit shows an explicit **Source text** drawer
 (automatically and labelled as such when the capability is absent); it is
 source editing, never a Qt layout pretending to be the audience's pixels.
@@ -1107,7 +1111,8 @@ obeyed and the cue is neither moved nor recreated.
 Evidence: `editor_layout_tests` (real worker wrap, draft override, capitals,
 round-trip hit tests, refusals, latency); `frontend_journey_tests` (controller
 adapter, output isolation); `library_service_ui_tests` (double-click/Enter
-entry, typing, worker caret and selection, line breaks, Escape/Done, undo
+entry, typing, worker caret and selection, line breaks, Up/Down/Shift navigation,
+click-outside/Escape and inspector focus handoff, undo
 granularity, source drawer, insert→type→reorder→undo/redo on the real shell);
 `document_controller_tests` (move/insert verbs, refusals, no-ops, inheritance,
 leading cue, persistence); `workspace_ui_tests` (real rail pointer drags,

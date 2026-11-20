@@ -114,9 +114,9 @@ Rectangle {
         const from = rail.dragFrom
         const gap = rail.dragGap
         const slideId = rail.dragSlideId
+        const to = rail.dropTarget(gap)
         rail.cancelDrag()
         if (!insideLane || from < 0 || gap < 0) return
-        const to = rail.dropTarget(gap)
         if (to === from) return  // the source's own gap: no structural edit
         docs.moveSlideFor(docs.currentSongId, slideId, to)
     }
@@ -374,7 +374,9 @@ Rectangle {
                     }
                     onReleased: function (mouse) {
                         const point = rail.mapFromItem(grabMouse, mouse.x, mouse.y)
-                        rail.finishDrag(point.y >= slides.y - 8
+                        rail.updateDrag(point.x, point.y)
+                        rail.finishDrag(point.x >= slides.x && point.x <= slides.x + slides.width
+                                        && point.y >= slides.y - 8
                                         && point.y <= slides.y + slides.height + 8)
                     }
                     onCanceled: rail.cancelDrag()

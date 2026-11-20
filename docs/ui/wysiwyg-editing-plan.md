@@ -15,6 +15,13 @@ the place each leaf records what it actually built.
 - Escape first cancels an IME composition or an active selection drag, then
   leaves text mode keeping the committed words. It never clears audience
   output.
+- Clicking outside the edited box also ends text mode and keeps committed
+  words, including clicks on non-focusable blank canvas. Moving to an
+  inspector preserves the destination's focus; there is no Done button.
+- Up/Down move across the worker's rendered lines, including soft wraps and
+  empty lines. Preserve the preferred horizontal position through short
+  lines; Shift extends the selection. Serialize repeated key moves through
+  matching worker geometry and retire pending moves when typing or clicking.
 - Text previews stay debounced through the existing `documentsChanged`
   path. Caret/selection geometry is asked per edit with latest-request-wins;
   a late reply never moves a caret or repaints another slide.
@@ -132,6 +139,8 @@ Reply (all boxes/points in authored canvas units):
   `from < g ? g - 1 : g` exactly once and calls `moveSlideFor`. Escape, a
   release outside the rail, a drop on the source's own gap, or a source slide
   that vanished cancels with no edit and no history.
+  Capture that final position before clearing the drag source state, and
+  validate both horizontal and vertical release coordinates against the lane.
 - The context menu and the keyboard while the rail owns focus offer Move up,
   Move down, Insert before, Insert after. Move up/down are inactive at the
   ends; the footer's **Insert slide** inserts after the selected slide and

@@ -60,8 +60,15 @@ Item {
     // True between openAt() and the input actually taking focus; a focus-exit
     // timer left over from a previous session must not retire this one.
     property bool opening: false
+    property int caretLine: 0
+    property int lineCount: 0
+    property real preferredColumn: -1
+    property var verticalMoves: []
+    property int pendingVertical: 0
+    property bool verticalSelecting: false
+    property int verticalAnchor: 0
 
-    signal finished()
+    signal finished(bool restoreCanvasFocus)
     signal geometryLost()
 
     readonly property bool caretVisible: active && geometryFresh &&
@@ -78,6 +85,7 @@ Item {
         if (input.preeditText.length > 0) return
         // Leaving the mode keeps the committed words and flushes the debounce
         // so the one history entry names the box the burst was typed into.
+        const restoreCanvasFocus = input.activeFocus
         active = false
         docs.flushText()
         draft = ""
@@ -87,7 +95,8 @@ Item {
         pendingHit = 0
         pressPending = false
         selectionAnchor = -1
-        finished()
+        resetVerticalMovement()
+        finished(restoreCanvasFocus)
     }
 
     function openAt(offset) {
@@ -101,6 +110,7 @@ Item {
         pendingHit = 0
         pressPending = false
         selectionAnchor = -1
+        resetVerticalMovement()
         input.text = draft
         const position = offset >= 0
             ? Math.max(0, Math.min(offset, draft.length)) : draft.length
@@ -167,6 +177,7 @@ Item {
     // once that anchor is known, so a move that arrives before the press's
     // answer is remembered and replayed rather than lost.
     function hitAt(screenX, screenY, selecting) {
+        resetVerticalMovement()
         const point = Qt.point(screenX / Math.max(zoom, 0.0001),
                                screenY / Math.max(zoom, 0.0001))
         latestPoint = point
@@ -191,13 +202,49 @@ Item {
         input.insert(input.cursorPosition, "\n")
     }
 
-    function setCaret(offset) {
+    function resetVerticalMovement() {
+        preferredColumn = -1
+        verticalMoves = []
+        pendingVertical = 0
+    }
+
+    function queueVerticalMovement(direction, selecting) {
+        if (verticalMoves.length >= 32) return
+        verticalMoves = verticalMoves.concat([{direction: direction, selecting: selecting}])
+        continueVerticalMovement()
+    }
+
+    function continueVerticalMovement() {
+        if (!active || !geometryFresh || pendingGeometry || pendingHit || pendingVertical
+            || verticalMoves.length === 0) return
+        const move = verticalMoves[0]
+        verticalMoves = verticalMoves.slice(1)
+        if (caretLine + move.direction < 0 || caretLine + move.direction >= lineCount) {
+            continueVerticalMovement()
+            return
+        }
+        const scale = Math.max(zoom, 0.0001)
+        if (preferredColumn < 0) preferredColumn = caretRect.x / scale
+        verticalSelecting = move.selecting
+        verticalAnchor = input.cursorPosition === input.selectionStart
+            ? input.selectionEnd : input.selectionStart
+        const id = worker.requestEditorLayout({
+            scene: sceneJson, item: itemIndex, lines: lines(), caret: input.cursorPosition,
+            point: {x: preferredColumn,
+                    y: (caretRect.y + caretRect.height * (move.direction + 0.5)) / scale}
+        })
+        if (id > 0) pendingVertical = id
+    }
+
+    function setCaret(offset, keepColumn) {
+        if (!keepColumn) resetVerticalMovement()
         applyingCursor = true
         input.select(offset, offset)
         applyingCursor = false
     }
 
-    function setSelection(anchor, focus) {
+    function setSelection(anchor, focus, keepColumn) {
+        if (!keepColumn) resetVerticalMovement()
         applyingCursor = true
         input.select(anchor, focus)
         applyingCursor = false
@@ -210,6 +257,7 @@ Item {
             // width is the UI's own one-pixel rule, scaled.
             caretRect = Qt.rect(caret.x * zoom, caret.y * zoom,
                                 Math.max(1, zoom), caret.height * zoom)
+            caretLine = caret.line
         }
         const rows = []
         const selection = answer.selection !== undefined ? answer.selection : []
@@ -220,6 +268,7 @@ Item {
         }
         selectionRects = rows
         if (answer.fontSize > 0) renderedFontSize = answer.fontSize
+        lineCount = answer.lineCount
         geometryFresh = true
     }
 
@@ -234,6 +283,17 @@ Item {
         target: worker
         function onEditorLayoutReady(id, answer) {
             if (!editor.active) return
+            if (id === editor.pendingVertical) {
+                editor.pendingVertical = 0
+                if (answer.hit !== undefined) {
+                    if (editor.verticalSelecting)
+                        editor.setSelection(editor.verticalAnchor, answer.hit.offset, true)
+                    else
+                        editor.setCaret(answer.hit.offset, true)
+                }
+                editor.askGeometry()
+                return
+            }
             if (id === editor.pendingHit) {
                 editor.pendingHit = 0
                 if (answer.hit !== undefined) {
@@ -258,11 +318,14 @@ Item {
             if (id === editor.pendingGeometry) {
                 editor.pendingGeometry = 0
                 editor.installGeometry(answer)
+                editor.continueVerticalMovement()
             }
         }
         function onEditorLayoutFailed(id, reason) {
             if (!editor.active) return
-            if (id !== editor.pendingGeometry && id !== editor.pendingHit) return
+            if (id !== editor.pendingGeometry && id !== editor.pendingHit
+                && id !== editor.pendingVertical) return
+            editor.resetVerticalMovement()
             editor.pendingGeometry = 0
             editor.pendingHit = 0
             editor.geometryFresh = false
@@ -306,12 +369,16 @@ Item {
             if (!editor.active) return
             editor.compositionPending = preeditText.length > 0
             if (text === editor.draft) return
+            editor.resetVerticalMovement()
             editor.draft = text
             docs.setSlideText(text)
             editor.askGeometry()
         }
         onCursorPositionChanged: {
-            if (editor.active && !editor.applyingCursor) editor.askGeometry()
+            if (editor.active && !editor.applyingCursor) {
+                editor.resetVerticalMovement()
+                editor.askGeometry()
+            }
         }
         onSelectionStartChanged: {
             if (editor.active && !editor.applyingCursor) editor.askGeometry()
@@ -320,6 +387,14 @@ Item {
             if (editor.active && !editor.applyingCursor) editor.askGeometry()
         }
         Keys.onPressed: function (event) {
+            if ((event.key === Qt.Key_Up || event.key === Qt.Key_Down)
+                && preeditText.length === 0
+                && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))) {
+                editor.queueVerticalMovement(event.key === Qt.Key_Up ? -1 : 1,
+                                              !!(event.modifiers & Qt.ShiftModifier))
+                event.accepted = true
+                return
+            }
             if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
                 && preeditText.length === 0) {
                 // Enter is an authored line break; the draft and the worker's
@@ -442,16 +517,4 @@ Item {
         }
     }
 
-    // The explicit Done path (the other is Escape/focus exit).
-    PanelButton {
-        objectName: "inlineEditorDone"
-        text: "Done"
-        visible: editor.active
-        height: 24
-        width: 60
-        x: Math.min(editor.width - width, input.x + input.width - width - 2)
-        y: Math.max(0, input.y - height - 2)
-        z: 33
-        onClicked: editor.finish()
-    }
 }
