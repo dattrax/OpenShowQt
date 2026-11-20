@@ -19,6 +19,8 @@ Whole-item theme application, remembered Library looks and optional reflow:
 [implementation brief](docs/ui/presentation-theme-reflow-plan.md), tasks **PT** below.
 WYSIWYG Edit workspace, slide drag/drop and insertion: **EW.1–EW.10** below
 (planned 2026-11-19; includes the agent implementation runbook).
+Persistent service-card PNGs: **TC** below (investigated 2026-11-20;
+includes storage, invalidation and agent ownership).
 
 ## Goal and reference
 
@@ -2707,6 +2709,207 @@ Execution order: EW.1 → {EW.2 → EW.3 → EW.4 → EW.5,
 EW.6 → [EW.7 and EW.8]} → EW.9 → EW.10. The inline agent may develop
 against the frozen contract in parallel, but EW.4/EW.5 cannot be accepted before
 the real renderer path passes. Insertion's final text-focus handoff joins EW.5.
+
+### Persistent service-card thumbnails in JSON (TC)
+
+User request (2026-11-20): retain rendered service-card pictures with the
+song/Bible data so subsequent runs can reuse them. This brief interprets
+"BCD PNG" as **Base64-encoded PNG** inside JSON. TC.1's frozen contract and
+measurements live in [the TC design note](docs/ui/thumbnail-cache-plan.md);
+TC.2–TC.10 remain TODO.
+
+#### Findings from the current implementation
+
+- `ShowPage.qml::slideWindow()` compiles scenes for the visible cues plus one
+  row of look-ahead, deduplicating repeated service occurrences by slide ID.
+  `bandPixels()` asks for the actual card width, bounded to 160–512 pixels
+  at 16:9. `EditorSlideRail.qml` and import/theme pages use the same thumbnail
+  consumer, with their own keys and sizes.
+- `PreviewConsumer::requestThumbnailWindow()` serves a bounded window in
+  batches of at most 32 worker renders. `thumbnailCurrent()` compares the
+  compiled scene JSON and exact pixel dimensions. Accepted shared-memory
+  pixels become `QImage`s in `fThumbnailCache`: at most **128 entries / 8 MiB**.
+  There is no persisted card PNG here. `clearThumbnails()` and stream closure
+  also discard these pictures, so page changes/reconnects can incur work as
+  well as application restarts.
+- `PreviewProducer` already renders thumbnails separately from the audience
+  and selection previews. Its decoded source-image cache is a different
+  cache; persisting finished card PNGs does not replace it. Keep worker pixels
+  on shared memory and retain its scheduling, generation and slot ownership
+  rules; no PNG/Base64 payloads belong in render RPCs.
+- Prepared songs and Bible passages are shows/slides in the **same
+  `service.json`**, currently format 15 (`src/domain/storage.cpp`), rather than
+  separate per-song/per-Bible files. Bible shows are schedule-owned and keep
+  scripture provenance. Shared Library songs instead live in **`catalog.json`**,
+  currently format 2 (`src/catalog/catalogstorage.cpp`); their canonical
+  stanzas acquire slide boundaries only when prepared for a service/theme.
+  The catalog reader rejects unknown keys, so adding cache fields requires
+  an explicit codec/version change. Do not create an installed Bible cache.
+- Service persistence stages/syncs/renames complete manifests; autosave uses a
+  background scheduler, while explicit saves still run on the UI thread.
+  Document history copies `Documents`. Putting large PNG strings directly in
+  `Slide` would multiply undo/autosave costs and make cache arrivals look like
+  authoring changes. Use a separate derived-data overlay at the storage seam.
+
+**Assessment:** reusing valid PNGs should avoid worker thumbnail rendering,
+readback and shared-memory delivery on reopen. It still costs JSON parsing,
+Base64 decoding, PNG decoding and image upload. Base64 takes
+`4 * ceil(pngBytes / 3)` bytes before JSON overhead; rewriting an enlarged
+manifest can offset the gain. TC.1/TC.10 must measure this on this application,
+including UI stalls and package size; no speedup is claimed by this plan.
+
+#### Required contracts
+
+1. **Placement and authority.** Start with an optional, independently versioned
+   root `thumbnailCache` block in `service.json`, alongside the authoritative
+   song/Bible shows. Associate entries with owning show/slide IDs and a render
+   fingerprint; repeated service occurrences share one picture. Keep cache
+   records outside `Documents`/History and merge them at serialization. An
+   absent, unsupported or invalid cache is a miss; valid authored content must
+   remain loadable when the cache block is unusable. Syntactically broken JSON
+   still follows the existing load-failure contract.
+2. **Entry shape.** Freeze a Qt-free value contract in TC.1: owner IDs,
+   fingerprint, renderer/cache version, pixel width/height, PNG byte length,
+   PNG checksum and `pngBase64`. Preserve alpha; store the rendered slide
+   surface only. Card numbering, captions, selection/LIVE borders and other
+   operator chrome remain QML state. Bound record count, encoded bytes per
+   entry, total encoded bytes and decoded image dimensions before allocation.
+3. **Identity and invalidation.** Hash a deterministic representation of the
+   resolved scene, extent, static thumbnail policy, renderer version and font
+   environment, including referenced asset identity. Normalize package-local
+   paths so moving a service does not spoil hits; IDs/titles or process-local
+   generation numbers alone are insufficient. In-place asset replacement,
+   font/fallback changes, theme/context/geometry/effects/text edits and reflow
+   must invalidate affected pictures. Start conservatively if renderer/font
+   identity cannot be established; do not display a trusted-looking stale
+   picture while checking it. Pin thumbnail behavior for video/camera/time
+   content, or bypass persistence for those scenes initially.
+4. **Size policy.** Exact current dimensions would regenerate after small
+   window resizes; a single large canonical image consumes more of the 8 MiB
+   resident budget. TC.1 compares exact dimensions with fixed 16:9 buckets
+   (candidate widths 256/512), then freezes the choice and scaling rules for
+   Show and Edit. Recalculate resident capacity at the chosen extents and test
+   a full visible window; do not silently raise memory limits or reduce quality.
+5. **Read and render flow.** Visible request → current memory image → validated
+   persisted entry → existing worker miss path. Decode only demanded pictures
+   on a bounded background lane; feed successful hits through the existing
+   keyed repaint path. A cached hit must suppress its worker request, not just
+   paint earlier while the same render runs. Keep transient import/theme-plan
+   keys out of durable service records. A finished render may populate the
+   overlay only while its captured owner, document epoch, scene and size still
+   match. Release shared-memory slots promptly, before PNG encoding or disk IO.
+6. **Writes and lifecycle.** Reuse the existing persistence owner and durable
+   replace procedure; never add a competing writer of `service.json`. Merge
+   current cache entries into explicit save/autosave snapshots without marking
+   authored content dirty, adding undo entries or triggering catalog reprepare.
+   Define bounded, coalesced cache-only flushes for already-saved, writable
+   packages so a warmed clean service need not be manually saved every run:
+   merge only entries matching the last durable document snapshot, preserve
+   unsaved edits in memory, and serialize against save/load/recovery epochs.
+   Detect external manifest changes before a cache-only replacement and skip
+   rather than overwrite them. Unsaved/new/read-only packages can keep entries
+   in memory until an authorized normal save. Cache write failure must leave
+   the previous package usable and must not fail an otherwise valid document
+   save; retry without optional cache data where appropriate. Prune deleted,
+   stale and excess entries; do not rewrite the manifest on every frame.
+7. **Library reuse.** TC.9 adds bounded per-item *render variants* to
+   `catalog.json`, using the same validated entry contract. Catalog stanzas
+   remain canonical; a cached picture does not establish slide boundaries or
+   bypass preparation/reflow. Map a prepared slide to its exact content/layout
+   variant, allowing new service/slide IDs without sharing the wrong theme's
+   pixels. A song can have several looks. Services remain self-contained when
+   the Library is unavailable; scripture thumbnails remain in the service.
+
+#### Task ledger and dependencies
+
+Target 0.5–2 engineer-days per leaf; split before starting if the spike exposes
+larger work. Freeze TC.1 interfaces before parallel implementation. No task is
+DONE solely because its own isolated fixtures pass.
+
+| ID | Status | Owner | Depends on | Work and acceptance |
+|---|---|---|---|---|
+| TC.1 | DONE | Coordinator | Current EW/PT baseline | Capture cold/reopen/page-switch timings and render counts on a representative song/Bible service. Compare PNG sizes and exact/bucket sizing; freeze entry DTO, limits, format strategy, source/font signature, overlay API, write policy and fixtures. Record measured choices before agents implement. |
+| TC.2 | TODO | Cache runtime | TC.1 | Implement deterministic render fingerprints and asset/font/environment invalidation in focused helpers. Save/reload and package relocation hit; visual changes miss; repeated occurrences share. Add worker identity metadata only if existing information is insufficient. |
+| TC.3 | TODO | Persistence | TC.1 | Extend the Qt-free service codec with optional cache-overlay input/output and an explicit format decision. Old files load; invalid/unknown cache records fall back without losing authored content; deterministic round-trip and encoded-size/count bounds pass. Do not put PNGs in undo snapshots. |
+| TC.4 | TODO | Cache runtime | TC.1 | Implement bounded background PNG encode/decode, checksum/header validation, cancellation and overlay eviction. Corrupt Base64/PNG, oversized dimensions, byte-budget exhaustion and canceled work become misses without UI stalls or unbounded allocation. |
+| TC.5 | TODO | Coordinator | TC.2–TC.4 | Integrate the overlay with explicit save, autosave/recovery and coalesced cache-only flushes through the existing owner. Prove no authoring dirty/undo change, no implicit saving of edits, safe epoch/external-change rejection and durable fault fallback. Cache blobs do not enter normal history copies. |
+| TC.6 | TODO | Cache runtime | TC.2–TC.4; TC.5 for persisted round-trip | Add cache-first lookup before worker batches and capture accepted misses after shared-memory copying. Mixed hit/miss windows request only misses; all-hit windows send no thumbnail-render RPC. Preserve byte/count ceilings, batch fairness, slot release and stale-frame rejection. |
+| TC.7 | TODO | UI/lifecycle | TC.1; TC.6 for final integration | Wire Show/Edit requests to durable owners and the agreed size policy. Separate persisted availability from current worker-thumbnail capability, while requiring validated render identity. Keep cached pictures displayable where safe during page changes/reconnects; hide invalid pictures immediately. Import plans remain transient; hidden pages remain silent. |
+| TC.8 | TODO | Persistence | TC.5–TC.7 | Verify save/reopen, clean-service warming without manual save, autosave recovery, save/adopt path rebinding, Save/load cancellation and service deletion. Inject write/rename/sync failures and delayed old-epoch encode/decode completions. Read-only/missing caches fall back; unsaved authoring never leaks into a cache-only write. |
+| TC.9 | TODO | Persistence + coordinator | TC.2–TC.8 | Extend catalog format/strict key validation and its persistence overlay for bounded prepared-song variants. Through ServiceCatalogBridge, reuse only matching prepared layouts across services; lyric/theme/reflow changes miss, cache updates do not bump content/record revisions or reprepare songs, and deleting the Library does not break a saved service. |
+| TC.10 | TODO | Coordinator + owners | TC.8–TC.9 | Run integrated real-worker journeys and affected regressions; measure cold generation, warm reopen and large-service parse/save cost. Record size, peak resident/cache bytes, UI latency, hit/miss/render counts and audience timing. Reconcile architecture/PROGRESS and retain evidence before marking TC complete. |
+
+#### Evidence (2026-11-20)
+
+TC.1 is DONE: `docs/ui/thumbnail-cache-plan.md` freezes the block placement
+(service format stays 15, independently versioned `thumbnailCache`), the entry
+limits, the 512x288 canonical bucket, the fingerprint inputs (normalized scene,
+asset size/probe, renderer identity), the Qt-free DTO/overlay API and the
+read/write/prune rules. Extent choice is backed by measurements of all 162
+repository card renders (512x288: 3 809 B PNG / 5 080 B Base64 average, 0.27 ms
+decode; 256x144: 1 723 B / 2 298 B). Runtime cold/warm timings and render
+counts belong to TC.10 and are not claimed here.
+
+#### Agent assignments and integration rules
+
+Use one coordinator plus up to three implementation agents after TC.1:
+
+- **Persistence agent:** TC.3, TC.8 and the catalog-codec part of TC.9. Own
+  `src/domain/storage.cpp`, its public storage header,
+  `src/catalog/catalogstorage.cpp`, its header and focused storage fixtures.
+  Preserve Qt independence, legacy loading and staged durability. Coordinate
+  with the cache agent on the shared DTO before either writes a codec.
+- **Cache runtime agent:** TC.2, TC.4 and TC.6. Own new fingerprint/PNG/cache
+  helper files and `PreviewConsumer.*`, with focused consumer/codec fixtures.
+  Keep image work off the UI/presentation threads and do not retain stream
+  slots for asynchronous jobs. Request shared adapter changes from the
+  coordinator rather than editing another owner's files.
+- **UI/lifecycle agent:** TC.7 and integrated Show/Edit fixtures. Own
+  `ShowPage.qml`, `EditorSlideRail.qml`, `SlidePreviewSurface.qml` and
+  `PreviewView.*` where needed. Render through the shared preview surface;
+  do not add Base64 properties or decode image data in QML delegates. Prove
+  placeholder/capability behavior and unchanged selection/LIVE chrome.
+- **Coordinator:** TC.1, TC.5, bridge/controller integration in TC.9 and
+  TC.10. Own shared edits to `DocumentController.*`, `DocumentPersistence.*`,
+  `AutosaveScheduler.*`, `CatalogController.*`, `ServiceCatalogBridge.*`,
+  `WorkerController.*`, worker/protocol signature changes if necessary,
+  CMake registration and planning/handoff docs. Integrate agreed small patches
+  from other agents; avoid simultaneous edits to these shared files.
+
+Each agent first reads current PLAN/PROGRESS and local instructions, inspects
+the existing dirty tree and names its exact files, API dependencies and checks.
+Preserve the pending EW/editor changes. Do not reset/stash/commit unrelated
+work. Hand off schema/API changes, files touched, commands/results, gaps and
+the next integration step. Test doubles can unblock parallel development;
+acceptance requires the real storage/worker path.
+
+Execution: TC.1 → {TC.2, TC.3, TC.4, TC.7 fixtures} → TC.5/TC.6 →
+TC.7 integration → TC.8 → TC.9 → TC.10. Coordinate TC.5 and TC.6 through
+the frozen overlay API. No proactive rendering of the whole Library/service.
+
+#### Completion evidence
+
+- A fresh-process reopen of an unchanged warmed service displays its visible
+  song/Bible cards from persisted PNGs and issues **zero thumbnail renders for
+  those valid hits**. Mixed windows render only misses; reorder/duplicate
+  occurrences reuse pixels while captions/ordinals remain current.
+- Real-worker checks cover text/box edits, theme/context/effects changes,
+  reflow, undo/redo, assets replaced in place, font/renderer changes, relocation,
+  scaling/zoom, page changes, worker restart and late old-document results.
+  A corrupt/unsupported cache never supplies the wrong slide or prevents valid
+  authored content from loading. Cache failure never changes audience output.
+- Run affected `domain_tests`, `catalog_tests`, document/controller and
+  song-service/reflow tests, `preview_ownership_tests`,
+  `preview_selection_tests`, `preview_budget_tests`, `worker_controller_tests`,
+  Library/service/workspace UI journeys and UI-load checks, plus the new
+  codec/cache/reopen fixtures. Check worker Qt independence if its signature
+  contract changes. Record display/hardware skips separately.
+- Compare the same fixtures with cache disabled, cold and warm in separate
+  processes. Include a large service to expose JSON parsing and synchronous
+  save regressions; report median/p95 first-visible-card time, worker renders,
+  UI stalls, manifest growth, write frequency and audience deadline counters.
+  Resolve any material regression against TC.1's agreed budgets before closing.
+  Run `git diff --check`; planning alone supplies none of this runtime evidence.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

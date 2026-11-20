@@ -11,6 +11,16 @@ archive is a current instruction.
 
 ## Current checkpoint
 
+**Persistent service-card thumbnails (TC.1, 2026-11-20): contract frozen.**
+`docs/ui/thumbnail-cache-plan.md` fixes the optional, independently versioned
+`thumbnailCache` block in `service.json` (service format stays 15), the entry
+bounds (256 records / 32 KiB PNG / 1.5 MiB encoded), the single 512x288 bucket,
+the fingerprint inputs (normalized scene JSON, asset size + 8 KiB content probe,
+renderer identity), the Qt-free DTO/codec API and the overlay read/write rules.
+The bucket was chosen from measurements of all 162 repository card renders
+(512x288 average 3 809 B PNG / 5 080 B Base64, 0.27 ms decode; 256x144 1 723 B
+/ 2 298 B). TC.2–TC.10 remain TODO; no runtime evidence is claimed yet.
+
 **Edit follow-up (EW.11, 2026-11-19): corrected.** Upward/no-op drops used
 `dragFrom = -1` after drag cleanup and subtracted a slot incorrectly; compute
 the destination before clearing state and validate the release in both axes.
