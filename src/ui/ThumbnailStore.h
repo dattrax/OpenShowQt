@@ -99,6 +99,11 @@ public:
                 const QImage& rendered);
     // Drops one slide's records (an edit made its fingerprints stale).
     void forget(const QString& slideId);
+    // TC.9: a Library variant copied into this service under its new slide id.
+    // It becomes an ordinary service record (dirty, saved with the service).
+    void adoptEntry(const openshow::domain::ThumbnailCacheEntry& entry);
+    const openshow::domain::ThumbnailCacheEntry* find(const QString& slideId,
+                                                     const QString& fingerprint) const;
 
     // --- truth for tests and diagnostics --------------------------------
     bool has(const QString& slideId, const QString& fingerprint) const;
@@ -130,6 +135,9 @@ public:
 signals:
     void pictureReady(const QString& slideId, const QString& fingerprint, const QImage& image);
     void pictureMissed(const QString& slideId, const QString& fingerprint);
+    // A worker render became a durable record. The Library bridge uses this to
+    // remember the look against the catalog item the show came from.
+    void recordStored(const QString& showId, const QString& slideId, const QString& fingerprint);
     void countersChanged();
 
 private:

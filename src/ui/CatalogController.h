@@ -38,7 +38,9 @@
 #include <vector>
 
 #include "openshow/catalog/catalog.h"
+#include "openshow/catalog/catalogstorage.h"
 #include "openshow/catalog/history.h"
+#include "openshow/domain/thumbnails.h"
 
 namespace openshow::ui {
 
@@ -83,6 +85,20 @@ public:
     // session (both C++ neighbours). Never exposed to QML as a pointer.
     const openshow::catalog::Catalog& catalog() const { return fCatalog; }
     const openshow::catalog::CatalogItem* findItem(const QString& id) const;
+
+    // --- TC.9: bounded render variants (derived data, never a revision) ---
+    //
+    // A Library song's prepared looks travel beside the catalog model, so a
+    // cache arrival can bump no record/content revision, add no history entry
+    // and trigger no re-preparation. Identity is the render fingerprint.
+    std::vector<openshow::domain::ThumbnailCacheEntry> thumbnailVariantsFor(
+        const QString& id) const;
+    // Keeps one prepared look for the item (deduplicated by fingerprint,
+    // sanitised and bounded) and writes the block cache-only.
+    bool rememberThumbnailVariant(const QString& id,
+                                  const openshow::domain::ThumbnailCacheEntry& variant);
+    bool flushThumbnailVariants(QString* error);
+    int thumbnailVariantCount() const;
 
     // --- rows and filtering ---
 
@@ -153,6 +169,10 @@ private:
 
     void rebuildRows();
     void setStatus(const QString& status);
+    // One durable catalog write (with the derived block) and the authored
+    // digest that follows it.
+    bool persist(const openshow::catalog::Catalog& catalog, std::string* error);
+    void pruneThumbnailVariants(const openshow::catalog::Catalog& catalog);
     static std::vector<openshow::catalog::Stanza> stanzasFromVariant(
         const QVariantList& rows, std::string* error);
     static QVariantList stanzasToVariant(const std::vector<openshow::catalog::Stanza>& stanzas);
@@ -169,6 +189,8 @@ private:
     // True when a catalog.json existed but could not be read. Mutations then
     // refuse rather than overwrite a file the operator may still want.
     bool fWriteBlocked = false;
+    openshow::catalog::CatalogThumbnailCache fThumbnailVariants;
+    std::string fThumbnailDigest;
 };
 
 }  // namespace openshow::ui

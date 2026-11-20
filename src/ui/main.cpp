@@ -78,7 +78,8 @@ int main(int argc, char* argv[]) {
     // catalog destination) and the bridge that prepares a referenced catalog
     // song into the current service.
     openshow::ui::SongImport songImport(&library, &documents, &worker);
-    openshow::ui::ServiceCatalogBridge songService(&library, &documents, &worker);
+    openshow::ui::ServiceCatalogBridge songService(&library, &documents, &worker,
+                                                   &cardPictures);
 
     // Task PT.7: the one whole-item apply workflow — a measured optional
     // reflow and the two-store transaction behind the left-hand row action.

@@ -128,21 +128,27 @@ std::string hexOf(const std::uint32_t state[8]) {
 
 // --- scene normalization ---------------------------------------------------
 
-void emptyAssetPaths(boost::json::value& value) {
+void clearIdentityMembers(boost::json::value& value) {
     if (value.is_object()) {
         boost::json::object& object = value.as_object();
         for (auto& member : object) {
-            if (member.key() == "assetPath" && member.value().is_string()) {
+            const std::string_view key = member.key();
+            if ((key == "assetPath" || key == "showId" || key == "slideId") &&
+                member.value().is_string()) {
+                // A path is where the bytes happen to live; the ids are the
+                // service's own names. Neither decides a pixel, and a Library
+                // variant is copied onto freshly minted ids, so all three are
+                // emptied. Asset BYTES still enter through ThumbnailAssetStamp.
                 member.value() = boost::json::string("");
                 continue;
             }
-            emptyAssetPaths(member.value());
+            clearIdentityMembers(member.value());
         }
         return;
     }
     if (value.is_array()) {
         for (boost::json::value& element : value.as_array()) {
-            emptyAssetPaths(element);
+            clearIdentityMembers(element);
         }
     }
 }
@@ -400,7 +406,7 @@ bool normalizeSceneForFingerprint(std::string_view sceneJson, std::string* out,
         fail(error, "thumbnail fingerprint: the scene is not a JSON object");
         return false;
     }
-    emptyAssetPaths(parsed);
+    clearIdentityMembers(parsed);
     *out = boost::json::serialize(parsed);
     return true;
 }
@@ -474,13 +480,23 @@ std::string renderFingerprint(std::string_view sceneJson,
     return sha256Hex(canonical);
 }
 
-bool validateThumbnailEntry(const ThumbnailCacheEntry& entry, std::string* error) {
-    if (!entry.showId.empty() && !safeOpaqueId(entry.showId)) {
-        fail(error, "thumbnail record: the owning show id is not a name");
-        return false;
-    }
-    if (!safeOpaqueId(entry.slideId)) {
-        fail(error, "thumbnail record: the owning slide id is not a name");
+namespace {
+
+// The pixel contract, shared by a service record and a Library variant. Only
+// ownership differs: a variant names no show or slide, because the ids a
+// prepared service will mint do not exist yet.
+bool validateThumbnailPicture(const ThumbnailCacheEntry& entry, bool owned, std::string* error) {
+    if (owned) {
+        if (!entry.showId.empty() && !safeOpaqueId(entry.showId)) {
+            fail(error, "thumbnail record: the owning show id is not a name");
+            return false;
+        }
+        if (!safeOpaqueId(entry.slideId)) {
+            fail(error, "thumbnail record: the owning slide id is not a name");
+            return false;
+        }
+    } else if (!entry.showId.empty() || !entry.slideId.empty()) {
+        fail(error, "thumbnail variant: a Library picture names no service owner");
         return false;
     }
     if (!isLowerHex(entry.fingerprint, 64)) {
@@ -526,6 +542,59 @@ bool validateThumbnailEntry(const ThumbnailCacheEntry& entry, std::string* error
         return false;
     }
     return true;
+}
+
+}  // namespace
+
+bool validateThumbnailEntry(const ThumbnailCacheEntry& entry, std::string* error) {
+    return validateThumbnailPicture(entry, true, error);
+}
+
+bool validThumbnailVariant(const ThumbnailCacheEntry& entry, std::string* error) {
+    return validateThumbnailPicture(entry, false, error);
+}
+
+std::size_t sanitizeThumbnailVariants(std::vector<ThumbnailCacheEntry>* variants) {
+    if (variants == nullptr) {
+        return 0;
+    }
+    std::size_t removed = 0;
+    std::vector<ThumbnailCacheEntry> kept;
+    kept.reserve(std::min(variants->size(), kMaxThumbnailVariantsPerItem));
+    std::uint64_t encoded = 0;
+    std::set<std::string> seen;
+    for (const ThumbnailCacheEntry& entry : *variants) {
+        if (kept.size() >= kMaxThumbnailVariantsPerItem) {
+            ++removed;
+            continue;
+        }
+        if (!validThumbnailVariant(entry, nullptr)) {
+            ++removed;
+            continue;
+        }
+        if (!seen.insert(entry.fingerprint).second) {
+            ++removed;  // one look's pixels have one home
+            continue;
+        }
+        if (encoded + entry.pngBase64.size() > kMaxThumbnailVariantBytesPerItem) {
+            ++removed;
+            continue;
+        }
+        encoded += entry.pngBase64.size();
+        kept.push_back(entry);
+    }
+    *variants = std::move(kept);
+    return removed;
+}
+
+const ThumbnailCacheEntry* findThumbnailVariant(
+    const std::vector<ThumbnailCacheEntry>& variants, std::string_view fingerprint) {
+    for (const ThumbnailCacheEntry& entry : variants) {
+        if (entry.fingerprint == fingerprint) {
+            return &entry;
+        }
+    }
+    return nullptr;
 }
 
 std::size_t sanitizeThumbnailCache(ThumbnailCache* cache) {

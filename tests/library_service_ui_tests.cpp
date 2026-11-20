@@ -233,6 +233,15 @@ int main(int argc, char** argv) {
     click(importMenu);
     QTest::qWait(40);
     check(window->property("page") == "songimport", "the menu opens the same import page");
+    // The page keeps the scroll position it had when the operator left it
+    // (the Add flow scrolled to the bottom to reach the button). Bring the
+    // header back into the viewport before clicking, as reopening the page in
+    // the application does by hand; a click outside the viewport lands on
+    // nothing.
+    if (importScroll) {
+        importScroll->setProperty("contentY", 0.0);
+        QTest::qWait(40);
+    }
     click(findNamed(window->contentItem(), "songImportBackButton"));
     QTest::qWait(40);
     check(window->property("page") == "edit", "toolbar song import returns to its originating page");

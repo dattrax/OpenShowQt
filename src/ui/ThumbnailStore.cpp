@@ -388,7 +388,24 @@ void ThumbnailStore::finishEncode(std::uint64_t generation, const QString& slide
     insertEntry(entry);
     fDirty = true;
     scheduleFlush();
+    emit recordStored(QString::fromStdString(entry.showId), slideId, fingerprint);
     emit countersChanged();
+}
+
+void ThumbnailStore::adoptEntry(const openshow::domain::ThumbnailCacheEntry& entry) {
+    if (!fEnabled || entry.slideId.empty() || !openshow::domain::validateThumbnailEntry(entry, nullptr)) {
+        return;
+    }
+    insertEntry(entry);
+    fDirty = true;
+    scheduleFlush();
+    emit countersChanged();
+}
+
+const openshow::domain::ThumbnailCacheEntry* ThumbnailStore::find(
+    const QString& slideId, const QString& fingerprint) const {
+    return openshow::domain::findThumbnail(fCache, slideId.toStdString(),
+                                           fingerprint.toStdString());
 }
 
 void ThumbnailStore::insertEntry(openshow::domain::ThumbnailCacheEntry entry) {

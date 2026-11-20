@@ -116,8 +116,10 @@ assets\n    <assetId>\x1f<byte size>\x1f<content probe>\n ... sorted
 ```
 
 - **Normalized scene JSON**: the compiled scene payload parsed and re-serialized
-  with every `assetPath` value emptied. Package-local paths therefore cannot
-  spoil a hit when a service moves; the asset identity below carries the bytes.
+  with every `assetPath`, `showId` and `slideId` value emptied. Package-local
+  paths therefore cannot spoil a hit when a service moves, and a Library
+  re-preparation — which mints new ids — still matches the look it re-renders;
+  the asset identity below carries the bytes.
 - **Asset identity**: for every asset the scene references, `assetId`, the file
   size and a probe hash over the first 4 KiB, the last 4 KiB and the size. The
   probe is memoized by (path, size, mtime), so the UI thread does not re-read

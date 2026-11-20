@@ -41,7 +41,8 @@ bool check(bool condition, const char* what) {
 
 std::string sceneWith(const std::string& words, const std::string& assetPath,
                       const std::string& background = "flat") {
-    std::string json = R"({"format":1,"background":{"transparent":false,"image":)";
+    std::string json =
+        R"({"format":1,"showId":"show1","slideId":"slide9","background":{"transparent":false,"image":)";
     json += background == "flat" ? "false" : "true";
     json += R"(,"video":)";
     json += background == "video" ? "true" : "false";
@@ -169,6 +170,9 @@ void exerciseFingerprint() {
           "the normalized scene carries no asset path");
     check(normalized.find("\"assetPath\":\"\"") != std::string::npos,
           "the asset path member stays, empty");
+    check(normalized.find("\"showId\":\"\"") != std::string::npos &&
+              normalized.find("\"slideId\":\"\"") != std::string::npos,
+          "service ids do not enter the fingerprint");
 
     check(scenePersistable(sceneA), "a static card may be kept");
     check(!scenePersistable(sceneWith("x", "/a/v.mp4", "video")),

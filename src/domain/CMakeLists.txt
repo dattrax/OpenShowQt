@@ -1,6 +1,7 @@
 add_library(openshow_domain STATIC
   documents.cpp
   history.cpp
+  jsoncanonical.cpp
   refloweligibility.cpp
   reflowsource.cpp
   storage.cpp

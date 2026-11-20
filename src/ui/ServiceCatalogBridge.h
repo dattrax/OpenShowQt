@@ -34,6 +34,7 @@
 namespace openshow::ui {
 
 class DocumentController;
+class ThumbnailStore;
 class WorkerController;
 
 class ServiceCatalogBridge final : public QObject {
@@ -43,8 +44,13 @@ class ServiceCatalogBridge final : public QObject {
 
 public:
     // `catalog` is used only to look items up; the bridge never edits it.
+    // `pictures` (TC.9) is the service's picture overlay. When present, a
+    // prepared slide whose render fingerprint matches a remembered Library
+    // look is seeded from the catalog, and a worker render of a linked show is
+    // remembered back into the Library. Null keeps the pre-TC behaviour.
     ServiceCatalogBridge(class CatalogController* catalog,
                          DocumentController* documents, WorkerController* worker,
+                         class ThumbnailStore* pictures = nullptr,
                          QObject* parent = nullptr);
 
     QString status() const { return fStatus; }
@@ -80,9 +86,14 @@ private:
     // published or refused, and by the explicit entry points.
     void drainDirty();
     void setStatus(const QString& status);
+    // TC.9: copy every matching Library look onto the freshly prepared slides,
+    // and remember a linked show's finished renders against its catalog item.
+    void reuseLibraryLooks(const QString& catalogItemId, const QString& showId);
+    void rememberServiceLook(const QString& slideId, const QString& fingerprint);
 
     class CatalogController* fCatalog = nullptr;
     DocumentController* fDocuments = nullptr;
+    ThumbnailStore* fPictures = nullptr;
     SongPlanner fPlanner;
 
     QString fPendingId;

@@ -85,7 +85,8 @@ CatalogController::CatalogController(QObject* parent, std::filesystem::path base
     std::error_code ec;
     if (std::filesystem::is_regular_file(fDirectory / "catalog.json", ec) && !ec) {
         std::string error;
-        if (!openshow::catalog::loadCatalog(&fCatalog, fDirectory, &error)) {
+        if (!openshow::catalog::loadCatalog(&fCatalog, fDirectory, &error,
+                                            &fThumbnailVariants)) {
             // Never pretend an unreadable Library is empty and then
             // overwrite it on the next click. Reads answer empty and every
             // mutation refuses, naming the file, until a person fixes it.
@@ -97,7 +98,90 @@ CatalogController::CatalogController(QObject* parent, std::filesystem::path base
     // The history starts empty even when a catalog was loaded (the stacks
     // themselves need not survive a restart; the durable records do).
     fHistory->clear();
+    // TC.9: the derived block's digest is taken from the file's own authored
+    // shape; a cache-only write compares it so an external edit wins.
+    fThumbnailDigest = openshow::catalog::catalogAuthoredDigest(fCatalog);
     rebuildRows();
+}
+
+bool CatalogController::persist(const openshow::catalog::Catalog& catalog,
+                                std::string* error) {
+    pruneThumbnailVariants(catalog);
+    if (!openshow::catalog::saveCatalog(catalog, fDirectory, error, &fThumbnailVariants)) {
+        return false;
+    }
+    fThumbnailDigest = openshow::catalog::catalogAuthoredDigest(catalog);
+    return true;
+}
+
+void CatalogController::pruneThumbnailVariants(const openshow::catalog::Catalog& catalog) {
+    for (auto it = fThumbnailVariants.variants.begin();
+         it != fThumbnailVariants.variants.end();) {
+        if (catalog.find(it->first) == nullptr) {
+            it = fThumbnailVariants.variants.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+std::vector<openshow::domain::ThumbnailCacheEntry> CatalogController::thumbnailVariantsFor(
+    const QString& id) const {
+    const auto found = fThumbnailVariants.variants.find(id.toStdString());
+    return found == fThumbnailVariants.variants.end() ? std::vector<openshow::domain::ThumbnailCacheEntry>{}
+                                                     : found->second;
+}
+
+int CatalogController::thumbnailVariantCount() const {
+    int count = 0;
+    for (const auto& [id, list] : fThumbnailVariants.variants) {
+        count += static_cast<int>(list.size());
+    }
+    return count;
+}
+
+bool CatalogController::rememberThumbnailVariant(
+    const QString& id, const openshow::domain::ThumbnailCacheEntry& variant) {
+    if (fWriteBlocked || fCatalog.find(id.toStdString()) == nullptr) {
+        return false;
+    }
+    openshow::domain::ThumbnailCacheEntry record = variant;
+    record.showId.clear();
+    record.slideId.clear();
+    if (!openshow::domain::validThumbnailVariant(record, nullptr)) {
+        return false;
+    }
+    auto& list = fThumbnailVariants.variants[id.toStdString()];
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [&record](const openshow::domain::ThumbnailCacheEntry& existing) {
+                                  return existing.fingerprint == record.fingerprint;
+                              }),
+               list.end());
+    list.push_back(std::move(record));
+    openshow::domain::sanitizeThumbnailVariants(&list);
+    if (list.empty()) {
+        fThumbnailVariants.variants.erase(id.toStdString());
+    }
+    QString error;
+    return flushThumbnailVariants(&error);
+}
+
+bool CatalogController::flushThumbnailVariants(QString* error) {
+    if (fWriteBlocked) {
+        if (error != nullptr) {
+            *error = QStringLiteral("the Library could not be read");
+        }
+        return false;
+    }
+    std::string reason;
+    if (!openshow::catalog::mergeCatalogThumbnails(fDirectory, fThumbnailVariants,
+                                                   fThumbnailDigest, &reason)) {
+        if (error != nullptr) {
+            *error = QString::fromStdString(reason);
+        }
+        return false;
+    }
+    return true;
 }
 
 int CatalogController::songCount() const {
@@ -333,7 +417,7 @@ void CatalogController::undo() {
         setStatus(fromStd(error));
         return;
     }
-    if (!openshow::catalog::saveCatalog(fCatalog, fDirectory, &error)) {
+    if (!persist(fCatalog, &error)) {
         // The durable file still holds the post-undo state, so put the
         // in-memory state back to match it rather than diverge.
         std::string ignored;
@@ -359,7 +443,7 @@ void CatalogController::redo() {
         setStatus(fromStd(error));
         return;
     }
-    if (!openshow::catalog::saveCatalog(fCatalog, fDirectory, &error)) {
+    if (!persist(fCatalog, &error)) {
         std::string ignored;
         fHistory->undo(&ignored);
         setStatus(QStringLiteral("Could not save the redone Library: ") +
@@ -390,7 +474,7 @@ bool CatalogController::commit(
     if (trial == fCatalog) {
         return true;  // a no-op verb: no write, no undo step
     }
-    if (!openshow::catalog::saveCatalog(trial, fDirectory, &error)) {
+    if (!persist(trial, &error)) {
         setStatus(failurePrefix + QStringLiteral(": ") + fromStd(error));
         return false;
     }

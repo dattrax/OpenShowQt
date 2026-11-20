@@ -49,8 +49,17 @@ store drops encodes that finish after a document swap, save-adopt keeps every
 fingerprint, an unsaved edit never leaks into a cache-only write, injected
 manifest write/fsync/rename failures leave the previous package loadable, and
 read-only/deleted packages keep pictures in memory without writing
-(thumbnail_store_tests, document_controller_tests). TC.9–TC.10 remain TODO; no
-runtime cold/warm evidence is claimed yet. The long
+(thumbnail_store_tests, document_controller_tests). TC.9 is DONE: catalog
+format 3 stores bounded per-item render variants beside the model (no revision,
+history or re-preparation is touched by a picture), the bridge copies a
+matching look onto freshly prepared slides and remembers finished renders back,
+and a saved service keeps its cards after the Library is deleted
+(catalog_tests, song_service_tests). TC.10 remains TODO; no runtime cold/warm
+evidence is claimed yet. `library_service_ui_tests` could not paste its fixture
+in this session — `QGuiApplication::clipboard()->setText` leaves the selection
+empty without a focused owner in this Wayland session — so that journey is
+recorded as an environment limitation here, not a TC result; its sidebar/scroll
+fixture was made robust to a page reopening with the old scroll offset. The long
 `workspace_ui_tests` interaction sequence showed intermittent focus/click
 failures on this live desktop (Delete, Shift+F10, box menu) across repeated
 runs, including with these QML files reverted; each failure differs and a

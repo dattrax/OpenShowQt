@@ -110,8 +110,11 @@ struct ThumbnailAssetStamp {
 bool thumbnailAssetStamp(const std::filesystem::path& path, const std::string& assetId,
                          ThumbnailAssetStamp* out, std::string* error);
 
-// The compiled scene with every "assetPath" member emptied, re-serialized.
-// Asset identity travels in ThumbnailAssetStamp, never as a package-local path.
+// The compiled scene with every "assetPath", "showId" and "slideId" member
+// emptied, re-serialized. A package-local path is where bytes happen to live
+// and the ids are the service's names: none of them decides a pixel, yet a
+// re-preparation mints new ids and a save-adopt moves every path. Asset
+// identity travels in ThumbnailAssetStamp, never in the scene text.
 bool normalizeSceneForFingerprint(std::string_view sceneJson, std::string* out,
                                   std::string* error);
 
@@ -142,6 +145,23 @@ bool validateThumbnailCache(const ThumbnailCache& cache, std::string* error);
 // The record a row asks for, or nullptr.
 const ThumbnailCacheEntry* findThumbnail(const ThumbnailCache& cache, std::string_view slideId,
                                          std::string_view fingerprint);
+
+// --- Library render variants (TC.9) ---------------------------------------
+//
+// A shared-catalog song can be played under several looks, and a prepared
+// service slide's ids are new every time. A variant therefore carries no
+// service owner at all: identity is the fingerprint alone (the canonical scene,
+// the referenced asset bytes, the renderer and the bucket). The same pixel
+// record is validated with the same bounds; only the ownership differs.
+inline constexpr std::size_t kMaxThumbnailVariantsPerItem = 6;
+inline constexpr std::uint64_t kMaxThumbnailVariantBytesPerItem = 192 * 1024;
+
+bool validThumbnailVariant(const ThumbnailCacheEntry& entry, std::string* error);
+// Drops malformed, duplicate and excess variants, keeping file order and the
+// per-item count/byte ceilings. Returns how many were removed.
+std::size_t sanitizeThumbnailVariants(std::vector<ThumbnailCacheEntry>* variants);
+const ThumbnailCacheEntry* findThumbnailVariant(
+    const std::vector<ThumbnailCacheEntry>& variants, std::string_view fingerprint);
 
 // Drops malformed records in place and keeps the rest, in file order, within
 // the count and total-byte bounds (later records drop first). Returns how many

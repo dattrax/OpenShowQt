@@ -5,15 +5,27 @@
 
 #include "CatalogController.h"
 #include "DocumentController.h"
+#include "ThumbnailStore.h"
 #include "WorkerController.h"
 
 namespace openshow::ui {
 
 ServiceCatalogBridge::ServiceCatalogBridge(CatalogController* catalog,
                                            DocumentController* documents,
-                                           WorkerController* worker, QObject* parent)
-    : QObject(parent), fCatalog(catalog), fDocuments(documents),
+                                           WorkerController* worker, ThumbnailStore* pictures,
+                                           QObject* parent)
+    : QObject(parent), fCatalog(catalog), fDocuments(documents), fPictures(pictures),
       fPlanner(documents, worker, this) {
+    if (fPictures != nullptr && fCatalog != nullptr && fDocuments != nullptr) {
+        // TC.9: a finished service render of a linked show becomes one more
+        // remembered look of its Library item. The catalog's model and every
+        // revision stay untouched; the block is written cache-only.
+        connect(fPictures, &ThumbnailStore::recordStored, this,
+                [this](const QString&, const QString& slideId,
+                       const QString& fingerprint) {
+                    rememberServiceLook(slideId, fingerprint);
+                });
+    }
     connect(&fPlanner, &SongPlanner::finished, this,
             [this](bool ok, const QString& error) {
                 if (!ok) {
@@ -231,6 +243,11 @@ void ServiceCatalogBridge::publishPlan() {
         drainDirty();
         return;
     }
+    // TC.9: a look this Library already has for the song's exact prepared
+    // layout is copied under the new slide ids, so the first frame after an
+    // Add can come from disk rather than the worker. A different theme,
+    // reflow or lyric change produces different fingerprints and misses.
+    reuseLibraryLooks(fPendingId, showId);
     setStatus(fMode == Mode::Add
                   ? QStringLiteral("\u201c%1\u201d added to the service")
                         .arg(fPendingTitle)
@@ -272,6 +289,70 @@ void ServiceCatalogBridge::drainDirty() {
         return;
     }
     start(id, linked ? Mode::Refresh : Mode::Add, linked ? -1 : fPendingIndex);
+}
+
+void ServiceCatalogBridge::reuseLibraryLooks(const QString& catalogItemId,
+                                             const QString& showId) {
+    if (fPictures == nullptr || fCatalog == nullptr || fDocuments == nullptr) {
+        return;
+    }
+    const auto variants = fCatalog->thumbnailVariantsFor(catalogItemId);
+    if (variants.empty()) {
+        return;
+    }
+    const openshow::domain::Show* show =
+        fDocuments->documents().findShow(showId.toStdString());
+    if (show == nullptr) {
+        return;
+    }
+    for (const openshow::domain::Slide& slide : show->slides) {
+        const QString slideId = QString::fromStdString(slide.id);
+        const QString fingerprint = fDocuments->thumbnailSourceForSlide(slideId)
+                                        .value(QStringLiteral("fingerprint"))
+                                        .toString();
+        if (fingerprint.isEmpty()) {
+            continue;
+        }
+        const openshow::domain::ThumbnailCacheEntry* match =
+            openshow::domain::findThumbnailVariant(variants, fingerprint.toStdString());
+        if (match == nullptr) {
+            continue;
+        }
+        openshow::domain::ThumbnailCacheEntry entry = *match;
+        entry.showId = showId.toStdString();
+        entry.slideId = slide.id;
+        fPictures->adoptEntry(entry);
+    }
+}
+
+void ServiceCatalogBridge::rememberServiceLook(const QString& slideId,
+                                               const QString& fingerprint) {
+    if (fPictures == nullptr || fCatalog == nullptr || fDocuments == nullptr) {
+        return;
+    }
+    const openshow::domain::ThumbnailCacheEntry* entry =
+        fPictures->find(slideId, fingerprint);
+    if (entry == nullptr) {
+        return;
+    }
+    const openshow::domain::Documents& documents = fDocuments->documents();
+    for (const openshow::domain::Id& showId : documents.showIds()) {
+        const openshow::domain::Show* show = documents.findShow(showId);
+        if (show == nullptr || show->catalogItemId.empty()) {
+            continue;
+        }
+        for (const openshow::domain::Slide& slide : show->slides) {
+            if (slide.id != slideId.toStdString()) {
+                continue;
+            }
+            openshow::domain::ThumbnailCacheEntry variant = *entry;
+            variant.showId.clear();
+            variant.slideId.clear();
+            fCatalog->rememberThumbnailVariant(
+                QString::fromStdString(show->catalogItemId), variant);
+            return;
+        }
+    }
 }
 
 void ServiceCatalogBridge::setStatus(const QString& status) {

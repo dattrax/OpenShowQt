@@ -4,6 +4,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <string_view>
 #include <vector>
@@ -15,6 +17,7 @@
 #include <boost/system/error_code.hpp>
 
 #include "openshow/catalog/history.h"
+#include "openshow/domain/jsoncanonical.h"
 
 namespace openshow::catalog {
 
@@ -25,8 +28,15 @@ constexpr const char* kManifestName = "catalog.json";
 // format-1 file loads with no preference; a format-2 item omits the key when
 // it remembers nothing, so a catalog that never uses the feature keeps the
 // payload it always had apart from the format number.
-constexpr unsigned long long kCatalogFormat = 2;
+// Format 3 (TC.9) adds the optional root "thumbnailVariants" block: bounded,
+// independently versioned pictures of prepared looks. It changes no ITEM key,
+// so a format-2 reader's strict item schema is untouched; an older build
+// refuses the file by format, as it always has.
+constexpr unsigned long long kCatalogFormat = 3;
 constexpr unsigned long long kCatalogFormatLegacy = 1;
+constexpr unsigned long long kCatalogFormatRememberedLook = 2;
+constexpr unsigned long long kCatalogFormatRenderVariants = 3;
+constexpr unsigned long long kThumbnailVariantsFormat = 1;
 
 void fail(std::string* error, const std::string& message) {
     if (error != nullptr) {
@@ -162,9 +172,44 @@ bool onlyKeys(const boost::json::object& obj, std::initializer_list<const char*>
 // The codec is the Catalog's friend (catalog.h), so it can reconstruct a
 // loaded model wholesale while operations stay the only mutation path for
 // everything else.
+boost::json::object variantJson(const openshow::domain::ThumbnailCacheEntry& entry) {
+    boost::json::object record;
+    record.emplace("fingerprint", entry.fingerprint);
+    record.emplace("renderer", entry.renderer);
+    record.emplace("width", entry.width);
+    record.emplace("height", entry.height);
+    record.emplace("pngBytes", entry.pngBytes);
+    record.emplace("checksum", entry.checksum);
+    record.emplace("pngBase64", entry.pngBase64);
+    return record;
+}
+
+// The Library block, written last so every authored member keeps its order.
+boost::json::object variantsBlock(const CatalogThumbnailCache& variants) {
+    boost::json::object block;
+    block.emplace("format", variants.format);
+    boost::json::array items;
+    for (const auto& [id, list] : variants.variants) {
+        if (list.empty()) {
+            continue;
+        }
+        boost::json::object item;
+        item.emplace("id", id);
+        boost::json::array records;
+        for (const openshow::domain::ThumbnailCacheEntry& entry : list) {
+            records.push_back(variantJson(entry));
+        }
+        item.emplace("variants", std::move(records));
+        items.push_back(std::move(item));
+    }
+    block.emplace("items", std::move(items));
+    return block;
+}
+
 class CatalogCodec {
 public:
-    static boost::json::value toJson(const Catalog& catalog) {
+    static boost::json::value toJson(const Catalog& catalog,
+                                     const CatalogThumbnailCache* variants = nullptr) {
     boost::json::object root;
     root.emplace("format", kCatalogFormat);
     root.emplace("nextOrdinal", catalog.fNextOrdinal);
@@ -203,30 +248,58 @@ public:
         items.push_back(std::move(entry));
     }
     root.emplace("items", std::move(items));
+    if (variants != nullptr) {
+        CatalogThumbnailCache clean;
+        clean.format = kThumbnailVariantsFormat;
+        for (const auto& [id, list] : variants->variants) {
+            std::vector<openshow::domain::ThumbnailCacheEntry> kept = list;
+            openshow::domain::sanitizeThumbnailVariants(&kept);
+            if (!kept.empty()) {
+                clean.variants.emplace(id, std::move(kept));
+            }
+        }
+        if (!clean.variants.empty()) {
+            root.emplace("thumbnailVariants", variantsBlock(clean));
+        }
+    }
     return root;
 }
 
-static bool fromJson(const boost::json::value& value, Catalog* out, std::string* error) {
+static bool fromJson(const boost::json::value& value, Catalog* out, std::string* error,
+                     CatalogThumbnailCache* variants) {
     if (!value.is_object()) {
         fail(error, "catalog.json: the root is not an object");
         return false;
     }
     const boost::json::object& root = value.as_object();
-    if (!onlyKeys(root, {"format", "nextOrdinal", "items"}, "catalog.json", error)) {
+    std::optional<unsigned long long> declaredFormat;
+    if (const boost::json::value* formatValue = root.if_contains("format");
+        formatValue != nullptr && formatValue->is_int64()) {
+        declaredFormat = static_cast<unsigned long long>(formatValue->as_int64());
+    }
+    const bool rootCarriesVariants =
+        declaredFormat.has_value() && *declaredFormat >= kCatalogFormatRenderVariants;
+    if (rootCarriesVariants
+            ? !onlyKeys(root,
+                        {"format", "nextOrdinal", "items", "thumbnailVariants"},
+                        "catalog.json", error)
+            : !onlyKeys(root, {"format", "nextOrdinal", "items"}, "catalog.json", error)) {
         return false;
     }
     unsigned long long format = 0;
     if (!wantInteger(root, "format", &format, "catalog.json", error)) {
         return false;
     }
-    if (format != kCatalogFormat && format != kCatalogFormatLegacy) {
+    if (format != kCatalogFormat && format != kCatalogFormatRememberedLook &&
+        format != kCatalogFormatLegacy) {
         fail(error, "catalog.json: unsupported format " + std::to_string(format) +
-                        " (this build reads format " +
-                        std::to_string(kCatalogFormat) + " and legacy format " +
-                        std::to_string(kCatalogFormatLegacy) + ")");
+                        " (this build reads formats " +
+                        std::to_string(kCatalogFormatLegacy) + " through " +
+                        std::to_string(kCatalogFormat) + ")");
         return false;
     }
-    const bool hasRememberedLook = format >= kCatalogFormat;
+    const bool hasRememberedLook = format >= kCatalogFormatRememberedLook;
+    const bool hasRenderVariants = format >= kCatalogFormatRenderVariants;
     unsigned long long nextOrdinal = 1;
     if (!wantInteger(root, "nextOrdinal", &nextOrdinal, "catalog.json", error)) {
         return false;
@@ -399,22 +472,109 @@ static bool fromJson(const boost::json::value& value, Catalog* out, std::string*
         highest = std::max(highest, ordinal);
     }
     loaded.fNextOrdinal = std::max(nextOrdinal, highest + 1);
+
+    // TC.9: the derived Library block. Unusable variants are a miss, never a
+    // refused catalog: the authored songs load whatever this says. Ids that no
+    // longer exist are dropped with the item they described.
+    if (variants != nullptr) {
+        variants->format = kThumbnailVariantsFormat;
+        variants->variants.clear();
+        if (hasRenderVariants) {
+            const boost::json::value* block = root.if_contains("thumbnailVariants");
+            if (block != nullptr && block->is_object()) {
+                const boost::json::object& cache = block->as_object();
+                const boost::json::value* blockFormat = cache.if_contains("format");
+                if (blockFormat != nullptr && blockFormat->is_int64() &&
+                    blockFormat->as_int64() ==
+                        static_cast<std::int64_t>(kThumbnailVariantsFormat)) {
+                    const boost::json::value* items = cache.if_contains("items");
+                    if (items != nullptr && items->is_array()) {
+                        std::set<std::string> known;
+                        for (const CatalogItem& item : loaded.fItems) {
+                            known.insert(item.id);
+                        }
+                        for (const boost::json::value& value : items->as_array()) {
+                            if (!value.is_object()) {
+                                continue;
+                            }
+                            const boost::json::object& item = value.as_object();
+                            std::string id;
+                            if (!wantOptionalString(item, "id", &id, "thumbnail block", error)) {
+                                continue;
+                            }
+                            if (id.empty() || known.count(id) == 0) {
+                                continue;
+                            }
+                            const boost::json::value* list = item.if_contains("variants");
+                            if (list == nullptr || !list->is_array()) {
+                                continue;
+                            }
+                            std::vector<openshow::domain::ThumbnailCacheEntry> records;
+                            for (const boost::json::value& record : list->as_array()) {
+                                if (!record.is_object()) {
+                                    continue;
+                                }
+                                const boost::json::object& entry = record.as_object();
+                                openshow::domain::ThumbnailCacheEntry variant;
+                                std::uint64_t width = 0;
+                                std::uint64_t height = 0;
+                                std::uint64_t pngBytes = 0;
+                                auto string = [&entry](const char* key, std::string* out) {
+                                    const boost::json::value* found = entry.if_contains(key);
+                                    if (found == nullptr || !found->is_string()) {
+                                        return false;
+                                    }
+                                    *out = found->as_string().c_str();
+                                    return true;
+                                };
+                                auto number = [&entry](const char* key, std::uint64_t* out) {
+                                    const boost::json::value* found = entry.if_contains(key);
+                                    if (found == nullptr || !found->is_int64() ||
+                                        found->as_int64() < 0) {
+                                        return false;
+                                    }
+                                    *out = static_cast<std::uint64_t>(found->as_int64());
+                                    return true;
+                                };
+                                if (!string("fingerprint", &variant.fingerprint) ||
+                                    !string("renderer", &variant.renderer) ||
+                                    !number("width", &width) || !number("height", &height) ||
+                                    !number("pngBytes", &pngBytes) ||
+                                    !string("checksum", &variant.checksum) ||
+                                    !string("pngBase64", &variant.pngBase64)) {
+                                    continue;
+                                }
+                                if (width > 0xffffffffULL || height > 0xffffffffULL ||
+                                    pngBytes > 0xffffffffULL) {
+                                    continue;
+                                }
+                                variant.width = static_cast<std::uint32_t>(width);
+                                variant.height = static_cast<std::uint32_t>(height);
+                                variant.pngBytes = pngBytes;
+                                records.push_back(std::move(variant));
+                            }
+                            openshow::domain::sanitizeThumbnailVariants(&records);
+                            if (!records.empty()) {
+                                variants->variants.emplace(id, std::move(records));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     *out = std::move(loaded);
     return true;
     }
 };  // class CatalogCodec
 
-bool saveCatalog(const Catalog& catalog, const std::filesystem::path& directory,
-                 std::string* error) {
-    std::error_code ec;
-    std::filesystem::create_directories(directory, ec);
-    if (ec && !std::filesystem::is_directory(directory)) {
-        fail(error, "cannot create '" + directory.string() + "': " + ec.message());
-        return false;
-    }
+// TC.9: the catalog commit, split out so a cache-only block replacement uses
+// the same staged temp+fsync+rename and the same fault seams.
+bool writeCatalogFile(const std::filesystem::path& directory, const std::string& manifest,
+                      std::string* error) {
     const std::filesystem::path temporary =
         directory / (std::string(kManifestName) + ".tmp");
-    const std::string manifest = boost::json::serialize(CatalogCodec::toJson(catalog));
+    std::error_code ec;
     if (catalogFault("write")) {
         fail(error, "writing '" + temporary.string() +
                         "' failed: simulated fault at 'write'");
@@ -494,8 +654,23 @@ bool saveCatalog(const Catalog& catalog, const std::filesystem::path& directory,
     return syncDirectory(directory, error);
 }
 
+
+
+bool saveCatalog(const Catalog& catalog, const std::filesystem::path& directory,
+                 std::string* error, const CatalogThumbnailCache* variants) {
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    if (ec && !std::filesystem::is_directory(directory)) {
+        fail(error, "cannot create '" + directory.string() + "': " + ec.message());
+        return false;
+    }
+    return writeCatalogFile(directory,
+                            boost::json::serialize(CatalogCodec::toJson(catalog, variants)),
+                            error);
+}
+
 bool loadCatalog(Catalog* catalog, const std::filesystem::path& directory,
-                 std::string* error) {
+                 std::string* error, CatalogThumbnailCache* variants) {
     std::ifstream in(directory / kManifestName, std::ios::binary);
     if (!in) {
         fail(error, "cannot open '" + (directory / kManifestName).string() + "'");
@@ -514,7 +689,68 @@ bool loadCatalog(Catalog* catalog, const std::filesystem::path& directory,
         fail(error, "catalog.json: " + parseError.message());
         return false;
     }
-    return CatalogCodec::fromJson(value, catalog, error);
+    return CatalogCodec::fromJson(value, catalog, error, variants);
+}
+
+std::string catalogAuthoredDigest(const Catalog& catalog) {
+    return openshow::domain::canonicalJsonDigest(CatalogCodec::toJson(catalog));
+}
+
+bool mergeCatalogThumbnails(const std::filesystem::path& directory,
+                            const CatalogThumbnailCache& variants,
+                            std::string_view expectedAuthoredDigest, std::string* error) {
+    const std::filesystem::path manifest = directory / kManifestName;
+    std::ifstream in(manifest, std::ios::binary);
+    if (!in) {
+        fail(error, "cannot open '" + manifest.string() + "'");
+        return false;
+    }
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    if (in.bad()) {
+        fail(error, "reading '" + manifest.string() + "' failed");
+        return false;
+    }
+    boost::system::error_code parseError;
+    const boost::json::value parsed = boost::json::parse(buffer.str(), parseError);
+    if (parseError || !parsed.is_object()) {
+        fail(error, "catalog.json: " +
+                        std::string(parseError ? parseError.message() : "not an object"));
+        return false;
+    }
+    boost::json::object root = parsed.as_object();
+    root.erase("thumbnailVariants");
+    if (openshow::domain::canonicalJsonDigest(boost::json::value(root)) !=
+        expectedAuthoredDigest) {
+        fail(error, "catalog.json changed after it was loaded; the thumbnail variants"
+                    " were not written");
+        return false;
+    }
+    CatalogThumbnailCache clean;
+    clean.format = kThumbnailVariantsFormat;
+    for (const auto& [id, list] : variants.variants) {
+        std::vector<openshow::domain::ThumbnailCacheEntry> kept = list;
+        openshow::domain::sanitizeThumbnailVariants(&kept);
+        if (!kept.empty()) {
+            clean.variants.emplace(id, std::move(kept));
+        }
+    }
+    const bool hadBlock = root.contains("thumbnailVariants");
+    if (clean.variants.empty()) {
+        if (!hadBlock) {
+            return true;
+        }
+        root.erase("thumbnailVariants");
+    } else {
+        const boost::json::object block = variantsBlock(clean);
+        const boost::json::value* existing = root.if_contains("thumbnailVariants");
+        if (existing != nullptr &&
+            boost::json::serialize(*existing) == boost::json::serialize(block)) {
+            return true;
+        }
+        root["thumbnailVariants"] = block;
+    }
+    return writeCatalogFile(directory, boost::json::serialize(root), error);
 }
 
 }  // namespace openshow::catalog

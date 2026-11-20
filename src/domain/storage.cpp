@@ -10,6 +10,7 @@
 
 #include "openshow/domain/storage.h"
 
+#include "openshow/domain/jsoncanonical.h"
 #include "openshow/domain/thumbnails.h"
 
 #include <boost/json.hpp>
@@ -549,54 +550,12 @@ void readThumbnailCache(const boost::json::object& root, openshow::domain::Thumb
 }
 
 // The authored bytes' identity: everything the manifest says except the cache
-// block. Object member order is NOT stable across a parse and a re-serialize
-// (boost::json may move an assigned or erased member), so the digest walks a
-// canonical, key-sorted spelling: a manifest compares equal to the documents it
-// was written from, and to itself after a cache-only replacement, whatever the
-// file's member order happens to be.
-void appendCanonicalJson(const boost::json::value& value, std::string* out) {
-    if (value.is_object()) {
-        std::vector<std::pair<std::string, const boost::json::value*>> members;
-        for (const auto& member : value.as_object()) {
-            members.emplace_back(std::string(member.key()), &member.value());
-        }
-        std::sort(members.begin(), members.end(),
-                  [](const auto& a, const auto& b) { return a.first < b.first; });
-        out->push_back('{');
-        bool first = true;
-        for (const auto& member : members) {
-            if (!first) {
-                out->push_back(',');
-            }
-            first = false;
-            out->append(boost::json::serialize(boost::json::value(member.first)));
-            out->push_back(':');
-            appendCanonicalJson(*member.second, out);
-        }
-        out->push_back('}');
-        return;
-    }
-    if (value.is_array()) {
-        out->push_back('[');
-        bool first = true;
-        for (const boost::json::value& element : value.as_array()) {
-            if (!first) {
-                out->push_back(',');
-            }
-            first = false;
-            appendCanonicalJson(element, out);
-        }
-        out->push_back(']');
-        return;
-    }
-    out->append(boost::json::serialize(value));
-}
-
+// block, in the canonical spelling both manifests share (jsoncanonical.h).
+// boost::json does not preserve member order across parse/re-serialize, so the
+// canonical form — not raw bytes — is what a cache-only write compares.
 std::string digestOfAuthored(boost::json::object root) {
     root.erase("thumbnailCache");
-    std::string canonical;
-    appendCanonicalJson(boost::json::value(std::move(root)), &canonical);
-    return openshow::domain::sha256Hex(canonical);
+    return openshow::domain::canonicalJsonDigest(boost::json::value(std::move(root)));
 }
 
 // --- read-side field helpers ------------------------------------------------

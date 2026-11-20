@@ -20,6 +20,7 @@
 #include "openshow/catalog/catalog.h"
 #include "openshow/catalog/catalogstorage.h"
 #include "openshow/catalog/history.h"
+#include "openshow/domain/thumbnails.h"
 
 namespace {
 
@@ -38,6 +39,7 @@ using openshow::catalog::CatalogItem;
 using openshow::catalog::Category;
 using openshow::catalog::History;
 using openshow::catalog::Id;
+using openshow::catalog::CatalogThumbnailCache;
 using openshow::catalog::SongMetadata;
 using openshow::catalog::Stanza;
 using openshow::domain::BoxRect;
@@ -570,12 +572,192 @@ void testRememberedLook() {
 
 }  // namespace
 
+
+// --- TC.9: bounded Library render variants --------------------------------
+
+// A Library song can be played under several looks and every preparation mints
+// new slide ids, so a variant is identified by its render fingerprint alone and
+// lives BESIDE the catalog model. Nothing here may move a revision, and a
+// broken block may only cost pictures.
+void testRenderVariants() {
+    const std::filesystem::path dir = scratchDirectory();
+    Catalog catalog;
+    std::string error;
+    const Id a = catalog.createSong("Variant Song", sampleStanzas(), sampleMetadata(), &error);
+    const Id b = catalog.createSong("Second Song", sampleStanzas(), {}, &error);
+    const CatalogItem beforeA = *catalog.find(a);
+    const CatalogItem beforeB = *catalog.find(b);
+
+    auto variant = [](const std::string& fingerprint, unsigned char fill) {
+        openshow::domain::ThumbnailCacheEntry entry;
+        entry.fingerprint = openshow::domain::sha256Hex(fingerprint);
+        entry.renderer = openshow::domain::rendererIdentity();
+        entry.width = openshow::domain::kThumbnailWidth;
+        entry.height = openshow::domain::kThumbnailHeight;
+        std::string png("\x89PNG\r\n\x1a\n", 8);
+        png.append(300, static_cast<char>(fill));
+        entry.pngBytes = png.size();
+        entry.checksum = openshow::domain::pngChecksum(png);
+        entry.pngBase64 = openshow::domain::base64Encode(png);
+        return entry;
+    };
+
+    CatalogThumbnailCache cache;
+    cache.variants[a].push_back(variant("look-one", 'a'));
+    cache.variants[a].push_back(variant("look-one", 'b'));   // duplicate look
+    cache.variants[a].push_back(variant("look-two", 'c'));
+    openshow::domain::ThumbnailCacheEntry broken = variant("look-broken", 'd');
+    broken.pngBase64 = "not base64!!";
+    cache.variants[a].push_back(broken);
+    cache.variants[b].push_back(variant("look-b", 'e'));
+
+    check(openshow::catalog::saveCatalog(catalog, dir, &error, &cache),
+          "TC.9: the catalog saves with variants");
+    const std::string saved = readWholeFile(dir / "catalog.json");
+    check(saved.find("\"format\":3") != std::string::npos,
+          "TC.9: the catalog format names the block's era");
+    check(saved.find("\"thumbnailVariants\":{\"format\":1") != std::string::npos,
+          "TC.9: the variant block carries its own version");
+    check(saved.find("not base64!!") == std::string::npos,
+          "TC.9: a malformed variant is not written");
+
+    Catalog loaded;
+    CatalogThumbnailCache loadedCache;
+    check(openshow::catalog::loadCatalog(&loaded, dir, &error, &loadedCache),
+          "TC.9: the catalog loads with variants");
+    check(loaded.size() == 2 && *loaded.find(a) == beforeA && *loaded.find(b) == beforeB,
+          "TC.9: variants change no authored field and no revision");
+    check(loadedCache.variants[a].size() == 2 &&
+              loadedCache.variants[a][0].fingerprint ==
+                  openshow::domain::sha256Hex("look-one") &&
+              loadedCache.variants[a][1].fingerprint ==
+                  openshow::domain::sha256Hex("look-two"),
+          "TC.9: the valid, distinct looks round-trip in file order");
+    check(loadedCache.variants[b].size() == 1, "TC.9: every item keeps its own looks");
+    check(openshow::catalog::catalogAuthoredDigest(catalog) ==
+              openshow::catalog::catalogAuthoredDigest(loaded),
+          "TC.9: the authored digest does not see the variant block");
+    check(openshow::catalog::saveCatalog(loaded, dir, &error, &loadedCache) &&
+              readWholeFile(dir / "catalog.json") == saved,
+          "TC.9: save/load round-trips the block byte for byte");
+
+    // --- the cache-only replacement --------------------------------------
+    const std::string digest = openshow::catalog::catalogAuthoredDigest(catalog);
+    check(openshow::catalog::saveCatalog(catalog, dir, &error) &&
+              readWholeFile(dir / "catalog.json").find("thumbnailVariants") ==
+                  std::string::npos,
+          "TC.9: a save without the overlay writes the pre-TC shape");
+    check(openshow::catalog::mergeCatalogThumbnails(dir, cache, digest, &error),
+          "TC.9: a cache-only catalog write installs its block");
+    const std::string merged = readWholeFile(dir / "catalog.json");
+    std::string mergedDigest;
+    check(openshow::catalog::loadCatalog(&loaded, dir, &error, &loadedCache) &&
+              loadedCache.variants.size() == 2 && *loaded.find(a) == beforeA,
+          "TC.9: the merged block is what a load sees, with authored fields intact");
+    check(openshow::catalog::catalogAuthoredDigest(loaded) == digest,
+          "TC.9: the merge did not move the authored identity");
+    check(!openshow::catalog::mergeCatalogThumbnails(dir, cache, std::string(64, '0'), &error),
+          "TC.9: a stale digest refuses the merge");
+    check(error.find("changed after it was loaded") != std::string::npos,
+          "TC.9: the refusal names the external change");
+    check(readWholeFile(dir / "catalog.json") == merged,
+          "TC.9: the refused merge left the file alone");
+    ::setenv("OPENSHOW_CATALOG_FAULT", "write", 1);
+    CatalogThumbnailCache changed = cache;
+    changed.variants[b].push_back(variant("look-b-two", 'f'));
+    const bool flushed = openshow::catalog::mergeCatalogThumbnails(dir, changed, digest, &error);
+    ::unsetenv("OPENSHOW_CATALOG_FAULT");
+    check(!flushed && readWholeFile(dir / "catalog.json") == merged,
+          "TC.9: an injected write failure leaves the previous catalog");
+
+    // --- a broken block is only a miss -----------------------------------
+    {
+        std::string text = merged;
+        const std::size_t at = text.find("\"format\":1");
+        if (at != std::string::npos) {
+            text.replace(at, std::string("\"format\":1").size(), "\"format\":99");
+        }
+        writeWholeFile(dir / "catalog.json", text);
+        Catalog kept;
+        CatalogThumbnailCache none;
+        check(openshow::catalog::loadCatalog(&kept, dir, &error, &none),
+              "TC.9: another block version still loads the catalog");
+        check(kept.size() == 2 && none.variants.empty(),
+              "TC.9: another block version is a miss");
+    }
+    {
+        // Variants for an item that no longer exists are dropped with it, and
+        // a look beyond the per-item cap is refused rather than stored.
+        std::string text = merged;
+        const std::size_t itemsAt = text.find("\"thumbnailVariants\"");
+        check(itemsAt != std::string::npos, "TC.9: the block is present to edit");
+        CatalogThumbnailCache pruned;
+        Catalog loadedPruned;
+        std::string mangled = text;
+        const std::size_t idAt = mangled.find("\"id\":\"" + a + "\"",
+                                              mangled.find("\"thumbnailVariants\""));
+        check(idAt != std::string::npos, "TC.9: the variant owner is present");
+        mangled.replace(idAt, std::string("\"id\":\"" + a + "\"").size(),
+                        "\"id\":\"item404\"");
+        writeWholeFile(dir / "catalog.json", mangled);
+        check(openshow::catalog::loadCatalog(&loadedPruned, dir, &error, &pruned),
+              "TC.9: an orphaned variant block still loads");
+        check(pruned.variants.count(a) == 0 && pruned.variants.count(b) == 1,
+              "TC.9: variants for a deleted item are dropped, the other item keeps its own");
+    }
+    {
+        // The per-item ceilings are enforced by the sanitiser the codec uses.
+        std::vector<openshow::domain::ThumbnailCacheEntry> many;
+        for (int i = 0; i < 10; ++i) {
+            many.push_back(variant("capped-" + std::to_string(i), 'g'));
+        }
+        many.push_back(variant("capped-0", 'h'));  // duplicate fingerprint
+        check(openshow::domain::sanitizeThumbnailVariants(&many) == 5,
+              "TC.9: the per-item count and duplicate rule refuse the excess");
+        check(many.size() == openshow::domain::kMaxThumbnailVariantsPerItem,
+              "TC.9: exactly the bound survives");
+        std::vector<openshow::domain::ThumbnailCacheEntry> heavy;
+        openshow::domain::ThumbnailCacheEntry big = variant("heavy", 'i');
+        for (int i = 0; i < 8; ++i) {
+            openshow::domain::ThumbnailCacheEntry entry = big;
+            entry.fingerprint = openshow::domain::sha256Hex("heavy-" + std::to_string(i));
+            heavy.push_back(entry);
+        }
+        openshow::domain::sanitizeThumbnailVariants(&heavy);
+        std::uint64_t encoded = 0;
+        for (const auto& entry : heavy) {
+            encoded += entry.pngBase64.size();
+        }
+        check(encoded <= openshow::domain::kMaxThumbnailVariantBytesPerItem,
+              "TC.9: the per-item byte ceiling survives");
+        check(openshow::domain::findThumbnailVariant(heavy, heavy.front().fingerprint) ==
+                  &heavy.front(),
+              "TC.9: a variant is found by its fingerprint alone");
+        check(openshow::domain::findThumbnailVariant(heavy, "nope") == nullptr,
+              "TC.9: another look has no picture");
+    }
+    {
+        // A format-2 file may not smuggle the format-3 key in.
+        std::string text = merged;
+        const std::size_t formatAt = text.find("\"format\":3");
+        text.replace(formatAt, std::string("\"format\":3").size(), "\"format\":2");
+        writeWholeFile(dir / "catalog.json", text);
+        Catalog refused;
+        check(!openshow::catalog::loadCatalog(&refused, dir, &error),
+              "TC.9: a format-2 file carrying the block is refused");
+    }
+
+    std::error_code ignored;
+    std::filesystem::remove_all(dir, ignored);
+}
+
 int main() {
     testIdentitiesAndCategories();
     testRevisionsAndRefusals();
     testValidationLimits();
     testHistoryAndIdentityWatermark();
     testRoundTripAndLoadStrictness();
+    testRenderVariants();
     testRememberedLook();
     testFaultedSavesKeepThePreviousCatalog();
     if (gFailed) {

@@ -42,6 +42,7 @@
 #include "CatalogController.h"
 #include "DocumentController.h"
 #include "ServiceCatalogBridge.h"
+#include "ThumbnailStore.h"
 #include "SongImport.h"
 #include "WorkerController.h"
 
@@ -392,6 +393,101 @@ int main(int argc, char* argv[]) {
     check(docs.showForCatalogItem(secondId).isEmpty() &&
               docs.playlistEntries().size() == cuesBeforeDetach,
           "D6: a replaced destination is not published into and the removed cue is not re-added");
+
+
+    // --- TC.9: a remembered look crosses services ------------------------
+    //
+    // A prepared look is remembered against its Library item by render
+    // fingerprint; copying it changes no revision and adds no history. A
+    // second service prepared from the same item finds the picture already in
+    // hand, and a saved service keeps it after the Library is deleted.
+    {
+        using openshow::ui::ThumbnailStore;
+        const QString lookId = catalog.addSong("Look Song", oldStanzas, "", "", "");
+        check(!lookId.isEmpty() && bridge.addToService(lookId) && waitForBridge(bridge),
+              "TC.9: the look song is prepared into the first service");
+        const QString lookShow = docs.showForCatalogItem(lookId);
+        check(!lookShow.isEmpty(), "TC.9: the look song's show is linked");
+        const QVariantMap before = catalog.itemOf(lookId);
+        ThumbnailStore pictures;
+        ServiceCatalogBridge lookBridge(&catalog, &docs, &worker, &pictures);
+        const auto card = [](const QString& key) {
+            QImage image(64, 36, QImage::Format_ARGB32_Premultiplied);
+            image.fill(QColor(key.startsWith(QStringLiteral("slide")) ? 0x334455 : 0x556677));
+            return image;
+        };
+        int recorded = 0;
+        for (const QVariant& row : docs.slidesOf(lookShow)) {
+            const QString id = row.toMap().value(QStringLiteral("id")).toString();
+            const QString fp = docs.thumbnailSourceForSlide(id)
+                                   .value(QStringLiteral("fingerprint"))
+                                   .toString();
+            if (fp.isEmpty()) {
+                continue;
+            }
+            pictures.record(lookShow, id, fp, card(id));
+            ++recorded;
+        }
+        check(recorded > 0 && pictures.waitForIdle(),
+              "TC.9: the prepared look is painted and encoded");
+        QTest::qWait(50);
+        check(catalog.thumbnailVariantCount() >= recorded,
+              "TC.9: each prepared look is remembered against the Library item");
+        const QVariantMap after = catalog.itemOf(lookId);
+        check(after.value(QStringLiteral("recordRevision")) ==
+                      before.value(QStringLiteral("recordRevision")) &&
+                  after.value(QStringLiteral("contentRevision")) ==
+                      before.value(QStringLiteral("contentRevision")),
+              "TC.9: remembering a picture moves no revision");
+
+        CatalogController reopenedLibrary(nullptr, root);
+        check(reopenedLibrary.thumbnailVariantCount() >= recorded,
+              "TC.9: the remembered looks survive a Library restart");
+
+        ThumbnailStore secondPictures;
+        DocumentController second(nullptr, root / "service2", &secondPictures);
+        ServiceCatalogBridge secondBridge(&reopenedLibrary, &second, &worker,
+                                           &secondPictures);
+        check(secondBridge.addToService(lookId) && waitForBridge(secondBridge),
+              "TC.9: the song is prepared into a second service");
+        const QString secondShow = second.showForCatalogItem(lookId);
+        check(!secondShow.isEmpty(), "TC.9: the second service links its show");
+        int seeded = 0;
+        for (const QVariant& row : second.slidesOf(secondShow)) {
+            const QString id = row.toMap().value(QStringLiteral("id")).toString();
+            const QString fp = second.thumbnailSourceForSlide(id)
+                                   .value(QStringLiteral("fingerprint"))
+                                   .toString();
+            if (!fp.isEmpty() && secondPictures.has(id, fp)) {
+                ++seeded;
+            }
+        }
+        check(seeded >= recorded,
+              "TC.9: matching slides arrive with the Library's picture already held");
+        check(second.save(), "TC.9: the second service saves its pictures");
+
+        // The service is self-contained: with the Library deleted, its saved
+        // cards still load.
+        std::error_code ignored;
+        std::filesystem::remove_all(root / "catalog", ignored);
+        ThumbnailStore thirdPictures;
+        DocumentController third(nullptr, root / "service2", &thirdPictures);
+        int kept = 0;
+        for (const QVariant& row : third.slidesOf(secondShow)) {
+            const QString id = row.toMap().value(QStringLiteral("id")).toString();
+            const QString fp = third.thumbnailSourceForSlide(id)
+                                   .value(QStringLiteral("fingerprint"))
+                                   .toString();
+            if (!fp.isEmpty() && thirdPictures.has(id, fp)) {
+                ++kept;
+            }
+        }
+        check(kept >= recorded,
+              "TC.9: deleting the Library does not break the saved service's pictures");
+        secondPictures.setEnabled(false);
+        thirdPictures.setEnabled(false);
+        pictures.setEnabled(false);
+    }
 
     check(!worker.wordsOnAir() && worker.sceneActive() == 0,
           "the whole journey presented nothing");
