@@ -29,6 +29,7 @@
 #include "ThemeApplySession.h"
 #include "SongImport.h"
 #include "DocumentController.h"
+#include "ThumbnailStore.h"
 #include "WorkerController.h"
 #include "BibleImport.h"
 #include "ScriptureImport.h"
@@ -57,9 +58,14 @@ int main(int argc, char* argv[]) {
     openshow::ui::WorkerController worker;
     worker.start();
 
+    // TC.5: the derived service-card pictures. One overlay for the session:
+    // the document session adopts and records them, and the preview consumer
+    // asks it before rendering. It is never part of Documents or History.
+    openshow::ui::ThumbnailStore cardPictures;
+
     // Task 3.3: the editable documents. Constructed after the application
     // object so QStandardPaths resolves; the lyric panel binds to it.
-    openshow::ui::DocumentController documents;
+    openshow::ui::DocumentController documents(nullptr, {}, &cardPictures);
 
     // Tasks SL.1/SL.2: the shared Library. Its own package, its own
     // history, independent of whichever service is open; the songs it

@@ -9,7 +9,14 @@
 #include "DocumentPersistence.h"
 
 #include <QCoreApplication>
+#include <QSet>
 #include <QTimer>
+
+#include <unistd.h>
+
+#include "openshow/domain/thumbnails.h"
+
+#include "ThumbnailStore.h"
 
 namespace openshow::ui {
 
@@ -26,44 +33,147 @@ DocumentPersistence::DocumentPersistence(Sink sink, const std::filesystem::path&
             &DocumentPersistence::onTickCompleted);
 }
 
+namespace {
+
+// A package this session may write back to: a saved manifest and a writable
+// directory. A read-only tree or a not-yet-saved service keeps pictures in
+// memory until an authorised save.
+bool packageWritable(const std::filesystem::path& directory) {
+    const std::filesystem::path manifest = directory / "service.json";
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(manifest, ec) || ec) {
+        return false;
+    }
+    return ::access(manifest.c_str(), W_OK) == 0 && ::access(directory.c_str(), W_OK) == 0;
+}
+
+QSet<QString> liveSlides(const openshow::domain::Documents& documents) {
+    QSet<QString> slides;
+    for (const openshow::domain::Id& showId : documents.showIds()) {
+        const openshow::domain::Show* show = documents.findShow(showId);
+        if (show == nullptr) {
+            continue;
+        }
+        for (const openshow::domain::Slide& slide : show->slides) {
+            slides.insert(QString::fromStdString(slide.id));
+        }
+    }
+    return slides;
+}
+
+}  // namespace
+
+void DocumentPersistence::setThumbnailStore(ThumbnailStore* store) {
+    fThumbnails = store;
+    if (store == nullptr) {
+        return;
+    }
+    store->setFlushHook([this](const openshow::domain::ThumbnailCache& snapshot,
+                               QString* error) { return flushThumbnailCache(snapshot, error); });
+}
+
+void DocumentPersistence::adoptThumbnails(const openshow::domain::Documents& documents,
+                                         const openshow::domain::ThumbnailCache& cache,
+                                         bool writable) {
+    if (fThumbnails == nullptr) {
+        return;
+    }
+    fThumbnails->adopt(cache,
+                       QString::fromStdString(openshow::domain::authoredManifestDigest(documents)),
+                       writable);
+}
+
 DocumentPersistence::Startup DocumentPersistence::open(openshow::domain::Documents* documents) {
     Startup startup;
     std::string error;
+    openshow::domain::ThumbnailCache cache;
+    bool loadedFromService = false;
     if (openshow::domain::Autosave::exists(fScheduler->directory())) {
-        if (fScheduler->recover(documents, &error)) {
+        if (fScheduler->recover(documents, &error, &cache)) {
             startup.recoveredUnsaved = true;  // there is unsaved work — that is why we recovered
             startup.status = QStringLiteral("recovered unsaved changes from autosave");
         } else {
             startup.status = QStringLiteral("autosave recovery failed: %1; starting empty")
                                  .arg(QString::fromStdString(error));
+            cache.entries.clear();
         }
     } else if (!fServiceDirectory.empty()) {
         if (openshow::domain::Autosave::exists(fServiceDirectory)) {
             // Not the autosave package, so a real save is waiting.
-            if (openshow::domain::loadService(documents, fServiceDirectory, &error)) {
+            if (openshow::domain::loadService(documents, fServiceDirectory, &error, &cache)) {
                 startup.status = QStringLiteral("loaded %1")
                                      .arg(QString::fromStdWString(fServiceDirectory.wstring()));
+                loadedFromService = true;
             } else {
                 startup.status =
                     QStringLiteral("load failed: %1").arg(QString::fromStdString(error));
+                cache.entries.clear();
             }
         }
     }
+    // TC.5: the pictures ride beside the authored load. A recovered scratch is
+    // NOT a durable package, so its cache is usable in memory but may only be
+    // written back after an authorised save; a saved service may be flushed.
+    adoptThumbnails(*documents, cache, loadedFromService && packageWritable(fServiceDirectory));
     return startup;
+}
+
+bool DocumentPersistence::flushThumbnailCache(const openshow::domain::ThumbnailCache& snapshot,
+                                              QString* error) {
+    if (fThumbnails == nullptr) {
+        return false;
+    }
+    if (fDecisionInFlight) {
+        if (error != nullptr) {
+            *error = QStringLiteral("a save or load is in progress");
+        }
+        return false;
+    }
+    const QString digest = fThumbnails->authoredDigest();
+    if (digest.isEmpty() || !packageWritable(fServiceDirectory)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("the service package is not writable");
+        }
+        return false;
+    }
+    // The merge itself re-reads the manifest and refuses on any authored
+    // change, so an external editor or another instance is never overwritten.
+    std::string mergeError;
+    if (!openshow::domain::mergeThumbnailCache(fServiceDirectory, snapshot,
+                                               digest.toStdString(), &mergeError)) {
+        if (error != nullptr) {
+            *error = QString::fromStdString(mergeError);
+        }
+        return false;
+    }
+    return true;
+}
+
+void DocumentPersistence::forgetThumbnailsForDeletedSlides(
+    const openshow::domain::Documents& documents) {
+    if (fThumbnails != nullptr) {
+        fThumbnails->pruneToSlides(liveSlides(documents));
+    }
 }
 
 void DocumentPersistence::autosave(const openshow::domain::Documents& documents,
                                    const char* what) {
+    // TC.5: the scratch snapshot carries the pictures too. A cache arrival
+    // does not call this (it is not an edit), so nothing here can mark the
+    // session dirty or add history.
+    const openshow::domain::ThumbnailCache* cache =
+        fThumbnails != nullptr && !fThumbnails->cache().entries.empty() ? &fThumbnails->cache()
+                                                                      : nullptr;
     if (fScheduler->active()) {
         // Task 6.14b (review R14): the UI thread's whole job is the
         // snapshot copy — cheap, immutable, and the executor keeps only
         // the newest. The result reports back through
         // onTickCompleted when the write is durable (or refused).
-        fScheduler->submit(documents, what, fDecisionEpoch);
+        fScheduler->submit(documents, what, fDecisionEpoch, cache);
         return;
     }
     std::string tickError;
-    fScheduler->tickInline(documents, &tickError);
+    fScheduler->tickInline(documents, &tickError, cache);
     surfaceResult(tickError, what);
 }
 
@@ -76,12 +186,37 @@ DocumentPersistence::SaveAttempt DocumentPersistence::saveToService(
     // So the scratch clear below can never race an older autosave into
     // resurrecting what this save supersedes.
     quiesce();
+    forgetThumbnailsForDeletedSlides(*documents);
+    const openshow::domain::ThumbnailCache* cache =
+        fThumbnails != nullptr && !fThumbnails->cache().entries.empty() ? &fThumbnails->cache()
+                                                                      : nullptr;
     std::string error;
-    if (!openshow::domain::saveServiceAndAdopt(*documents, fServiceDirectory, &attempt.rebinds,
-                                               &error)) {
+    std::vector<openshow::domain::AssetRebind> rebinds;
+    bool saved = openshow::domain::saveServiceAndAdopt(*documents, fServiceDirectory, &rebinds,
+                                                       &error, cache);
+    const bool savedWithCache = saved;
+    if (!saved && cache != nullptr) {
+        // A cache block must never fail a save the document itself earned.
+        // Retry without the optional pictures; the store keeps them in memory
+        // and a later flush can try again.
+        rebinds.clear();
+        error.clear();
+        saved = openshow::domain::saveServiceAndAdopt(*documents, fServiceDirectory, &rebinds,
+                                                      &error, nullptr);
+    }
+    if (!saved) {
         resume();
         attempt.status = QStringLiteral("save failed: %1").arg(QString::fromStdString(error));
         return attempt;
+    }
+    attempt.rebinds = std::move(rebinds);
+    if (fThumbnails != nullptr) {
+        fThumbnails->setAuthoredDigest(
+            QString::fromStdString(openshow::domain::authoredManifestDigest(*documents)));
+        fThumbnails->setWritable(packageWritable(fServiceDirectory));
+        if (savedWithCache) {
+            fThumbnails->markPersisted();
+        }  // otherwise the records stay dirty for a later cache-only flush
     }
     attempt.saved = true;
     // The service now holds everything the autosave was protecting. No
@@ -112,12 +247,16 @@ DocumentPersistence::LoadAttempt DocumentPersistence::loadFromService() {
     // work, and no autosave older than that decision may survive — queued, in
     // flight, or acknowledged.
     quiesce();
+    openshow::domain::ThumbnailCache cache;
     std::string error;
-    if (!openshow::domain::loadService(&attempt.documents, fServiceDirectory, &error)) {
+    if (!openshow::domain::loadService(&attempt.documents, fServiceDirectory, &error, &cache)) {
         resume();
         attempt.status = QStringLiteral("load failed: %1").arg(QString::fromStdString(error));
         return attempt;
     }
+    // A load replaces the document the overlay described; adopting the file's
+    // block (possibly empty) retires every picture from the discarded session.
+    adoptThumbnails(attempt.documents, cache, packageWritable(fServiceDirectory));
     attempt.loaded = true;
     // Discarding local changes must also discard their autosave trail —
     // otherwise the next startup would recover the edits just thrown away.
@@ -164,6 +303,18 @@ qulonglong DocumentPersistence::writes() const {
 
 qulonglong DocumentPersistence::coalesced() const {
     return static_cast<qulonglong>(fScheduler->coalesced());
+}
+
+int DocumentPersistence::thumbnailEntries() const {
+    return fThumbnails == nullptr ? 0 : static_cast<int>(fThumbnails->entryCount());
+}
+
+qint64 DocumentPersistence::thumbnailBytes() const {
+    return fThumbnails == nullptr ? 0 : fThumbnails->encodedBytes();
+}
+
+qint64 DocumentPersistence::thumbnailFlushes() const {
+    return fThumbnails == nullptr ? 0 : fThumbnails->flushWrites();
 }
 
 void DocumentPersistence::quiesce() {

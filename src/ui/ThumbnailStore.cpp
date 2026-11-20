@@ -216,6 +216,11 @@ void ThumbnailStore::setWritable(bool writable) {
     }
 }
 
+void ThumbnailStore::markPersisted() {
+    fDirty = false;
+    fFlushTimer.stop();
+}
+
 void ThumbnailStore::setEnabled(bool enabled) {
     if (enabled == fEnabled) {
         return;

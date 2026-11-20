@@ -31,8 +31,14 @@ block is only ever a miss (domain_tests cover round-trip, corrupt records,
 external changes and injected write failure). TC.4 is DONE: `ThumbnailStore`
 keeps the record list inside the frozen ceilings and moves PNG decode/encode
 onto two bounded background lanes, with checksum/IHDR/size validation making
-every corrupt record a counted miss (`thumbnail_store_tests`). TC.5–TC.10
-remain TODO; no runtime cold/warm evidence is claimed yet.
+every corrupt record a counted miss (`thumbnail_store_tests`). TC.5 is DONE:
+records ride explicit saves and autosave snapshots through DocumentPersistence,
+a clean writable service gets one coalesced cache-only flush under the
+authored-digest gate, a cache-carrying save that fails retries without the
+block, and an external manifest change makes the flush skip. A cache arrival
+provably changes no dirty state, history or generation
+(document_controller_tests). TC.6–TC.10 remain TODO; no runtime cold/warm
+evidence is claimed yet.
 
 **Edit follow-up (EW.11, 2026-11-19): corrected.** Upward/no-op drops used
 `dragFrom = -1` after drag cleanup and subtracted a slot incorrectly; compute

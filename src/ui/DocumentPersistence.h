@@ -44,6 +44,8 @@
 
 namespace openshow::ui {
 
+class ThumbnailStore;
+
 class DocumentPersistence : public QObject {
     Q_OBJECT
 public:
@@ -75,6 +77,18 @@ public:
         QString status;
     };
     Startup open(openshow::domain::Documents* documents);
+
+    // TC.5: the runtime picture overlay. Non-owning — the host constructs the
+    // store and shares it with the preview consumer — and set BEFORE open(),
+    // which adopts the loaded block into it. Its cache-only flush calls back
+    // into flushThumbnailCache().
+    void setThumbnailStore(ThumbnailStore* store);
+    // Replaces ONLY the saved manifest's thumbnail block, refusing when the
+    // authored bytes no longer match the last durable snapshot. Serialized
+    // against the save/load decision by being on this thread and refused while
+    // a decision is in flight.
+    bool flushThumbnailCache(const openshow::domain::ThumbnailCache& snapshot,
+                             QString* error);
 
     // The autosave edge of a committed change: inline while the executor is
     // dormant (what the unit tests rely on), coalesced and off-thread once
@@ -128,6 +142,12 @@ public:
     qulonglong writes() const;
     qulonglong coalesced() const;
 
+    // TC.5 diagnostics (tests): the derived overlay's scale and flush count.
+    // Never authored state, never part of dirty/history.
+    int thumbnailEntries() const;
+    qint64 thumbnailBytes() const;
+    qint64 thumbnailFlushes() const;
+
 private:
     // The autosave edge of a committed decision: quiesce raises the epoch,
     // drops the pending request and waits out an in-flight write, which is the
@@ -135,6 +155,12 @@ private:
     // the next edit.
     void quiesce();
     void resume();
+    // TC.5: hand a loaded block to the overlay with this document's authored
+    // digest. Called at open and after save/load; never touches Documents.
+    void adoptThumbnails(const openshow::domain::Documents& documents,
+                         const openshow::domain::ThumbnailCache& cache, bool writable);
+    // Deleted shows/slides release their pictures at the next save/load edge.
+    void forgetThumbnailsForDeletedSlides(const openshow::domain::Documents& documents);
     // The outcome of one autosave tick (task 6.14a, review R14). A refusal
     // means the crash net has a hole NOW and must not be discarded — but it
     // lands DEFERRED, because every edit caller sets its own status line
@@ -154,6 +180,8 @@ private:
     // DocumentController owned it directly.
     std::unique_ptr<AutosaveScheduler> fScheduler;
     bool fAutosaveStale = false;  // scratch behind the model: task 6.14a
+    ThumbnailStore* fThumbnails = nullptr;  // TC.5: derived pictures, not the model
+    bool fDecisionInFlight = false;
     // Decision counter (task 6.14b): bumped before every save/discard;
     // autosave work stamped below it is history and must not run or ack.
     std::uint64_t fDecisionEpoch = 0;

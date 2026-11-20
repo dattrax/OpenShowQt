@@ -68,6 +68,10 @@ public:
     void setAuthoredDigest(const QString& digest) { fAuthoredDigest = digest; }
     QString authoredDigest() const { return fAuthoredDigest; }
     void setWritable(bool writable);
+    // The manifest now holds these records (a save or flush installed them):
+    // the dirty flag clears without another write. Leaves the cache-only
+    // timer stopped until the next record arrives.
+    void markPersisted();
     void setFlushHook(FlushHook hook) { fFlushHook = std::move(hook); }
     // Drops records whose slide the document no longer holds (deleted shows
     // and slides), keeping the rest untouched.

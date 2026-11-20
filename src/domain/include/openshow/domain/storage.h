@@ -185,15 +185,20 @@ public:
     // Writes the package when the state differs from the last write
     // (manifest bytes compared; the codec is deterministic, so equal
     // bytes mean an unchanged service). An unchanged state performs no
-    // disk access at all.
-    bool tick(const Documents& documents, std::string* error = nullptr);
+    // disk access at all. TC.5: an optional cache rides in the same
+    // snapshot, so recovered work keeps the pictures it has already
+    // earned without the pictures themselves ever counting as edits.
+    bool tick(const Documents& documents, std::string* error = nullptr,
+              const ThumbnailCache* cache = nullptr);
 
     // Loads the scratch package into *documents — that is the whole
     // recovery story — and adopts it as the new baseline. After the
     // operator decides, the caller owns the recovered Documents and
     // calls clear() once the service itself has been saved (or the
-    // recovery discarded).
-    bool recover(Documents* documents, std::string* error = nullptr);
+    // recovery discarded). `cache`, when given, receives the recovered
+    // pictures.
+    bool recover(Documents* documents, std::string* error = nullptr,
+                 ThumbnailCache* cache = nullptr);
 
     // Removes the scratch package (used after a real save, or when the
     // operator declines recovery).

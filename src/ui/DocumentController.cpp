@@ -72,7 +72,8 @@ std::vector<std::string> textToLines(const QString& text) {
 
 }  // namespace
 
-DocumentController::DocumentController(QObject* parent, std::filesystem::path baseDirectory)
+DocumentController::DocumentController(QObject* parent, std::filesystem::path baseDirectory,
+                                       ThumbnailStore* thumbnails)
     : QObject(parent), fViews(fDocuments) {
     if (baseDirectory.empty()) {
         baseDirectory = std::filesystem::path(
@@ -83,6 +84,8 @@ DocumentController::DocumentController(QObject* parent, std::filesystem::path ba
     fPersistence = new DocumentPersistence(
         DocumentPersistence::Sink{[this](const QString& text) { setStatus(text); }},
         baseDirectory, this);
+    // TC.5: set before open(), which adopts the loaded block.
+    fPersistence->setThumbnailStore(thumbnails);
     fHistory = std::make_unique<openshow::domain::History>(&fDocuments);
 
     // PX.2: the deck renderer is a child process; the controller only decides
@@ -4535,6 +4538,18 @@ QString DocumentController::currentSceneJson() {
         setStatus(QStringLiteral("present: the slide did not compile"));
     }
     return json;
+}
+
+int DocumentController::thumbnailCacheEntries() const {
+    return fPersistence->thumbnailEntries();
+}
+
+qint64 DocumentController::thumbnailCacheBytes() const {
+    return fPersistence->thumbnailBytes();
+}
+
+qint64 DocumentController::thumbnailCacheFlushes() const {
+    return fPersistence->thumbnailFlushes();
 }
 
 QString DocumentController::sceneJsonForSlide(const QString& slideId) {

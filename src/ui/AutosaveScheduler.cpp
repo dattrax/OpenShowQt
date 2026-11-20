@@ -19,8 +19,9 @@ AutosaveScheduler::~AutosaveScheduler() {
     }
 }
 
-bool AutosaveScheduler::recover(openshow::domain::Documents* documents, std::string* error) {
-    return fAutosave.recover(documents, error);
+bool AutosaveScheduler::recover(openshow::domain::Documents* documents, std::string* error,
+                                openshow::domain::ThumbnailCache* cache) {
+    return fAutosave.recover(documents, error, cache);
 }
 
 bool AutosaveScheduler::clearNow(std::string* error) {
@@ -28,8 +29,9 @@ bool AutosaveScheduler::clearNow(std::string* error) {
 }
 
 bool AutosaveScheduler::tickInline(const openshow::domain::Documents& documents,
-                                   std::string* error) {
-    return fAutosave.tick(documents, error);
+                                   std::string* error,
+                                   const openshow::domain::ThumbnailCache* cache) {
+    return fAutosave.tick(documents, error, cache);
 }
 
 void AutosaveScheduler::start() {
@@ -40,7 +42,8 @@ void AutosaveScheduler::start() {
 }
 
 void AutosaveScheduler::submit(const openshow::domain::Documents& snapshot,
-                               const std::string& what, std::uint64_t epoch) {
+                               const std::string& what, std::uint64_t epoch,
+                               const openshow::domain::ThumbnailCache* cache) {
     std::lock_guard<std::mutex> lock(fMutex);
     if (fStop || fPaused || epoch < fDecisionEpoch) {
         // A decision is in progress (or the whole session is ending):
@@ -51,7 +54,11 @@ void AutosaveScheduler::submit(const openshow::domain::Documents& snapshot,
     if (fPending) {
         ++fCoalesced;  // the fresher snapshot replaces the queued one
     }
-    fPending = Request{snapshot, what, epoch};
+    Request request{snapshot, what, epoch, std::nullopt};
+    if (cache != nullptr && !cache->entries.empty()) {
+        request.cache = *cache;
+    }
+    fPending = std::move(request);
     fCv.notify_one();
 }
 
@@ -109,7 +116,9 @@ void AutosaveScheduler::run() {
             stale = job.epoch < fDecisionEpoch;
         }
         if (!stale) {
-            fAutosave.tick(job.documents, &error);  // the slow part, off the UI thread
+            // the slow part, off the UI thread
+            fAutosave.tick(job.documents, &error,
+                           job.cache.has_value() ? &job.cache.value() : nullptr);
             std::lock_guard<std::mutex> lock(fMutex);
             ++fWrites;
             // A decision may have been made while this write ran; if so

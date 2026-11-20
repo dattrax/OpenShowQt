@@ -59,9 +59,11 @@ public:
     // Synchronous operations, valid only while the worker is neither
     // running nor about to run: before start(), or between
     // pauseForDecision() and resume().
-    bool recover(openshow::domain::Documents* documents, std::string* error);
+    bool recover(openshow::domain::Documents* documents, std::string* error,
+                 openshow::domain::ThumbnailCache* cache = nullptr);
     bool clearNow(std::string* error);
-    bool tickInline(const openshow::domain::Documents& documents, std::string* error);
+    bool tickInline(const openshow::domain::Documents& documents, std::string* error,
+                    const openshow::domain::ThumbnailCache* cache = nullptr);
 
     void start();
     bool active() const { return fThread.joinable(); }
@@ -69,8 +71,11 @@ public:
     // Queue a snapshot as "the latest". `epoch` is the caller's decision
     // counter: a request stamped below the current decision epoch (or
     // arriving while paused) is dropped unrun, counted, never acked.
+    // `cache` (TC.5), when given, is copied with the snapshot: the scratch
+    // then carries the pictures a recovered session has already earned. The
+    // copy is taken here, on the UI thread, while the snapshot is consistent.
     void submit(const openshow::domain::Documents& snapshot, const std::string& what,
-                std::uint64_t epoch);
+                std::uint64_t epoch, const openshow::domain::ThumbnailCache* cache = nullptr);
 
     // Raise the decision epoch, drop the pending request, and block until
     // no write is in flight. Between this and resume(), the caller owns
@@ -105,6 +110,7 @@ private:
         openshow::domain::Documents documents;
         std::string what;
         std::uint64_t epoch = 0;
+        std::optional<openshow::domain::ThumbnailCache> cache;
     };
     std::optional<Request> fPending;
     bool fRunning = false;  // a job holds the Autosave object

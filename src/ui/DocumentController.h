@@ -52,6 +52,7 @@
 
 #include "DocumentPersistence.h"
 #include "DocumentViews.h"
+#include "ThumbnailStore.h"
 #include "PowerPointImport.h"
 
 namespace openshow::ui {
@@ -147,8 +148,13 @@ public:
     // tests pass a scratch directory. Startup follows the task 2.3 rule:
     // autosave data, if any, wins over the saved service (it is newer),
     // and a missing service simply begins empty.
+    // `thumbnails` (TC.5) is the runtime overlay of persisted card pictures.
+    // Non-owning: the host constructs it and shares it with the preview
+    // consumer, and this session adopts/records through DocumentPersistence.
+    // Left null, every picture path is exactly the pre-TC one.
     explicit DocumentController(QObject* parent = nullptr,
-                                std::filesystem::path baseDirectory = {});
+                                std::filesystem::path baseDirectory = {},
+                                ThumbnailStore* thumbnails = nullptr);
 
     // Task PT.5: read-only model access for planning adapters (eligibility,
     // source and projection). No mutation path is exposed: every edit still
@@ -755,6 +761,11 @@ public:
     // Scene JSON for one slide of the current song (per-slide Present
     // buttons); "" on failure.
     Q_INVOKABLE QString sceneJsonForSlide(const QString& slideId);
+    // TC.5 diagnostics: what the derived picture overlay currently holds and
+    // how often it has written the manifest. Never authoring state.
+    Q_INVOKABLE int thumbnailCacheEntries() const;
+    Q_INVOKABLE qint64 thumbnailCacheBytes() const;
+    Q_INVOKABLE qint64 thumbnailCacheFlushes() const;
     // TC.2: a slide's compiled scene and the fingerprint its card is cached
     // under, from ONE compile: {scene, fingerprint}. Both empty when the slide
     // does not compile; the fingerprint is empty for live (video/camera)

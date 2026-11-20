@@ -3020,6 +3020,14 @@ bool ServiceCodec::save(const Documents& documents, const std::filesystem::path&
     // write-back errors surface, and its status is REPORTED — the old
     // code checked good() before the destructor silently swallowed the
     // close failure (task 6.13a, review R8).
+    //
+    // TC.5's seam: a cache-carrying manifest can fail on its own, and the
+    // caller must be able to retry the same save WITHOUT the derived block.
+    if (cache != nullptr && storageFault("thumbnail-manifest")) {
+        fail(error, "writing the manifest with the thumbnail cache failed: "
+                    "simulated fault at 'thumbnail-manifest'");
+        return false;
+    }
     return writeManifestFile(directory, boost::json::serialize(toJson(documents, cache)),
                              error);
 }
@@ -3252,29 +3260,34 @@ bool mergeThumbnailCache(const std::filesystem::path& directory, const Thumbnail
 
 Autosave::Autosave(std::filesystem::path directory) : fDirectory(std::move(directory)) {}
 
-bool Autosave::tick(const Documents& documents, std::string* error) {
+bool Autosave::tick(const Documents& documents, std::string* error,
+                    const ThumbnailCache* cache) {
     // The codec is deterministic, so manifest bytes are a fingerprint:
-    // equal means the service is unchanged and no disk access follows.
-    const std::string manifest = boost::json::serialize(ServiceCodec::toJson(documents));
+    // equal means the service is unchanged and no disk access follows. The
+    // cache is part of the snapshot (TC.5), so a warmed scratch also carries
+    // the pictures; it still never marks authored content dirty, because this
+    // class only ever compares what it is handed.
+    const std::string manifest =
+        boost::json::serialize(ServiceCodec::toJson(documents, cache));
     if (manifest == fLastManifest) {
         return true;
     }
-    if (!ServiceCodec::save(documents, fDirectory, error, &fReuse)) {
+    if (!ServiceCodec::save(documents, fDirectory, error, &fReuse, cache)) {
         return false;
     }
     fLastManifest = std::move(manifest);
     return true;
 }
 
-bool Autosave::recover(Documents* documents, std::string* error) {
+bool Autosave::recover(Documents* documents, std::string* error, ThumbnailCache* cache) {
     if (documents == nullptr) {
         fail(error, "recover needs a target");
         return false;
     }
-    if (!ServiceCodec::load(documents, fDirectory, error)) {
+    if (!ServiceCodec::load(documents, fDirectory, error, cache)) {
         return false;
     }
-    fLastManifest = boost::json::serialize(ServiceCodec::toJson(*documents));
+    fLastManifest = boost::json::serialize(ServiceCodec::toJson(*documents, cache));
     // The recovered package IS the installed state; its assets now point
     // inside the scratch tree, so the equivalent-source rule covers them
     // and no stale external stamp may survive.

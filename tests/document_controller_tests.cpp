@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -29,6 +30,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QImage>
 #include <QTimer>
 
 #include <sys/stat.h>
@@ -39,6 +41,7 @@
 
 #include "CatalogController.h"
 #include "DocumentController.h"
+#include "ThumbnailStore.h"
 #include "SceneEdit.h"
 
 namespace {
@@ -51,6 +54,28 @@ bool check(bool condition, const char* what) {
         gFailed = true;
     }
     return condition;
+}
+
+std::string readFile(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+bool writeFile(const std::filesystem::path& path, const std::string& bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << bytes;
+    return out.good();
+}
+
+bool replaceOnce(std::string& text, const std::string& from, const std::string& to) {
+    const std::size_t position = text.find(from);
+    if (position == std::string::npos) {
+        return false;
+    }
+    text.replace(position, from.size(), to);
+    return true;
 }
 
 using openshow::domain::Autosave;
@@ -425,6 +450,192 @@ void exerciseThumbnailFingerprint(const std::filesystem::path& root) {
         check(source.value(QStringLiteral("fingerprint")).toString().toStdString() ==
                   fingerprintAfterEdit,
               "fingerprint: moving the package keeps every card's identity");
+    }
+}
+
+
+// --- TC.5: the picture overlay through the session's real durability ------
+
+// A cache arrival is NOT an authoring change: it must not dirty the session,
+// add history or move the document generation. Records ride a normal save and
+// an autosave snapshot, a clean saved service can be flushed cache-only, and
+// neither an external edit nor a cache-specific write failure may cost the
+// operator their document.
+void exerciseThumbnailCacheLifecycle(const std::filesystem::path& root) {
+    using openshow::ui::ThumbnailStore;
+    const auto picture = [](QColor colour) {
+        QImage image(64, 36, QImage::Format_ARGB32_Premultiplied);
+        image.fill(colour);
+        return image;
+    };
+    const std::filesystem::path manifest = root / "service" / "service.json";
+    QString slideId;
+    QString fingerprint;
+    {
+        ThumbnailStore pictures;
+        DocumentController docs(nullptr, root, &pictures);
+        check(docs.createSong(QStringLiteral("Warm Cards")), "TC.5: the song exists");
+        check(docs.addSlide(), "TC.5: the slide exists");
+        docs.selectSlide(0);
+        docs.setSlideText(QStringLiteral("a verse worth keeping"));
+        docs.flushText();
+        slideId = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+        fingerprint = docs.thumbnailSourceForSlide(slideId)
+                          .value(QStringLiteral("fingerprint"))
+                          .toString();
+        check(fingerprint.size() == 64, "TC.5: the slide has a render fingerprint");
+        check(docs.save() && !docs.dirty(), "TC.5: the service is saved clean");
+
+        const quint64 generation = docs.documentGeneration();
+        const bool undoable = docs.canUndo();
+        pictures.record(QStringLiteral("show1"), slideId, fingerprint, picture(Qt::red));
+        check(pictures.waitForIdle(), "TC.5: the picture encodes");
+        check(pictures.entryCount() == 1, "TC.5: the overlay holds one picture");
+        check(!docs.dirty(), "TC.5: a cache arrival does not dirty the document");
+        check(docs.documentGeneration() == generation && docs.canUndo() == undoable,
+              "TC.5: a cache arrival adds no history and moves no generation");
+
+        // The normal save carries the block.
+        check(docs.save(), "TC.5: the save with a picture succeeds");
+        check(readFile(manifest).find("\"thumbnailCache\"") != std::string::npos,
+              "TC.5: the saved manifest carries the block");
+        check(!pictures.dirty(), "TC.5: a save that installed the block clears the dirty flag");
+    }
+    {
+        // A fresh process: the block is adopted, and the picture is usable
+        // without the worker that drew it.
+        ThumbnailStore pictures;
+        QList<QImage> ready;
+        QObject::connect(&pictures, &ThumbnailStore::pictureReady,
+                         [&](const QString&, const QString&, const QImage& image) {
+                             ready.append(image);
+                         });
+        DocumentController docs(nullptr, root, &pictures);
+        check(docs.songs().size() == 1 && !docs.dirty(), "TC.5: the saved service reopens clean");
+        check(docs.thumbnailCacheEntries() == 1 && docs.thumbnailCacheBytes() > 0,
+              "TC.5: the reopened session adopted the picture");
+        check(pictures.has(slideId, fingerprint), "TC.5: the record is the slide's");
+        pictures.request(slideId, fingerprint, 160, 90);
+        QElapsedTimer timer;
+        timer.start();
+        while (ready.isEmpty() && timer.elapsed() < 5000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        check(ready.size() == 1 && ready.front().size() == QSize(160, 90),
+              "TC.5: the adopted picture decodes at the row's extent");
+
+        // Cache-only flush on a clean, writable service: no manual save, no
+        // authored byte changed.
+        std::string authoredBefore;
+        check(openshow::domain::manifestAuthoredDigest(readFile(manifest), &authoredBefore),
+              "TC.5: the fixture reads the authored digest");
+        const QString secondFingerprint =
+            QString::fromStdString(openshow::domain::sha256Hex("second-look"));
+        pictures.record(QStringLiteral("show1"), slideId, secondFingerprint, picture(Qt::blue));
+        check(pictures.waitForIdle(), "TC.5: the second picture encodes");
+        const QString generationBefore = docs.status();
+        (void)generationBefore;
+        timer.restart();
+        while (docs.thumbnailCacheFlushes() == 0 && timer.elapsed() < 8000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        check(docs.thumbnailCacheFlushes() == 1, "TC.5: one coalesced cache-only flush ran");
+        check(!docs.dirty(), "TC.5: the flush did not dirty or save an edit");
+        std::string authoredAfter;
+        check(openshow::domain::manifestAuthoredDigest(readFile(manifest), &authoredAfter) &&
+                  authoredAfter == authoredBefore,
+              "TC.5: the flush changed only the derived block");
+        check(readFile(manifest).find(secondFingerprint.toStdString()) != std::string::npos,
+              "TC.5: the flushed block carries the new picture");
+        pictures.setEnabled(false);  // retire the timer before the fixture ends
+    }
+    {
+        // An external edit between load and flush must win: the cache is not
+        // written, the file keeps the other change, and the operator's next
+        // save is the one that reconciles it.
+        ThumbnailStore pictures;
+        DocumentController docs(nullptr, root, &pictures);
+        std::string manifestText = readFile(manifest);
+        check(replaceOnce(manifestText, "\"notes\":\"\"", "\"notes\":\"edited elsewhere\""),
+              "TC.5: the fixture can edit the manifest externally");
+        check(writeFile(manifest, manifestText), "TC.5: the external edit lands");
+        pictures.record(QStringLiteral("show1"), slideId,
+                        QString::fromStdString(openshow::domain::sha256Hex("third")),
+                        picture(Qt::green));
+        check(pictures.waitForIdle(), "TC.5: the third picture encodes");
+        QElapsedTimer timer;
+        timer.start();
+        while (pictures.flushFailures() == 0 && timer.elapsed() < 8000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        check(pictures.flushFailures() == 1, "TC.5: the flush noticed the external change");
+        check(readFile(manifest) == manifestText,
+              "TC.5: the refused flush did not overwrite the external edit");
+        check(pictures.dirty() && pictures.entryCount() == 3,
+              "TC.5: the records stay in memory for the next save");
+        pictures.setEnabled(false);
+    }
+    {
+        // A cache-specific manifest failure must not cost the document save:
+        // the same save is retried without the derived block.
+        ThumbnailStore pictures;
+        DocumentController docs(nullptr, root, &pictures);
+        docs.selectSong(docs.currentSongId());
+        pictures.record(QStringLiteral("show1"), slideId,
+                        QString::fromStdString(openshow::domain::sha256Hex("fourth")),
+                        picture(Qt::yellow));
+        check(pictures.waitForIdle(), "TC.5: the fourth picture encodes");
+        ::setenv("OPENSHOW_STORAGE_FAULT", "thumbnail-manifest", 1);
+        const bool saved = docs.save();
+        ::unsetenv("OPENSHOW_STORAGE_FAULT");
+        check(saved && !docs.dirty(), "TC.5: the save survives a cache-only failure");
+        check(readFile(manifest).find("\"thumbnailCache\"") == std::string::npos,
+              "TC.5: the retried save wrote the document without the block");
+        check(pictures.dirty(), "TC.5: the dropped pictures stay eligible for a later flush");
+        {
+            openshow::domain::Documents reloaded;
+            std::string error;
+            check(openshow::domain::loadService(&reloaded, root / "service", &error),
+                  "TC.5: the retried package is still valid");
+        }
+        pictures.setEnabled(false);
+    }
+    {
+        // Autosave recovery carries the pictures, and a recovered session
+        // may not flush until it has been saved as a service.
+        ThumbnailStore pictures;
+        DocumentController docs(nullptr, root, &pictures);
+        pictures.record(QStringLiteral("show1"), slideId,
+                        QString::fromStdString(openshow::domain::sha256Hex("fifth")),
+                        picture(Qt::magenta));
+        check(pictures.waitForIdle(), "TC.5: the fifth picture encodes");
+        docs.createSong(QStringLiteral("Unsaved Work"));
+        check(openshow::domain::Autosave::exists(root / "autosave"),
+              "TC.5: the edit created a scratch package");
+        const std::size_t scratchEntries = pictures.entryCount();
+        pictures.setEnabled(false);
+        (void)scratchEntries;
+    }
+    {
+        ThumbnailStore pictures;
+        DocumentController docs(nullptr, root, &pictures);
+        check(docs.dirty(), "TC.5: the scratch is recovered as unsaved work");
+        check(pictures.entryCount() > 0,
+              "TC.5: the recovered session adopts the scratch's pictures");
+        check(docs.thumbnailCacheFlushes() == 0,
+              "TC.5: a recovered scratch is not flushed to the saved service");
+        check(docs.save(), "TC.5: saving the recovered work succeeds");
+        std::size_t savedEntries = 0;
+        {
+            openshow::domain::Documents reloaded;
+            openshow::domain::ThumbnailCache cache;
+            std::string error;
+            check(openshow::domain::loadService(&reloaded, root / "service", &error, &cache),
+                  "TC.5: the saved recovered package loads");
+            savedEntries = cache.entries.size();
+        }
+        check(savedEntries > 0, "TC.5: the recovered pictures reach the saved service");
+        pictures.setEnabled(false);
     }
 }
 
@@ -5395,6 +5606,7 @@ int main(int argc, char* argv[]) {
     exerciseGeometryEdits(tempRoot / "geometry");
     exercisePersistence(tempRoot / "persist");
     exerciseThumbnailFingerprint(tempRoot / "thumbnail-identity");
+    exerciseThumbnailCacheLifecycle(tempRoot / "thumbnail-lifecycle");
     exerciseRecoveredAssetOwnership(tempRoot / "adopt");
     exerciseShowAudioAdoption(tempRoot / "audio-adopt");
     exercisePlaylistAndLibrary(tempRoot / "playlist");
