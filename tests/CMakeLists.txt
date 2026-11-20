@@ -418,6 +418,17 @@ if(OPENSHOW_BUILD_UI)
   target_link_libraries(catalog_controller_tests PRIVATE openshow::ui-core)
   add_test(NAME catalog_controller_tests COMMAND catalog_controller_tests)
 
+  # TC.4: the picture overlay's own rules — checksum/IHDR/size validation,
+  # bounded background decode and encode, newest-ask-wins, document swaps
+  # retiring in-flight work, the record/byte ceilings, pruning and the
+  # coalesced cache-only flush. Qt Gui's own PNG codec, offscreen, no worker.
+  qt_add_executable(thumbnail_store_tests thumbnail_store_tests.cpp)
+  target_link_libraries(thumbnail_store_tests PRIVATE openshow::ui-core Qt6::Gui)
+  add_test(NAME thumbnail_store_tests COMMAND thumbnail_store_tests)
+  set_tests_properties(thumbnail_store_tests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 120)
+
   # Task SI.3/SI.4: the clipboard import session with no renderer — draft,
   # editable metadata, the honest failure, replace/cancel and the rule that
   # nothing reaches the catalog without a measured plan.

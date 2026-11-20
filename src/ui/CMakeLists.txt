@@ -57,6 +57,8 @@ add_library(openshow-ui-core STATIC
   ScriptureImport.h
   ServiceCatalogBridge.cpp
   ServiceCatalogBridge.h
+  ThumbnailStore.cpp
+  ThumbnailStore.h
   SongImport.cpp
   SongImport.h
   ReflowPlanner.cpp

@@ -28,8 +28,11 @@ writes/reads the optional independently versioned `thumbnailCache` block, a
 cache-only `mergeThumbnailCache()` reuses the manifest commit and refuses a
 manifest whose canonical authored digest changed, and a stale/corrupt/oversized
 block is only ever a miss (domain_tests cover round-trip, corrupt records,
-external changes and injected write failure). TC.4–TC.10 remain TODO; no
-runtime cold/warm evidence is claimed yet.
+external changes and injected write failure). TC.4 is DONE: `ThumbnailStore`
+keeps the record list inside the frozen ceilings and moves PNG decode/encode
+onto two bounded background lanes, with checksum/IHDR/size validation making
+every corrupt record a counted miss (`thumbnail_store_tests`). TC.5–TC.10
+remain TODO; no runtime cold/warm evidence is claimed yet.
 
 **Edit follow-up (EW.11, 2026-11-19): corrected.** Upward/no-op drops used
 `dragFrom = -1` after drag cleanup and subtracted a slot incorrectly; compute
