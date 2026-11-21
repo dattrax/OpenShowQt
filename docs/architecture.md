@@ -1093,6 +1093,13 @@ song preparation is cancelled if its Library source is deleted.
 
 ## WYSIWYG editing, slide ordering and insertion (milestone EW)
 
+EW.12 (2026-11-21) keeps Edit actions inside the viewport and outside Material
+scrollbar hit areas. The New box UI action adds a text item only when none
+exists on the slide, then starts editing it. Box selection is visible in the
+footer; Delete follows the outlined selection, and Source text commits inline
+editing before moving input focus to its drawer. The domain's ordered item
+stack remains the storage model for image and existing multi-item slides.
+
 The Edit stage edits the words ON the slide, not in a separate field. A
 selected text box enters a text session on double-click, Enter or the box
 menu's **Edit text**; the mode is identity-bound to one show/slide/box and the

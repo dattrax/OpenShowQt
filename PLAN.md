@@ -2563,6 +2563,7 @@ a nominally completed task. Owners below are roles for the agent runbook.
 | EW.9 | DONE | Coordinator + owners | EW.5, EW.7, EW.8 | Integrate focus/shortcut/accessibility and preview lifecycle. A custom input item must join Main/ShortcutMap's typing gate explicitly. Verify Escape priority, native text Delete/paste, rail move keys, inspector edits, hidden-page silence and stale preview/layout replies after navigation/restart. |
 | EW.10 | DONE | Coordinator | EW.9 | Run the complete editing journey and affected suites, inspect captures at all target widths/scales, record measured latency and output isolation, reconcile docs/PROGRESS and leave a reviewable change set. Close only after every earlier acceptance passes; physical output gates remain separately recorded. |
 | EW.11 | DONE | Editor follow-up | EW.10 | Correct upward/no-op drop destinations before drag cleanup; add rendered-line Up/Down with retained column and Shift selection; end editing on click-outside and preserve inspector focus, removing Done. Real pointer, wrapped/empty-line and real-worker regressions pass. |
+| EW.12 | DONE | Edit controls | EW.11 | Restore real pointer activation of New box/Delete/Source text; reserve scrollbar hit areas and fit the stage/actions to the viewport. New box is available only when the slide has no text box; show selection and enable Delete for the outlined box. Real-click typing, select/delete/undo and three window sizes pass with the real worker, also at 150% scaling; workspace and UI-load checks pass. |
 
 #### Evidence (2026-11-19)
 

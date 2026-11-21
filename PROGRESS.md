@@ -31,6 +31,27 @@ the passing run used local IPC/display access and Qt offscreen. Changes are
 local; restart the rebuilt application. Old smaller cards regenerate once at
 the fixed size, then zoom and panel/window resizing reuse them.
 
+**Edit footer controls (EW.12, 2026-11-21): DONE.** Real pointer
+reproduction found the Material horizontal scrollbar taking the New box,
+Delete and Source text presses, including when its thumb was invisible.
+Edit now fits the viewport height and reserves the bar's full input bounds
+when horizontal scrolling is needed. New box is guarded/disabled if the slide
+already has text; it selects and starts editing a newly created box. The footer
+names the selected box, Delete follows visible selection, and Source text
+commits inline input and focuses the drawer. The new `edit_controls_ui_tests`
+uses actual clicks and typing on the production shell/real worker at
+1380×800, 1000×680 and 1600×1000, including selection, single-box creation,
+source typing/hide focus handoff, deletion, undo/redo and zero audience changes.
+UI and affected test targets rebuilt. Workspace, UI-load, real-worker Library/
+Edit journey and new control checks passed **4/4** (65.25/8.02/15.38/2.81 s);
+the new control check also passed at `QT_SCALE_FACTOR=1.5` (2.97 s).
+Fitting the stage exposed overlapping corner targets on tiny boxes; the
+selected box retains a two-pixel centre target for body dragging, and the
+existing three-width drag matrix passes. Hiding Source text and deleting from
+its focused drawer explicitly return keyboard focus to the canvas.
+`git diff --check` passed. Changes are local; restart the rebuilt application
+to pick up the QML controls.
+
 **Thumbnail review corrections (TC.11, 2026-11-20): DONE.** Resident
 validity now includes the fingerprint, worker batches retain captured identity,
 and encode serials reject canceled/superseded work. Native-resolution PNGs

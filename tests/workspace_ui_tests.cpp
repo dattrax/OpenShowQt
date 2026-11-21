@@ -5777,12 +5777,11 @@ int main(int argc, char** argv) {
                 ids.append(box.toMap().value(QStringLiteral("id")).toString());
             return ids;
         }();
-        // Activate the button itself: the stack row can sit under the
-        // viewport edge at this window height, and the claim here is the
-        // command's effect and continued reachability, not pointer maths
-        // (BX.4 drives the real-pointer matrix).
-        if (newBox != nullptr)
-            QMetaObject::invokeMethod(newBox, "clicked");
+        // Existing documents may contain several authored boxes. New box is
+        // now intentionally disabled when one text box exists; construct this
+        // legacy geometry fixture through the controller instead of the UI.
+        check(newBox && !newBox->isEnabled(), "New box does not duplicate an existing text box");
+        docs.addTextBox();
         QTest::qWait(80);
         QString newId;
         int newIndex = -1;
@@ -5815,9 +5814,7 @@ int main(int argc, char** argv) {
                   && backButton->property("enabled").toBool(),
               "the stack commands stay reachable beside the canvas");
         // Leave the fixture exactly the story it told before this block.
-        auto* deleteBox = findNamed(window->contentItem(), "deleteBoxButton");
-        if (deleteBox != nullptr)
-            QMetaObject::invokeMethod(deleteBox, "clicked");
+        docs.removeCurrentTextBox();
         QTest::qWait(80);
         check(docs.currentSlideBoxes().size() == before.size() && docs.clearThemePlacement(house),
               "the extra box goes and House stops placing — nothing leaks to the captures");

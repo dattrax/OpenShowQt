@@ -102,6 +102,101 @@ void collectNamed(QQuickItem* root, const char* name, QList<QQuickItem*>* out) {
     }
 }
 
+
+void exerciseEditControls(QQuickWindow* window, openshow::ui::DocumentController& docs,
+                          openshow::ui::WorkerController& worker) {
+    docs.createSong(QStringLiteral("Text box controls"));
+    docs.addSlide();
+    docs.selectSlide(0);
+    docs.setSlideText(QStringLiteral("Existing words"));
+    docs.flushText();
+    window->setProperty("page", "edit");
+    QTest::qWait(150);
+    auto* page = findNamed(window->contentItem(), "editPage");
+    auto* canvas = findNamed(window->contentItem(), "editCanvas");
+    auto* add = findNamed(window->contentItem(), "newBoxButton");
+    auto* remove = findNamed(window->contentItem(), "deleteBoxButton");
+    auto* sourceButton = findNamed(window->contentItem(), "sourceTextButton");
+    auto* source = findNamed(window->contentItem(), "slideTextEditor");
+    auto* bar = findNamed(window->contentItem(), "editHorizontalScrollBar");
+    if (!check(page && canvas && add && remove && sourceButton && source && bar,
+               "the Edit controls and scrollbar are addressable")) return;
+    auto bounds = [](QQuickItem* item) {
+        return item->mapRectToScene(QRectF(0, 0, item->width(), item->height()));
+    };
+    auto click = [&](QQuickItem* item) {
+        check(bounds(page).contains(bounds(item)), "the complete action stays inside the Edit viewport");
+        check(!bar->isVisible() || !bounds(bar).intersects(bounds(item)),
+              "the horizontal scrollbar cannot cover a text-box action");
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, bounds(item).center().toPoint());
+        QTest::qWait(50);
+    };
+    auto stagePoint = [&](double x, double y) {
+        return canvas->mapToScene(QPointF(
+            (canvas->width() - canvas->property("stageWidth").toDouble()) / 2
+                + x * canvas->property("zoom").toDouble(),
+            (canvas->height() - canvas->property("stageHeight").toDouble()) / 2
+                + y * canvas->property("zoom").toDouble())).toPoint();
+    };
+    const auto presentsBefore = worker.revision();
+    for (const QSize size : {QSize(1380, 800), QSize(1000, 680), QSize(1600, 1000)}) {
+        window->resize(size);
+        QTest::qWait(100);
+        QMetaObject::invokeMethod(page, "endTextEditing");
+        if (page->property("sourceDrawerVisible").toBool()) click(sourceButton);
+        docs.setSlideText(QStringLiteral("Existing words"));
+        docs.flushText();
+        QTest::qWait(50);
+        check(page->property("contentY").toDouble() == 0,
+              "the box controls need no vertical page scrolling");
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, stagePoint(5, 5));
+        QTest::qWait(40);
+        check(!canvas->property("selected").toBool() && !remove->isEnabled(),
+              "clicking blank slide space deselects the box and disables Delete");
+        const auto box = docs.currentSlideBoxes().first().toMap();
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+            stagePoint(box.value("x").toDouble() + box.value("width").toDouble() / 2,
+                       box.value("y").toDouble() + box.value("height").toDouble() / 2));
+        QTest::qWait(40);
+        check(canvas->property("selected").toBool() && remove->isEnabled(),
+              "a real click selects the existing box and enables Delete");
+        check(!add->isEnabled(), "New box is unavailable while the slide already has a text box");
+        click(add);
+        check(docs.currentSlideBoxes().size() == 1, "a disabled New box cannot add a second text box");
+        click(sourceButton);
+        check(source->isVisible() && source->hasActiveFocus(),
+              "a real Source text click opens the drawer and focuses its editor");
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        for (const char ch : QByteArray("words from source")) QTest::keyClick(window, ch);
+        docs.flushText();
+        check(docs.currentSlideText() == QStringLiteral("words from source"),
+              "typing in the source drawer changes the selected box");
+        click(sourceButton);
+        check(!source->isVisible(), "a real Hide source text click closes the drawer");
+        check(!source->hasActiveFocus() && !window->property("typingIntoField").toBool(),
+              "hiding Source text returns keyboard focus to the canvas");
+        click(sourceButton);
+        click(remove);
+        check(docs.currentSlideBoxes().isEmpty() && add->isEnabled() && !remove->isEnabled(),
+              "a real Delete click removes the selected box without recreating it from the focused drawer");
+        docs.undo();
+        check(docs.currentSlideBoxes().size() == 1 && !add->isEnabled(),
+              "one undo restores the deleted box and the single-text-box rule");
+        docs.redo();
+        click(add);
+        if (check(waitFor([&] { return canvas->property("textMode").toBool(); }, 3000),
+                  "a real New box click creates and starts editing the empty slide's box")) {
+            for (const char ch : QByteArray("new box words")) QTest::keyClick(window, ch);
+            docs.flushText();
+            check(docs.currentSlideBoxes().size() == 1 &&
+                      docs.currentSlideText() == QStringLiteral("new box words") && !add->isEnabled(),
+                  "the newly created box accepts typing immediately and prevents duplicates");
+        }
+        QMetaObject::invokeMethod(page, "endTextEditing");
+    }
+    check(worker.revision() == presentsBefore, "box controls never present to the audience");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -184,6 +279,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     QTest::qWait(150);
+
+    if (app.arguments().contains(QStringLiteral("--edit-controls-only"))) {
+        exerciseEditControls(window, docs, worker);
+        worker.shutdownNow();
+        for (const auto& warning : warnings) std::fprintf(stderr, "QML: %s\n", qPrintable(warning));
+        return gFailed == 0 && warnings.isEmpty() ? 0 : 1;
+    }
 
     // Import is a preparation action, reachable directly from Show.
     auto click = [window](QQuickItem* item) {

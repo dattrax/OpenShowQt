@@ -86,6 +86,7 @@ Item {
             return
         inlineEditor.finish()
     }
+    function focusCanvas() { gestureArea.forceActiveFocus() }
     function cancelTextEditing() {
         endTextEditing()
     }
@@ -254,6 +255,14 @@ Item {
         }
         const box = boxes[currentBox]
         if (selected && box !== undefined) {
+            // A fitted small stage can make all four handle targets overlap.
+            // Keep a two-pixel centre target for moving the selected box;
+            // presses around its corners still resize it normally.
+            const centreX = (box.x + box.width / 2) * zoom
+            const centreY = (box.y + box.height / 2) * zoom
+            if (Math.abs(px - centreX) < Math.min(1, box.width * zoom / 4)
+                && Math.abs(py - centreY) < Math.min(1, box.height * zoom / 4))
+                return "move"
             const corner = transform.cornerAt(box, px, py, zoom)
             if (corner !== "") {
                 return corner

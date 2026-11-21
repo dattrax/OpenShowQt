@@ -515,6 +515,14 @@ if(OPENSHOW_BUILD_UI)
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
     TIMEOUT 180)
 
+  # Real pointer clicks on the production Edit page, including minimum width
+  # and an open media bin. Sharing the shell target avoids another QML bundle.
+  add_test(NAME edit_controls_ui_tests COMMAND library_service_ui_tests --edit-controls-only)
+  set_tests_properties(edit_controls_ui_tests PROPERTIES
+    LABELS display
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    TIMEOUT 90)
+
   # Task SI.3: the import PAGE on the real worker — paste, measured cards,
   # real thumbnail requests, one-click Add to Library, zero presents and zero
   # QML warnings. The page's QML module is built beside the test so it loads

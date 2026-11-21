@@ -24,10 +24,17 @@ import QtQuick.Controls
 Flickable {
     id: editPage
     contentWidth: Math.max(width, 760)
-    contentHeight: Math.max(height, 650)
+    // The canvas fits the viewport; the inspector scrolls independently.
+    // Keeping a taller page hid the text-box actions below the media bin.
+    contentHeight: height
     clip: true
-    ScrollBar.horizontal: ScrollBar {}
-    ScrollBar.vertical: ScrollBar {}
+    ScrollBar.horizontal: ScrollBar {
+        id: pageHorizontalBar
+        objectName: "editHorizontalScrollBar"
+        visible: editPage.contentWidth > editPage.width
+        enabled: visible
+    }
+    ScrollBar.vertical: ScrollBar { visible: false; enabled: false }
 
     // The canvas's handles being on (or Escape having stepped out).
     property alias boxSelected: editCanvas.selected
@@ -43,6 +50,38 @@ Flickable {
     readonly property bool sourceDrawerVisible: sourceDrawerRequested
         || !worker.textEditorSupported
     function endTextEditing() { editCanvas.endTextEditing() }
+    readonly property bool hasTextBox: docs.currentSlideBoxes.some(box => box.kind === "text")
+
+    function addTextBox() {
+        if (hasTextBox || !editCanvas.hasSlide) return
+        editCanvas.endTextEditing()
+        if (!docs.addTextBox()) return
+        editCanvas.selected = true
+        Qt.callLater(function () {
+            if (editCanvas.textEditAvailable) editCanvas.beginTextEditing(-1)
+            else {
+                editPage.sourceDrawerRequested = true
+                lyricText.forceActiveFocus()
+            }
+        })
+    }
+    function deleteSelectedBox() {
+        if (!editCanvas.selected || docs.currentBox < 0) return
+        editCanvas.endTextEditing()
+        if (editCanvas.textMode) return
+        docs.flushText()
+        docs.removeCurrentTextBox()
+        editCanvas.selected = docs.currentBox >= 0
+        editCanvas.focusCanvas()
+    }
+    function toggleSourceText() {
+        editCanvas.endTextEditing()
+        if (!worker.textEditorSupported || editCanvas.textMode) return
+        docs.flushText()
+        sourceDrawerRequested = !sourceDrawerVisible
+        if (sourceDrawerRequested) Qt.callLater(function () { lyricText.forceActiveFocus() })
+        else editCanvas.focusCanvas()
+    }
 
     // The context-property worker, named once at the page root: inside an
     // instance body `worker: worker` resolves to the instance's OWN
@@ -83,9 +122,10 @@ Flickable {
         TextArea {
             id: lyricText
             objectName: "slideTextEditor"
-            enabled: docs.slides.length > 0 && docs.currentBoxKind !== "image"
+            enabled: docs.currentBox >= 0 && docs.currentBoxKind === "text"
             text: docs.currentSlideText
-            placeholderText: docs.currentBoxKind === "image" ? "Select a text box to edit its words"
+            placeholderText: docs.currentBox < 0 ? "Use New box to add text"
+                : docs.currentBoxKind === "image" ? "Select a text box to edit its words"
                 : (worker.textEditorSupported
                    ? "Source text — the canvas edits this box in place"
                    : "Source text (this worker cannot edit in place)")
@@ -174,14 +214,16 @@ Flickable {
     // enabled state reads the SELECTION: Delete takes the selected box away,
     // Back/Forward re-order it in the stack the worker paints — what moves
     // forward lands on top of the audience's picture, exactly where the
-    // outlines say it will. "New" stays live at the ceiling and lets the
-    // status line name the limit; the refusal adds no undo step. Geometry
-    // itself is the canvas gesture and the box context menu alone.
+    // outlines say it will. New creates text only when none exists on this
+    // slide. Geometry is the canvas gesture and the box context menu alone.
     Flow {
         id: boxFields
         anchors.right: themeScroll.left
         anchors.rightMargin: 12
         anchors.bottom: parent.bottom
+        // Material scrollbars have a larger mouse target than their painted
+        // thumb. Reserve that entire target instead of covering these buttons.
+        anchors.bottomMargin: pageHorizontalBar.visible ? pageHorizontalBar.height : 0
         anchors.left: parent.left
         spacing: 8
 
@@ -190,20 +232,24 @@ Flickable {
             Text {
                 color: "#b0b0b0"
                 font.pixelSize: 10
-                text: "STACK"
+                objectName: "editBoxSelectionHint"
+                text: docs.currentBox < 0 ? "No box selected — use New box to add text"
+                    : (!editCanvas.selected ? "Click a box on the slide to select it"
+                       : (docs.currentBoxKind === "image" ? "Image selected" : "Text box selected"))
             }
             Row {
                 spacing: 4
                 PanelButton {
                     objectName: "newBoxButton"
                     text: "New box"
-                    onClicked: docs.addTextBox()
+                    enabled: editCanvas.hasSlide && !editPage.hasTextBox
+                    onClicked: editPage.addTextBox()
                 }
                 PanelButton {
                     objectName: "deleteBoxButton"
                     text: "Delete"
-                    enabled: docs.currentBox >= 0
-                    onClicked: docs.removeCurrentTextBox()
+                    enabled: editCanvas.selected && docs.currentBox >= 0
+                    onClicked: editPage.deleteSelectedBox()
                 }
                 PanelButton {
                     objectName: "boxBackButton"
@@ -223,7 +269,7 @@ Flickable {
                     text: !worker.textEditorSupported ? "Source text (required)"
                          : (editPage.sourceDrawerVisible ? "Hide source text" : "Source text")
                     enabled: worker.textEditorSupported
-                    onClicked: editPage.sourceDrawerRequested = !editPage.sourceDrawerVisible
+                    onClicked: editPage.toggleSourceText()
                 }
             }
         }

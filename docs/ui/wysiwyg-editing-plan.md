@@ -12,6 +12,16 @@ the place each leaf records what it actually built.
 - One click selects a box. Double-click on a text box, Enter while the canvas
   holds a selected text box, or **Edit text** on the box menu enters text
   mode. F2 keeps its output meaning (clear words); it never enters text mode.
+- Since EW.12 (2026-11-21), **New box** is available only when the slide has
+  no text box. It selects the created box and immediately enters text editing
+  (or focuses the source drawer when inline editing is unavailable).
+- The footer states whether a text/image box is selected; a blank-canvas click
+  deselects it and disables **Delete**. Delete commits text, removes the
+  outlined box and remains one undo step. Source text explicitly moves focus
+  out of inline mode into the drawer; hiding it returns focus to the canvas.
+  The canvas fits the page height, and
+  horizontal scrollbar hit areas are hidden when unused and reserved when
+  needed, so they cannot intercept the footer's clicks.
 - Escape first cancels an IME composition or an active selection drag, then
   leaves text mode keeping the committed words. It never clears audience
   output.
