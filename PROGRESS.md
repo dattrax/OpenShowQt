@@ -11,6 +11,30 @@ archive is a current instruction.
 
 ## Current checkpoint
 
+**Library preview selection (UI.3d, 2026-11-21): DONE.** An empty browsed
+show ID previously meant the combined service regardless of the open folder.
+Show now receives the folder separately: Songs and Presentations show only a
+selected item from that folder, or an empty selection prompt. Folder switches
+restore a retained selection only from the open folder; Ctrl-deselecting the
+last item clears its preview. A selected Library song without a service copy
+now gets a transient plan through a separate `SongPlanner`: its remembered
+Library snapshot supplies measurement and rendering, or the service/default
+look supplies both when none is assigned. It does not need an Add or theme
+assignment to acquire a preview. Generated scene keys include the item and
+plan generation; deselection/page changes cancel the preview, and a newly
+prepared service copy takes over when the document changes. No service show,
+running-order entry or history step is created by browsing. Only Service
+combines the running order, including repeated entries; an empty service no
+longer falls back to the show selected for editing.
+The new `folder_preview_ui_tests` uses real clicks on the production shell
+and real worker, covers both folders, the last song without a theme, a
+remembered-theme preview, rapid selection and zero authored/audience changes.
+UI and affected targets built. **8/8 checks passed**: folder preview (5.94 s),
+workspace (63.66 s), Library/service journey (15.43 s), UI load (8.02 s),
+document controller (34.38 s), song service (1.53 s), song import (0.03 s)
+and Edit controls (3.08 s). `git diff --check` passed. Changes are local;
+restart the rebuilt application to pick up the preview behavior.
+
 **Fixed operator thumbnail size (TC.12, 2026-11-21): DONE.** Show and
 Edit now always request one 320x180 picture and smoothly scale it for display.
 The recovery file held 181-, 198- and 204-pixel records; slight layout growth

@@ -1073,6 +1073,20 @@ and service copies. Clipboard import lives in the toolbar More menu, preserving
 the originating page; Library has no duplicate Add/Import buttons. Service
 selection carries an entry ID to Show, keeping all service slides visible while
 selecting/scrolling to that occurrence. Library browsing remains separate.
+Since UI.3d, Show receives the open folder separately from the browsed show:
+only Service combines running-order occurrences. Songs and Presentations
+preview the selected item from the open folder, with an empty prompt only
+when nothing is selected. For a song without a service copy,
+`ServiceCatalogBridge` owns a separate transient `SongPlanner` and scene list:
+it measures and compiles using the remembered Library theme snapshot, or the
+service/default Songs look when none is assigned. It creates no service show,
+running-order entry or history step. Keys include the catalog item and plan
+generation; folder/page changes cancel the run, catalog edits refresh it, and
+a newly prepared service show replaces the transient source on document
+notification. `songSlideSceneJson` can compile the snapshot in a document
+copy, matching the measured box/style. Folder changes and selection
+retention/deselection refresh preview identity without presenting. An empty
+service stays empty even when the editing cursor still names a show.
 Full-width rules separate service groups in existing grid gaps without changing
 cue order or cell mapping.
 

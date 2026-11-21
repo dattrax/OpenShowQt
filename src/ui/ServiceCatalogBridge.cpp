@@ -7,6 +7,7 @@
 #include "DocumentController.h"
 #include "ThumbnailStore.h"
 #include "WorkerController.h"
+#include "openshow/domain/thumbnails.h"
 
 namespace openshow::ui {
 
@@ -15,7 +16,36 @@ ServiceCatalogBridge::ServiceCatalogBridge(CatalogController* catalog,
                                            WorkerController* worker, ThumbnailStore* pictures,
                                            QObject* parent)
     : QObject(parent), fCatalog(catalog), fDocuments(documents), fPictures(pictures),
-      fPlanner(documents, worker, this) {
+      fPlanner(documents, worker, this), fPreviewPlanner(documents, worker, this) {
+    connect(&fPreviewPlanner, &SongPlanner::finished, this,
+            [this](bool ok, const QString& error) {
+        fPreviewSlides.clear();
+        if (!ok) {
+            fPreviewStatus = error;
+            emit previewChanged();
+            return;
+        }
+        int index = 0;
+        for (const auto& slide : fPreviewPlanner.slides()) {
+            QStringList lines;
+            for (const auto& line : slide.lines) lines.append(QString::fromStdString(line));
+            const auto group = slide.stanzaIndex < fPreviewStanzas.size()
+                ? fPreviewStanzas[slide.stanzaIndex].label : slide.label;
+            const auto scene = fDocuments->songSlideSceneJson(lines, fPreviewSnapshot);
+            if (scene.isEmpty()) {
+                fPreviewSlides.clear();
+                fPreviewStatus = QStringLiteral("This song's preview could not be compiled");
+                emit previewChanged();
+                return;
+            }
+            fPreviewSlides.append(QVariantMap{
+                {"id", QStringLiteral("library:%1:%2:%3").arg(fPreviewItemId).arg(fPreviewGeneration).arg(index)},
+                {"index", index++}, {"scene", scene}, {"preview", lines.join('\n')},
+                {"sectionLabel", QString::fromStdString(group)}});
+        }
+        fPreviewStatus = QString();
+        emit previewChanged();
+    });
     if (fPictures != nullptr && fCatalog != nullptr && fDocuments != nullptr) {
         // TC.9: a finished service render of a linked show becomes one more
         // remembered look of its Library item. The catalog's model and every
@@ -42,6 +72,7 @@ ServiceCatalogBridge::ServiceCatalogBridge(CatalogController* catalog,
         // immediately; a content/metadata change re-measures and re-lays.
         connect(fCatalog, &CatalogController::itemChanged, this,
                 [this](const QString& id) {
+                    if (fPreviewItemId == id) previewCatalogItem(id);
                     const openshow::catalog::CatalogItem* item =
                         fCatalog->findItem(id);
                     if (item == nullptr ||
@@ -62,6 +93,7 @@ ServiceCatalogBridge::ServiceCatalogBridge(CatalogController* catalog,
                 });
         connect(fCatalog, &CatalogController::itemRemoved, this,
                 [this](const QString& id) {
+                    if (fPreviewItemId == id) previewCatalogItem(QString());
                     if (fPendingId == id && fPlanner.measuring()) {
                         fPlanner.cancel();
                         setStatus(QStringLiteral("Preparation cancelled: the Library song was deleted"));
@@ -75,6 +107,43 @@ ServiceCatalogBridge::ServiceCatalogBridge(CatalogController* catalog,
         connect(fCatalog, &CatalogController::itemsPermanentlyRemoved,
                 fDocuments, &DocumentController::forgetDeletedCatalogItems);
     }
+}
+
+void ServiceCatalogBridge::previewCatalogItem(const QString& catalogItemId) {
+    const auto* item = fCatalog != nullptr ? fCatalog->findItem(catalogItemId) : nullptr;
+    if (item == nullptr || fDocuments == nullptr) {
+        fPreviewPlanner.cancel();
+        if (fPreviewItemId.isEmpty()) return;
+        fPreviewItemId.clear();
+        fPreviewSlides.clear();
+        fPreviewTitle.clear();
+        fPreviewStatus.clear();
+        fPreviewSignature.clear();
+        emit previewChanged();
+        return;
+    }
+    const auto snapshot = fCatalog->itemThemeSnapshot(catalogItemId);
+    openshow::importer::SongPaginationInput input;
+    songInputForStyle(item->stanzas, snapshot.isEmpty() ? fDocuments->songBoxStyle()
+                     : fDocuments->boxStyleForSnapshot(snapshot), &input);
+    std::string look;
+    openshow::domain::normalizeSceneForFingerprint(
+        fDocuments->songSlideSceneJson({QStringLiteral("a")}, snapshot).toStdString(), &look, nullptr);
+    const auto signature = QString::fromStdString(openshow::importer::songPlanFingerprint(input) + look)
+        + QString::number(item->recordRevision);
+    if (fPreviewItemId == catalogItemId && fPreviewSignature == signature &&
+        ((!fPreviewSlides.isEmpty() && fPreviewPlanner.hasPlan()) || fPreviewPlanner.measuring())) return;
+    fPreviewPlanner.cancel();
+    fPreviewItemId = catalogItemId;
+    fPreviewSignature = signature;
+    fPreviewTitle = QString::fromStdString(item->title);
+    fPreviewSnapshot = snapshot;
+    fPreviewStanzas = item->stanzas;
+    fPreviewSlides.clear();
+    ++fPreviewGeneration;
+    fPreviewStatus = QStringLiteral("Preparing song preview\u2026");
+    emit previewChanged();
+    fPreviewPlanner.start(fPreviewStanzas, &input);
 }
 
 bool ServiceCatalogBridge::addToService(const QString& catalogItemId, int index) {

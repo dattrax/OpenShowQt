@@ -41,6 +41,7 @@
 #include "SongImport.h"
 #include "WorkerController.h"
 #include "WorkspacePanels.h"
+#include "openshow/scene/scene.h"
 
 namespace {
 
@@ -102,6 +103,146 @@ void collectNamed(QQuickItem* root, const char* name, QList<QQuickItem*>* out) {
     }
 }
 
+
+void exerciseFolderPreview(QQuickWindow* window, openshow::ui::DocumentController& docs,
+                           openshow::ui::CatalogController& library,
+                           openshow::ui::WorkerController& worker) {
+    const QVariantList stanzas{QVariantMap{{"label", "Verse"}, {"lines", QVariantList{"Song words"}}}};
+    const QString linked = library.addSong("Linked song", stanzas, "", "", "");
+    const QString unprepared = library.addSong("Unprepared song", stanzas, "", "", "");
+    const QString themed = library.addSong("Themed Library song", stanzas, "", "", "");
+    const QString last = library.addSong("Last song without a theme", stanzas, "", "", "");
+    docs.createBlankTheme("Remembered Library text");
+    const QString look = docs.themes().last().toMap().value("id").toString();
+    docs.editTheme(look, "Remembered Library text", "#aabbcc", "#000000", "",
+                   "DejaVu Sans", 72, "left", 1.2);
+    check(library.rememberItemTheme(themed, docs.themeSnapshotJson(look)),
+          "the Library fixture remembers a theme without joining the service");
+    const QVariantList plan{
+        QVariantMap{{"label", "Verse"}, {"lines", QStringList{"First song slide"}}},
+        QVariantMap{{"label", "Chorus"}, {"lines", QStringList{"Second song slide"}}}};
+    const QString song = docs.upsertCatalogSong(linked, "Linked song", "", "", "", plan, true);
+    docs.createSong("Opening presentation");
+    docs.addSlide();
+    docs.setSlideText("Welcome");
+    docs.flushText();
+    const QString deck = docs.currentSongId();
+    docs.addShowToPlaylist(deck);
+    docs.addShowToPlaylist(deck);
+    QTest::qWait(150);
+
+    auto* show = findNamed(window->contentItem(), "showPage");
+    auto* empty = findNamed(window->contentItem(), "operatorEmptyTitle");
+    auto* songs = findNamed(window->contentItem(), "librarySongsHeader");
+    auto* presentations = findNamed(window->contentItem(), "libraryPresentationsHeader");
+    auto* service = findNamed(window->contentItem(), "libraryServiceHeader");
+    if (!check(show && empty && songs && presentations && service && !song.isEmpty(),
+               "folder preview: production shell and prepared fixtures are present")) return;
+    auto rows = [&] {
+        const auto value = show->property("cueRows");
+        return value.canConvert<QJSValue>() ? value.value<QJSValue>().toVariant().toList() : value.toList();
+    };
+    auto open = [&](QQuickItem* folder) {
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          folder->mapToScene(QPointF(40, 13)).toPoint());
+        QTest::qWait(160);
+    };
+    auto select = [&](const char* name, const QString& id, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+        QList<QQuickItem*> items;
+        collectNamed(window->contentItem(), name, &items);
+        for (auto* item : items) {
+            if (item->isVisible() && item->property("modelData").toMap().value("id").toString() == id) {
+                QTest::mouseClick(window, Qt::LeftButton, modifiers,
+                                  item->mapToScene(QPointF(30, 14)).toPoint());
+                QTest::qWait(160);
+                return;
+            }
+        }
+        check(false, "folder preview: the requested Library row is clickable");
+    };
+    auto only = [&](const QString& id, int count) {
+        const auto cues = rows();
+        bool matches = cues.size() == count;
+        for (const auto& cue : cues) matches &= cue.toMap().value("showId").toString() == id;
+        return matches;
+    };
+    auto libraryPicture = [&](const QString& id, const QString& title) {
+        return waitFor([&] {
+            const auto cues = rows();
+            if (cues.isEmpty() || show->property("sourceName").toString() != title) return false;
+            for (const auto& cue : cues) {
+                const auto row = cue.toMap();
+                if (!row.value("slideId").toString().startsWith("library:" + id + ":") ||
+                    worker.thumbnail(row.value("slideId").toString()).isNull()) return false;
+            }
+            return true;
+        }, 10000);
+    };
+    const auto entries = docs.playlistEntries();
+    const auto generation = docs.documentGeneration();
+    const auto revision = worker.revision();
+    check(rows().isEmpty() && empty->isVisible() && empty->property("text") == "Select a song",
+          "Songs starts with an empty preview even when the service has several items");
+    open(service);
+    check(rows().size() == 4, "only Service concatenates songs, presentations and repeated occurrences");
+    open(presentations);
+    check(rows().isEmpty() && empty->property("text") == "Select a presentation",
+          "Presentations with no selection does not borrow the service preview");
+    select("collectionLibraryRow", deck);
+    check(only(deck, 1), "selecting a presentation previews only its own slide");
+    open(songs);
+    check(rows().isEmpty(), "a presentation selected in the other folder cannot fill the Songs preview");
+    select("librarySongRow", linked);
+    check(only(song, 2), "selecting a prepared song previews only its own slides");
+    open(service);
+    check(rows().size() == 4, "Service retains the combined order after browsing a song");
+    open(songs);
+    check(only(song, 2), "returning to Songs restores its selected item instead of the service");
+    select("librarySongRow", linked, Qt::ControlModifier);
+    check(rows().isEmpty() && show->property("cueIndex").toInt() == -1,
+          "Ctrl-deselecting the last song clears its preview and cue selection");
+    select("librarySongRow", unprepared);
+    check(libraryPicture(unprepared, "Unprepared song") && docs.showForCatalogItem(unprepared).isEmpty(),
+          "an unprepared Library song renders off air using the default look without joining the service");
+    select("librarySongRow", themed);
+    check(libraryPicture(themed, "Themed Library song"),
+          "an unprepared song also previews its remembered Library theme");
+    if (!rows().isEmpty()) {
+        const QString scene = rows().last().toMap().value("scene").toString();
+        openshow::scene::Scene compiled;
+        std::string error;
+        check(openshow::scene::fromJson(boost::json::parse(scene.toStdString()), &compiled, &error) &&
+                  !compiled.items.empty() && compiled.items.front().color == 0xaabbcc &&
+                  compiled.items.front().fontSize == 72,
+              "the rendered Library scene uses the remembered typography");
+    }
+    select("librarySongRow", last);
+    check(libraryPicture(last, "Last song without a theme") && library.itemThemeSnapshot(last).isEmpty(),
+          "the last song row renders without requiring a service addition or a theme assignment");
+    select("librarySongRow", last, Qt::ControlModifier);
+    check(rows().isEmpty() && !show->property("libraryPreview").toBool(),
+          "deselecting a transient song clears the preview just like a prepared song");
+    select("librarySongRow", unprepared);
+    select("librarySongRow", last);
+    check(libraryPicture(last, "Last song without a theme"),
+          "a superseded Library measurement cannot replace the last selected song");
+    open(presentations);
+    check(rows().isEmpty(), "a hidden Songs selection cannot supply a presentation preview");
+    select("collectionLibraryRow", deck);
+    select("collectionLibraryRow", deck, Qt::ControlModifier);
+    check(rows().isEmpty(), "Ctrl-deselecting the last presentation also clears the preview");
+    QTest::keyClick(window, Qt::Key_PageDown);
+    QTest::qWait(80);
+    check(docs.playlistEntries() == entries && docs.documentGeneration() == generation &&
+              worker.revision() == revision && worker.sceneActive() == 0,
+          "Library preview generation, browsing, deselection and empty Next never edit or present the service");
+    open(service);
+    for (const auto& entry : entries) docs.removePlaylistEntry(entry.toMap().value("entryId").toString());
+    QTest::qWait(180);
+    check(rows().isEmpty() && !docs.currentSongId().isEmpty() &&
+              empty->property("text") == "This service is empty",
+          "an empty Service does not fall back to the presentation selected for editing");
+}
 
 void exerciseEditControls(QQuickWindow* window, openshow::ui::DocumentController& docs,
                           openshow::ui::WorkerController& worker) {
@@ -279,6 +420,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     QTest::qWait(150);
+
+    if (app.arguments().contains(QStringLiteral("--folder-preview-only"))) {
+        exerciseFolderPreview(window, docs, library, worker);
+        worker.shutdownNow();
+        for (const auto& warning : warnings) std::fprintf(stderr, "QML: %s\n", qPrintable(warning));
+        return gFailed == 0 && warnings.isEmpty() ? 0 : 1;
+    }
 
     if (app.arguments().contains(QStringLiteral("--edit-controls-only"))) {
         exerciseEditControls(window, docs, worker);
@@ -842,6 +990,7 @@ int main(int argc, char** argv) {
         check(!fixture.isEmpty(), "prepare a song whose sections span consecutive slides");
         auto* show = findNamed(window->contentItem(), "showPage");
         auto* grid = findNamed(window->contentItem(), "operatorSlideGrid");
+        selectFolder(serviceFolder);
         window->setProperty("browsedShowId", "");
         QTest::qWait(60);
         const auto value = show->property("cueRows");

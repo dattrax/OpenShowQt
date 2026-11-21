@@ -503,7 +503,8 @@ public:
     // numbers; `songSlideSceneJson` compiles one generated slide whose words
     // the document does not hold yet.
     Q_INVOKABLE QVariantMap songBoxStyle() const;
-    Q_INVOKABLE QString songSlideSceneJson(const QStringList& lines) const;
+    Q_INVOKABLE QString songSlideSceneJson(const QStringList& lines,
+                                           const QString& themeSnapshotJson = QString()) const;
 
     // Task SL.6/SL.8: prepare a shared-catalog song into THIS service. One
     // history entry. A show already linked to `catalogItemId` is reused (the

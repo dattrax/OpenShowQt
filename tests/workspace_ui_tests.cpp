@@ -240,6 +240,13 @@ int main(int argc, char** argv) {
     auto* showPageItem = window->findChild<QQuickItem*>("showPage");
     auto* cueGrid = window->findChild<QQuickItem*>("operatorSlideGrid");
     check(showPageItem && cueGrid, "the Show page and its cue grid are in the operator shell");
+    check(showPageItem->property("cueRows").toList().isEmpty(),
+          "the initial Songs folder has no preview until an item is selected");
+    auto* initialServiceFolder = findNamed(window->contentItem(), "libraryServiceHeader");
+    if (initialServiceFolder)
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          initialServiceFolder->mapToScene(QPointF(40, 13)).toPoint());
+    QTest::qWait(100);
     {
         // The running order is Good Grace (18 cues) then Welcome (1): the
         // grid renders the ORDER, not whatever the editing cursor sits on.
@@ -398,6 +405,7 @@ int main(int argc, char** argv) {
                           folder->mapToScene(QPointF(40, 13)).toPoint());
         QTest::qWait(60);
     };
+    openFolder(songsFolder);
     check(songList->isVisible() && !libraryList->isVisible()
               && !playlistList->isVisible(),
           "opening Songs lists its files below and nothing else");
@@ -687,6 +695,7 @@ int main(int argc, char** argv) {
                   "browsing and preparing never move the presented selection");
         }
         window->setProperty("browsedShowId", QString());
+        openFolder(serviceFolder);
         QTest::qWait(20);
     }
 

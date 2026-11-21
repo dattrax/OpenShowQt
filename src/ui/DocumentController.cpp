@@ -2321,8 +2321,22 @@ QString DocumentController::scriptureSlideSceneJson(const QStringList& lines) co
     return fixtureSlideSceneJson(lines, true);
 }
 
-QString DocumentController::songSlideSceneJson(const QStringList& lines) const {
-    return fixtureSlideSceneJson(lines, false);
+QString DocumentController::songSlideSceneJson(const QStringList& lines,
+                                               const QString& themeSnapshotJson) const {
+    if (themeSnapshotJson.isEmpty()) return fixtureSlideSceneJson(lines, false);
+    boost::system::error_code parseError;
+    const auto parsed = boost::json::parse(themeSnapshotJson.toStdString(), parseError);
+    openshow::domain::ThemeSnapshot snapshot;
+    if (parseError || !openshow::domain::themeSnapshotFromJson(parsed, &snapshot, nullptr))
+        return {};
+    auto fixture = fDocuments;
+    const auto theme = fixture.ensureThemeFromSnapshot(snapshot);
+    if (theme.empty() || !fixture.setCurrentTheme(theme)) return {};
+    std::vector<std::string> authored;
+    for (const auto& line : lines) authored.push_back(line.toStdString());
+    openshow::scene::Scene scene;
+    if (!compileSongFixture(fixture, authored, &scene)) return {};
+    return QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
 }
 
 // --- theme surfaces (task TH.5, themes plan) --------------------------------

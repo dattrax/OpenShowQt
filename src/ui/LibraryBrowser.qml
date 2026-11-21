@@ -33,6 +33,7 @@ Item {
     // The folder whose files the pane below lists: "songs", "presentations"
     // or "service". Folders never list their files inline.
     property string selectedFolder: "songs"
+    onSelectedFolderChanged: browser.syncPreview()
     property bool foldersExpanded: true
 
     readonly property bool libraryListFocused:
@@ -130,6 +131,21 @@ Item {
         const colon = key.indexOf(":")
         selectedKind = key.startsWith("catalog:") ? "song" : (key ? "presentation" : "")
         selectedId = colon >= 0 ? key.substring(colon + 1) : ""
+        browser.syncPreview()
+    }
+    // The preview follows a selected item in the OPEN folder. A selection in
+    // the other Library folder, a deselected row or an unprepared song must
+    // never borrow the service's combined slide list.
+    function syncPreview() {
+        if (!selection) return
+        const rows = browser.selectedFolder === "songs" ? browser.songRows
+                   : browser.selectedFolder === "presentations" ? browser.presentationRows : []
+        const keys = rows.map(row => (row.rowKind || "catalog") + ":" + row.id)
+        const current = selection.currentKey
+        const key = selection.contains(current) && keys.indexOf(current) >= 0 ? current
+                  : selection.keys.find(key => keys.indexOf(key) >= 0) || ""
+        if (key.startsWith("catalog:")) browser.songChosen(key.substring(8))
+        else browser.presentationChosen(key.startsWith("show:") ? key.substring(5) : "")
     }
     function selectRow(key, modifiers) {
         selection.select(key, visibleKeys, modifiers)
@@ -725,7 +741,6 @@ Item {
                                 return
                             }
                             browser.selectRow(key, mouse.modifiers)
-                            browser.songChosen(songRow.modelData.id)
                         }
                         onDoubleClicked: browser.addSongToService(songRow.modelData.id)
                         onPressed: function(mouse) {
@@ -840,7 +855,7 @@ Item {
                                     browser.contextSongId = libraryRow.modelData.id
                                     const at = libraryRow.mapToItem(null, mouse.x, mouse.y)
                                     songMenu.popup(at.x, at.y)
-                                } else browser.songChosen(libraryRow.modelData.id)
+                                }
                                 return
                             }
                             if (mouse.button === Qt.RightButton) {
@@ -849,7 +864,6 @@ Item {
                                     libraryRow.modelData.name || "")
                             } else {
                                 docs.selectSong(libraryRow.modelData.id)
-                                browser.presentationChosen(libraryRow.modelData.id)
                             }
                         }
                         onPressed: function(mouse) {

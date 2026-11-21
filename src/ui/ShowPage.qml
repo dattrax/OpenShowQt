@@ -15,9 +15,13 @@ Rectangle {
     color: "#202020"
     signal editRequested()
 
-    // "" follows the running order under preparation; any other value is a
-    // presentation browsed from the library — browsing, never presenting.
+    // Only Service combines the running order. An empty Library selection
+    // stays empty; a selected item shows just its own slides.
+    property string sourceFolder: "service"
     property string sourceShowId: ""
+    property bool libraryPreview: false
+    onSourceFolderChanged: cueIndex = -1
+    onSourceShowIdChanged: cueIndex = -1
     // The cue the operator last chose. A selection, not the output: the live
     // cue is worker.liveCueKey's answer, and the two are allowed to differ.
     property int cueIndex: -1
@@ -69,23 +73,17 @@ Rectangle {
     readonly property var cueRows: {
         showPage.cueRowsTick
         const groups = []
-        if (showPage.sourceShowId !== "") {
+        if (showPage.libraryPreview) {
+            groups.push({entryId: "", showId: "", showName: songService.previewTitle,
+                         section: "", slides: songService.previewSlides})
+        } else if (showPage.sourceShowId !== "") {
             const browsed = docs.showInfo(showPage.sourceShowId)
             if (browsed.id) {
                 groups.push({entryId: "", showId: browsed.id, showName: browsed.name,
                              section: "", slides: docs.slidesOf(browsed.id)})
             }
-        } else {
+        } else if (showPage.sourceFolder === "service") {
             for (const group of docs.runningOrderCues) groups.push(group)
-            if (groups.length === 0 && docs.currentSongId !== "") {
-                // A fresh service whose order has nothing in it yet still
-                // shows the selected presentation rather than an empty wall.
-                const current = docs.showInfo(docs.currentSongId)
-                if (current.id) {
-                    groups.push({entryId: "", showId: current.id, showName: current.name,
-                                 section: "", slides: docs.slidesOf(current.id)})
-                }
-            }
         }
         const rows = []
         for (const group of groups) {
@@ -96,6 +94,7 @@ Rectangle {
                            showId: group.showId, showName: group.showName,
                            section: group.section, slideId: slide.id,
                            slideIndex: slide.index, preview: slide.preview,
+                           scene: slide.scene || "",
                            cameraNumber: showPage.cameraNumbers[slide.backgroundAssetId] || 0,
                            sectionLabel: sectionLabel,
                            sectionStart: previousSection !== sectionLabel.trim().toLowerCase(),
@@ -107,10 +106,12 @@ Rectangle {
     }
     readonly property string sourceName: {
         showPage.cueRowsTick
+        if (showPage.libraryPreview) return songService.previewTitle
         if (showPage.sourceShowId !== "") {
             const browsed = docs.showInfo(showPage.sourceShowId)
             return browsed.name || ""
         }
+        if (showPage.sourceFolder !== "service") return ""
         const list = docs.playlists.filter(p => p.id === docs.currentPlaylistId)[0]
         return list ? list.name : ""
     }
@@ -128,7 +129,7 @@ Rectangle {
         if (at < 0 || at >= showPage.cueRows.length) return
         const row = showPage.cueRows[at]
         showPage.cueIndex = at
-        const json = docs.sceneJsonForSlide(row.slideId)
+        const json = row.scene || docs.sceneJsonForSlide(row.slideId)
         if (json !== "") worker.presentCueJson(row.cueKey, json)
     }
     function stepCue(delta) {
@@ -192,7 +193,8 @@ Rectangle {
             // TC.7: the compiled scene AND the render fingerprint its card is
             // cached under, from one compile. The consumer consults the
             // service's pictures first and only the misses reach the worker.
-            const source = docs.thumbnailSourceForSlide(id)
+            const source = rows[i].scene ? {scene: rows[i].scene, fingerprint: ""}
+                                        : docs.thumbnailSourceForSlide(id)
             band.push({key: id, scene: source.scene, fingerprint: source.fingerprint,
                        showId: rows[i].showId})
         }
@@ -362,6 +364,7 @@ Rectangle {
                     (cell.row.section !== "" ? cell.row.section + " \u00b7 " : "")
                     + cell.row.showName
                 visible: cell.cue >= 0 && cell.row.groupStart
+                         && showPage.sourceFolder === "service"
                          && showPage.sourceShowId === ""
                 x: -cell.x
                 y: 0
@@ -511,18 +514,21 @@ Rectangle {
         spacing: 10
         visible: showPage.cueRows.length === 0
         Text {
+            objectName: "operatorEmptyTitle"
             width: parent.width; horizontalAlignment: Text.AlignHCenter
             color: "#dddddd"; font.pixelSize: 18
-            text: showPage.sourceShowId !== "" ? "This presentation has no slides"
-                  : docs.currentPlaylistId === "" && docs.currentSongId === ""
-                    ? "Choose a presentation" : "This running order is empty"
+            text: showPage.libraryPreview ? songService.previewStatus
+                  : showPage.sourceShowId !== "" ? "This item has no slides"
+                  : showPage.sourceFolder === "songs" ? "Select a song"
+                  : showPage.sourceFolder === "presentations" ? "Select a presentation"
+                  : "This service is empty"
         }
         Text {
             width: parent.width; horizontalAlignment: Text.AlignHCenter
             color: "#aaaaaa"; font.pixelSize: 12; wrapMode: Text.WordWrap
-            text: showPage.sourceShowId !== "" || docs.currentSongId !== ""
-                  ? "Add shows to the running order on the left, or open Edit to write slides."
-                  : "Select an item in the library or running order."
+            text: showPage.sourceFolder === "service" && showPage.sourceShowId === ""
+                  ? "Add songs or presentations to the service on the left."
+                  : "Choose an item in the Library to preview its slides."
         }
     }
     Rectangle {
@@ -558,7 +564,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             text: "Edit"
             visible: showPage.width >= 530
-            enabled: docs.currentSongId !== ""
+            enabled: !showPage.libraryPreview && docs.currentSongId !== ""
             onClicked: showPage.editRequested()
         }
     }

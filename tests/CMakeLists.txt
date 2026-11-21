@@ -523,6 +523,12 @@ if(OPENSHOW_BUILD_UI)
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
     TIMEOUT 90)
 
+  add_test(NAME folder_preview_ui_tests COMMAND library_service_ui_tests --folder-preview-only)
+  set_tests_properties(folder_preview_ui_tests PROPERTIES
+    LABELS display
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    TIMEOUT 90)
+
   # Task SI.3: the import PAGE on the real worker — paste, measured cards,
   # real thumbnail requests, one-click Add to Library, zero presents and zero
   # QML warnings. The page's QML module is built beside the test so it loads

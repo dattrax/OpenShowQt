@@ -22,6 +22,7 @@ SidePanel {
 
     readonly property bool libraryListFocused: libraryBrowser.libraryListFocused
     readonly property bool serviceListFocused: libraryBrowser.serviceListFocused
+    readonly property string selectedFolder: libraryBrowser.selectedFolder
     function undoLibrary() { libraryBrowser.undoFocused() }
     function redoLibrary() { libraryBrowser.redoFocused() }
 

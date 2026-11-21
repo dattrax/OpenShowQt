@@ -41,6 +41,9 @@ class ServiceCatalogBridge final : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY statusChanged)
+    Q_PROPERTY(QVariantList previewSlides READ previewSlides NOTIFY previewChanged)
+    Q_PROPERTY(QString previewTitle READ previewTitle NOTIFY previewChanged)
+    Q_PROPERTY(QString previewStatus READ previewStatus NOTIFY previewChanged)
 
 public:
     // `catalog` is used only to look items up; the bridge never edits it.
@@ -55,6 +58,13 @@ public:
 
     QString status() const { return fStatus; }
     bool busy() const { return fPlanner.measuring(); }
+    QVariantList previewSlides() const { return fPreviewSlides; }
+    QString previewTitle() const { return fPreviewTitle; }
+    QString previewStatus() const { return fPreviewStatus; }
+    // Transient Library browsing: measure/render without writing a service
+    // show, changing history or adding a running-order occurrence. Empty id
+    // cancels; a separate planner keeps an explicit Add independent.
+    Q_INVOKABLE void previewCatalogItem(const QString& catalogItemId);
 
     // Explicit Add from the Library pane (double-click, Add button or a
     // drop into the running order). `index` is the insertion gap; -1 appends.
@@ -71,6 +81,7 @@ public:
 
 signals:
     void statusChanged();
+    void previewChanged();
 
 private:
     enum class Mode { Add, Refresh };
@@ -95,6 +106,11 @@ private:
     DocumentController* fDocuments = nullptr;
     ThumbnailStore* fPictures = nullptr;
     SongPlanner fPlanner;
+    SongPlanner fPreviewPlanner;
+    QString fPreviewItemId, fPreviewTitle, fPreviewStatus, fPreviewSnapshot, fPreviewSignature;
+    std::vector<openshow::catalog::Stanza> fPreviewStanzas;
+    QVariantList fPreviewSlides;
+    quint64 fPreviewGeneration = 0;
 
     QString fPendingId;
     QString fPendingTitle;

@@ -63,6 +63,7 @@ Window {
         // once layout and teardown have settled.
         contentItem.forceActiveFocus()
         Qt.callLater(function () { contentItem.forceActiveFocus() })
+        root.refreshLibraryPreview()
     }
 
     // True while a text field holds the focus — the plain-arrow nudges
@@ -71,10 +72,21 @@ Window {
         && (activeFocusItem instanceof TextField || activeFocusItem instanceof TextArea
             || activeFocusItem instanceof TextInput)
 
-    // What the middle of the screen shows (UI.3b): "" follows the running
-    // order under preparation; a presentation browsed from the sidebar shows
-    // its slides off air. Browsing selects, it never presents.
+    // The browsed item is independent of the folder: an empty Library
+    // selection has no preview, while Service shows the whole running order.
+    // Browsing selects, it never presents.
     property string browsedShowId: ""
+    property string browsedCatalogId: ""
+    function refreshLibraryPreview() {
+        if (browsedCatalogId !== "")
+            browsedShowId = docs.showForCatalogItem(browsedCatalogId)
+        songService.previewCatalogItem(root.page === "show" && root.browsedShowId === ""
+                                       ? root.browsedCatalogId : "")
+    }
+    Connections {
+        target: docs
+        function onDocumentsChanged() { root.refreshLibraryPreview() }
+    }
 
     // A focused button or combo eats Space and the arrow keys themselves;
     // the presenter gates stand down for it (task 4.5, AbstractButton is
@@ -188,12 +200,21 @@ Window {
         anchors.left: parent.left
         anchors.top: topBar.bottom
         anchors.bottom: mediaBin.top
-        onSourceChosen: (kind, id) => root.browsedShowId = kind === "show" ? id : ""
+        onSourceChosen: (kind, id) => {
+            root.browsedCatalogId = ""
+            root.browsedShowId = kind === "show" ? id : ""
+            root.refreshLibraryPreview()
+        }
         onServiceEntryChosen: entryId => {
+            root.browsedCatalogId = ""
             root.browsedShowId = ""
+            root.refreshLibraryPreview()
             showPage.focusServiceEntry(entryId)
         }
-        onSongChosen: id => root.browsedShowId = docs.showForCatalogItem(id)
+        onSongChosen: id => {
+            root.browsedCatalogId = id
+            root.refreshLibraryPreview()
+        }
     }
 
     OutputPanel {
@@ -218,6 +239,9 @@ Window {
         anchors.margins: 0
 
         sourceShowId: root.browsedShowId
+        sourceFolder: leftDock.selectedFolder
+        libraryPreview: root.browsedCatalogId !== "" && root.browsedShowId === ""
+                        && leftDock.selectedFolder !== "service"
         onEditRequested: root.page = "edit"
     }
 
