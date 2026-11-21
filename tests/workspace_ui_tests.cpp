@@ -2173,24 +2173,26 @@ int main(int argc, char** argv) {
             QMetaObject::invokeMethod(showPageItem, name, Q_RETURN_ARG(QVariant, answer));
             return answer;
         };
-        // The ask size tracks the tile's picture and stays inside the
-        // envelope the wire accepts at the stream size this app starts.
+        // Operator cards use one fixed render, independent of stretched cells.
         const QVariantMap px = pageCall("bandPixels").toMap();
         int askW = px.value(QStringLiteral("w")).toInt();
         const int askH = px.value(QStringLiteral("h")).toInt();
-        check(askW >= 160 && askH >= 90
-                  && askW == qBound(160, qRound(cueGrid->property("cellWidth").toReal() - 18.0),
-                                    512)
-                  && askH == qRound(askW * 9.0 / 16.0),
-              "the ask follows the picture width and keeps 16:9");
+        check(askW == 320 && askH == 180,
+              "the operator grid always asks for the fixed 320x180 picture");
         check(askW >= 32 && askW <= 512 && askH >= 32 && askH <= 512
                   && openshow::protocol::thumbnailExtentFits(
                          static_cast<std::uint32_t>(askW), static_cast<std::uint32_t>(askH),
                          openshow::protocol::previewSlotStrideBytes(640, 360)),
               "every size the control picks fits the preview slot this app streams at");
 
-        // Shrinking to the smallest step: the ask clamps at its floor rather
-        // than asking the worker for postage stamps.
+        window->resize(window->width() + 12, window->height());
+        QTest::qWait(200);
+        check(pageCall("bandPixels").toMap() == px,
+              "a small window resize reuses the render extent instead of invalidating every cached tile");
+        window->resize(sizeBefore);
+        QTest::qWait(200);
+
+        // Shrinking to the smallest step scales the same cached picture.
         window->resize(1680, 1150);
         QTest::qWait(120);
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
@@ -2208,7 +2210,7 @@ int main(int argc, char** argv) {
         check(settings.showThumbLevel() == 0 && !smaller->property("enabled").toBool(),
               "the smallest step disables its own button");
         askW = pageCall("bandPixels").toMap().value("w").toInt();
-        check(askW == 160, "the smallest cell still asks the 160-pixel floor");
+        check(askW == 320, "the smallest cell reuses the same fixed render size");
 
         // Extent, cap and dedupe at this size. First prove the viewport
         // alone would overrun the cap without the clamp.
@@ -2730,8 +2732,8 @@ int main(int argc, char** argv) {
                   && bandKeys.contains(cs8LastSlide) && bandKeys.last() == cs8LastSlide
                   && bandKeys == expectedBand(),
               "the zoomed-out bottom ask stays capped and deduped and ends on the last cue");
-        check(pxAtZoom0 < pxAtZoom2,
-              "the requested preview size follows the zoom step, not the old cells");
+        check(pxAtZoom0 == 320 && pxAtZoom2 == 320,
+              "zooming scales the same fixed picture instead of requesting another size");
 
         // Scroll-to-cue, bottom case: the last cue is contained by its
         // MAPPED cell and the view ends flush at the bottom.

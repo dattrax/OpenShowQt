@@ -57,6 +57,10 @@ struct ThumbnailCache {
 // smaller Show/Edit cards by downscaling; larger requests need a fresh render.
 inline constexpr std::uint32_t kThumbnailWidth = 512;
 inline constexpr std::uint32_t kThumbnailHeight = 288;
+// Show/Edit operator cards render once at this size and scale for display.
+// Keep the larger codec envelope above so existing larger records still load.
+inline constexpr std::uint32_t kOperatorThumbnailWidth = 320;
+inline constexpr std::uint32_t kOperatorThumbnailHeight = 180;
 inline constexpr std::uint32_t kMinThumbnailWidth = 2;
 inline constexpr std::uint32_t kMinThumbnailHeight = 2;
 inline constexpr const char* kThumbnailPolicy = "card-surface/2";

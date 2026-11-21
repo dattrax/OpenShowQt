@@ -1567,17 +1567,11 @@ private:
     // A frame's colour IS its answer: an audience frame is (1, 2, 3) and an
     // edit frame is (revision, 77, 155), so "these are the pixels of the
     // scene that ask named" and "no edit frame ever reached the audience's
-    // pane" are pixel tests rather than hopes. 8x8 keeps the segment at a
-    // kilobyte; the seqlock, the ownership rule and the routing do not care.
-    // 256x144 rather than a token 8x8 for one reason: a thumbnail's pixels
-    // share these slots, and the box the protocol allows starts at 32x32, so a
-    // slot smaller than that could not carry a LEGAL row and the consumer's
-    // bounds rule could not be exercised at all. At this extent the mirror is
-    // 147 KB, a small row is 3.8 KB, and a whole band of mirror-sized rows is
-    // more than the client's picture budget — which is what the LRU leg below
-    // measures.
-    static constexpr std::uint32_t kFrameWidth = 256;
-    static constexpr std::uint32_t kFrameHeight = 144;
+    // pane" are pixel tests rather than hopes. Use the production 640x360
+    // stream envelope so this fixture also carries fixed 320x180 cards and
+    // the larger images needed to exercise the resident byte ceiling.
+    static constexpr std::uint32_t kFrameWidth = 640;
+    static constexpr std::uint32_t kFrameHeight = 360;
     static constexpr int kSlots = 3;
     static_assert(static_cast<int>(proto::kPreviewSlotCount) == kSlots,
                   "the scripted stream has the slot count the wire promises");
@@ -4948,11 +4942,11 @@ void scenarioThumbnailPreview() {
         check(controller.statusText().contains(QStringLiteral("16x16")) &&
                   controller.statusText().contains(QStringLiteral("32..512")),
               "rows: a 16x16 row is refused, and the refusal names the box it failed");
-        controller.requestThumbnails(bandOf({"wide"}), 512, 100);
+        controller.requestThumbnails(bandOf({"wide"}), 512, 512);
         const QString fit = controller.statusText();
-        check(fit.contains(QStringLiteral("512x100")) &&
-                  fit.contains(QStringLiteral("147520")),
-              "rows: a 512x100 row is refused because this stream's slots hold 147520 bytes");
+        check(fit.contains(QStringLiteral("512x512")) &&
+                  fit.contains(QString::number(proto::previewSlotStrideBytes(640, 360))),
+              "rows: a 512x512 row is refused because it exceeds this stream's slot capacity");
         check(waitUntil([&report] {
                   const boost::json::object body = readReportNow(report);
                   return !body.empty() && methodCount(body, "preview.thumbnails") == 0;
@@ -5107,8 +5101,8 @@ void scenarioThumbnailPreview() {
 
     // --- the picture cache's ceiling, in bytes --------------------------
     //
-    // Thirty-two rows at the stream's own extent are 4,718,592 bytes, over the
-    // client's ceiling, and the document that does this is an operator reading
+    // Two batches of 512x288 pictures exceed the client's byte ceiling,
+    // and the document that does this is an operator reading
     // a long service. The bound has to be a number rather than a habit, so the
     // ask is: every row arrives, the cache does not go over its ceiling, and
     // what disappears is the top of the list rather than the rows being looked
@@ -5119,8 +5113,8 @@ void scenarioThumbnailPreview() {
             long1.push_back("fill-" + std::to_string(i));
         }
         const qint64 copiesBefore = controller.thumbnailFrames();
-        constexpr std::int64_t kRowBytes = 256 * 144 * 4;
-        controller.requestThumbnails(bandOf(long1), 256, 144);
+        constexpr std::int64_t kRowBytes = 512 * 288 * 4;
+        controller.requestThumbnails(bandOf(long1), 512, 288);
         if (!check(waitUntil([&controller] {
                        return !controller.thumbnail(QStringLiteral("fill-31")).isNull();
                    },
@@ -5131,15 +5125,15 @@ void scenarioThumbnailPreview() {
         }
         std::vector<std::string> long2;
         for (int i = 32; i < 64; ++i) long2.push_back("fill-" + std::to_string(i));
-        controller.requestThumbnails(bandOf(long2), 256, 144);
+        controller.requestThumbnails(bandOf(long2), 512, 288);
         check(waitUntil([&controller] {
                   return !controller.thumbnail(QStringLiteral("fill-63")).isNull();
               }, 12000), "rows: the second bounded batch fills the expanded viewport cache");
         check(controller.thumbnailFrames() == copiesBefore + 64,
               "every picture in both wire batches was received - the cache is not a filter");
-        check(controller.thumbnailCachedBytes() <= 8 * 1024 * 1024,
-              "and the cache stayed under its 8 MiB ceiling while they arrived");
-        check(controller.thumbnailCachedBytes() > 8 * 1024 * 1024 - kRowBytes,
+        check(controller.thumbnailCachedBytes() <= 32 * 1024 * 1024,
+              "and the cache stayed under its 32 MiB ceiling while they arrived");
+        check(controller.thumbnailCachedBytes() > 32 * 1024 * 1024 - kRowBytes,
               "with the ceiling, and not a halfway-full cache, doing the stopping");
         check(controller.thumbnail(QStringLiteral("fill-0")).isNull(),
               "the oldest rows are the ones that went...");
@@ -5153,19 +5147,19 @@ void scenarioThumbnailPreview() {
         controller.clearThumbnails();
         pumpEventsFor(100);
         std::vector<std::string> keys;
-        for (int i = 0; i < 80; ++i) keys.push_back("window-" + std::to_string(i));
+        for (int i = 0; i < 128; ++i) keys.push_back("window-" + std::to_string(i));
         auto wanted = bandOf(keys);
         wanted.append(wanted[0]); // duplicates cannot spend a wire slot
         const auto before = jsonSize(readReportNow(report), "thumbnailOps");
-        controller.requestThumbnailWindow(wanted, 64, 36);
+        controller.requestThumbnailWindow(wanted, 320, 180);
         check(waitUntil([&] {
             for (const auto& key : keys)
                 if (controller.thumbnail(QString::fromStdString(key)).isNull()) return false;
             return true;
-        }, 12000), "window: all eighty cold visible keys receive pixels without scrolling");
+        }, 16000), "window: all 128 fixed-size cards fit and receive pixels without scrolling");
         const auto after = jsonSize(readReportNow(report), "thumbnailOps");
-        check(after == before + 3, "window: eighty distinct rows take exactly three bounded batches");
-        controller.requestThumbnailWindow(wanted, 64, 36);
+        check(after == before + 4, "window: 128 distinct rows take exactly four bounded batches");
+        controller.requestThumbnailWindow(wanted, 320, 180);
         pumpEventsFor(150);
         check(jsonSize(readReportNow(report), "thumbnailOps") == after,
               "window: a settled viewport is idempotent, not a render/request loop");

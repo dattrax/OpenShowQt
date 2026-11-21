@@ -435,6 +435,41 @@ void exerciseDisabled() {
           "TC.4: a disabled cache records nothing");
 }
 
+void exerciseOldSizesRetired() {
+    ThumbnailCache cache;
+    for (const int width : {181, 198, 204, 320}) {
+        auto entry = validEntry("slide" + std::to_string(width), fingerprint("fixed"),
+                                samplePicture(width, qRound(width * 9.0 / 16), "cached"));
+        entry.width = width;
+        entry.height = qRound(width * 9.0 / 16);
+        cache.entries.push_back(std::move(entry));
+    }
+    ThumbnailStore store;
+    ThumbnailCache flushed;
+    int writes = 0;
+    store.setFlushHook([&](const ThumbnailCache& snapshot, QString*) {
+        flushed = snapshot;
+        ++writes;
+        return true;
+    });
+    store.adopt(cache, "durable-digest", true);
+    check(store.entryCount() == 1 && store.cache().entries.front().width == 320,
+          "old panel-sized pictures are dropped while the fixed picture is retained");
+    check(store.dirty(), "retiring unused sizes schedules their removal from disk");
+    check(waitFor([&] { return writes == 1; }, 8000) && flushed.entries.size() == 1 &&
+              flushed.entries.front().width == 320 && !store.dirty(),
+          "unused sizes are flushed out even without rendering any new pictures");
+    store.adoptEntry(cache.entries.front());
+    check(store.entryCount() == 1 && !store.dirty(),
+          "an old Library variant cannot put a discarded smaller picture back");
+
+    store.adopt({1, {cache.entries.front()}}, "durable-digest", true);
+    check(store.entryCount() == 0 && store.dirty(),
+          "a cache containing only obsolete sizes becomes an empty dirty snapshot");
+    check(waitFor([&] { return writes == 2; }, 8000) && flushed.entries.empty(),
+          "the last obsolete picture is removed from disk too");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -446,6 +481,7 @@ int main(int argc, char** argv) {
     exerciseBoundsAndPruning();
     exerciseCanceledAndBoundedJobs();
     exerciseDisabled();
+    exerciseOldSizesRetired();
     if (gFailed) {
         return 1;
     }

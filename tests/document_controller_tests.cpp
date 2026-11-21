@@ -641,18 +641,63 @@ void exerciseThumbnailCacheLifecycle(const std::filesystem::path& root) {
 }
 
 
+// TC.12: old panel-sized pictures leave service.json through a cache-only
+// write, without changing the authored document or requiring another render.
+void exerciseThumbnailSizeMigration(const std::filesystem::path& root) {
+    using openshow::ui::ThumbnailStore;
+    {
+        ThumbnailStore pictures;
+        DocumentController docs(nullptr, root, &pictures);
+        docs.createSong(QStringLiteral("Old card sizes"));
+        docs.addSlide();
+        docs.addSlide();
+        const auto slides = docs.slides();
+        for (int i = 0; i < 2; ++i) {
+            const QString id = slides[i].toMap().value("id").toString();
+            const QString fp = docs.thumbnailSourceForSlide(id).value("fingerprint").toString();
+            QImage image(i == 0 ? 198 : 320, i == 0 ? 111 : 180,
+                         QImage::Format_ARGB32_Premultiplied);
+            image.fill(Qt::blue);
+            pictures.record(docs.currentSongId(), id, fp, image);
+        }
+        check(pictures.waitForIdle() && pictures.entryCount() == 2 && docs.save(),
+              "size migration: a legacy mixed-size service is saved");
+    }
+    const auto service = root / "service";
+    const auto manifest = service / "service.json";
+    std::string authoredBefore;
+    check(openshow::domain::manifestAuthoredDigest(readFile(manifest), &authoredBefore),
+          "size migration: authored manifest identity is captured");
+    {
+        ThumbnailStore pictures;
+        DocumentController docs(nullptr, root, &pictures);
+        check(pictures.entryCount() == 1 && !docs.dirty(),
+              "size migration: reopening drops the small record without dirtying the service");
+        QElapsedTimer timer;
+        timer.start();
+        while (pictures.flushWrites() == 0 && timer.elapsed() < 8000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        check(pictures.flushWrites() == 1, "size migration: cleanup flushes without a manual save");
+    }
+    openshow::domain::Documents loaded;
+    openshow::domain::ThumbnailCache cache;
+    std::string error, authoredAfter;
+    check(openshow::domain::loadService(&loaded, service, &error, &cache) &&
+              cache.entries.size() == 1 && cache.entries.front().width == 320,
+          "size migration: service.json actually loses the unused small picture");
+    check(openshow::domain::manifestAuthoredDigest(readFile(manifest), &authoredAfter) &&
+              authoredAfter == authoredBefore,
+          "size migration: cleanup preserves every authored field");
+}
+
 // --- TC.8: cache-only durability at its edges -----------------------------
 //
-// The cache is derived data next to an authored document, so its writes must
-// be allowed to fail without ever costing that document: a manifest-write,
-// fsync or rename failure leaves the previous package readable; a read-only
-// tree and a deleted service simply keep the pictures in memory; and an
-// unsaved edit in this session never leaks into a cache-only write (only the
-// block changes, the authored bytes stay the last durable snapshot's).
+// Cache write failures preserve authored data; read-only and deleted packages
+// keep pictures in memory, and unsaved edits never enter a cache-only write.
 void exerciseThumbnailCacheFaults(const std::filesystem::path& root) {
     using openshow::ui::ThumbnailStore;
     const auto picture = [](QColor colour) {
-        QImage image(64, 36, QImage::Format_ARGB32_Premultiplied);
+        QImage image(320, 180, QImage::Format_ARGB32_Premultiplied);
         image.fill(colour);
         return image;
     };
@@ -5773,6 +5818,7 @@ int main(int argc, char* argv[]) {
     exercisePersistence(tempRoot / "persist");
     exerciseThumbnailFingerprint(tempRoot / "thumbnail-identity");
     exerciseThumbnailCacheLifecycle(tempRoot / "thumbnail-lifecycle");
+    exerciseThumbnailSizeMigration(tempRoot / "thumbnail-size-migration");
     exerciseThumbnailCacheFaults(tempRoot / "thumbnail-faults");
     exerciseRecoveredAssetOwnership(tempRoot / "adopt");
     exerciseShowAudioAdoption(tempRoot / "audio-adopt");

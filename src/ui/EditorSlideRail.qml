@@ -74,9 +74,12 @@ Rectangle {
         if (!worker.thumbnailSupported && !worker.thumbnailCacheAvailable) return
         const batch = thumbnailWindow()
         if (!batch.length) { worker.clearThumbnails(); return }
-        const width = Math.max(160, Math.min(512, Math.round(slides.width - 6)))
+        const px = rail.bandPixels()
         ++rail.bandSent
-        worker.requestThumbnailWindow(batch, width, Math.round(width * 9 / 16))
+        worker.requestThumbnailWindow(batch, px.w, px.h)
+    }
+    function bandPixels() {
+        return {w: 320, h: 180}
     }
 
     // --- EW.7 gesture helpers ---------------------------------------------

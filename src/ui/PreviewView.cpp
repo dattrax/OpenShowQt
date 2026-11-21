@@ -96,6 +96,8 @@ void PreviewView::paint(QPainter* painter) {
         painter->fillRect(target, checkerboard);
         painter->restore();
     }
+    if (fTarget == Target::Thumbnail)
+        painter->setRenderHint(QPainter::SmoothPixmapTransform);
     painter->drawImage(target, image);
 }
 

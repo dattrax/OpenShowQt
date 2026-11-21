@@ -676,6 +676,8 @@ int main(int argc, char** argv) {
         check(waitFor([&] { return worker.thumbnailFrames() > framesBeforeEdit
             && !worker.thumbnail(slides.first().toMap().value("id").toString()).isNull(); }),
               "the Edit rail receives real rendered slide thumbnails");
+        check(worker.thumbnail(slides.first().toMap().value("id").toString()).size() == QSize(320, 180),
+              "the Edit rail uses the same fixed picture size as the operator grid");
         const int last = slides.size() - 1;
         QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, last), Q_ARG(int, 1));
         QTest::qWait(100);

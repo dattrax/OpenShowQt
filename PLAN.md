@@ -2716,7 +2716,7 @@ User request (2026-11-20): retain rendered service-card pictures with the
 song/Bible data so subsequent runs can reuse them. This brief interprets
 "BCD PNG" as **Base64-encoded PNG** inside JSON. TC.1's frozen contract and
 measurements live in [the TC design note](docs/ui/thumbnail-cache-plan.md).
-Review corrections are tracked by TC.11 below.
+Review corrections are tracked by TC.11 below; TC.12 uses a fixed operator picture.
 
 #### Findings from the current implementation
 
@@ -2839,6 +2839,7 @@ DONE solely because its own isolated fixtures pass.
 | TC.9 | DONE | Persistence + coordinator | TC.2–TC.8 | Extend catalog format/strict key validation and its persistence overlay for bounded prepared-song variants. Through ServiceCatalogBridge, reuse only matching prepared layouts across services; lyric/theme/reflow changes miss, cache updates do not bump content/record revisions or reprepare songs, and deleting the Library does not break a saved service. |
 | TC.10 | DONE | Coordinator + owners | TC.8–TC.9 | Run integrated real-worker journeys and affected regressions; measure cold generation, warm reopen and large-service parse/save cost. Record size, peak resident/cache bytes, UI latency, hit/miss/render counts and audience timing. Reconcile architecture/PROGRESS and retain evidence before marking TC complete. |
 | TC.11 | DONE | Review follow-up | TC.10 | Correct fingerprint-only invalidation and stale completions, identify renderer/font environments, bound job queues, preserve actual render resolution, coalesce background Library writes and evict oldest variants. Focused regressions and real-worker/UI checks pass (18/18); current contracts and evidence are in the TC design note and PROGRESS. |
+| TC.12 | DONE | Operator cache follow-up | TC.11 | Use one fixed 320x180 Show/Edit picture and scale for display. Retire smaller records at adoption and through cache flush/save; reject smaller Library seeds. Raise resident capacity to 128 entries / 32 MiB so all fixed cards fit. Eight affected checks pass, including JSON cleanup without a new render, resize/zoom reuse, 128-card delivery, Library reuse and separate-process reopen (12 hits / 3 ms / zero worker renders). |
 
 #### Evidence (2026-11-20)
 

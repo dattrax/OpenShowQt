@@ -412,7 +412,7 @@ int main(int argc, char* argv[]) {
         ThumbnailStore pictures;
         ServiceCatalogBridge lookBridge(&catalog, &docs, &worker, &pictures);
         const auto card = [](const QString& key) {
-            QImage image(64, 36, QImage::Format_ARGB32_Premultiplied);
+            QImage image(320, 180, QImage::Format_ARGB32_Premultiplied);
             image.fill(QColor(key.startsWith(QStringLiteral("slide")) ? 0x334455 : 0x556677));
             return image;
         };

@@ -61,7 +61,8 @@ public:
     // The loaded block, the authored digest of the manifest it came from and
     // whether a cache-only flush is authorised. Every adopt retires in-flight
     // work: a decode for the previous document's owner must never land under
-    // this one.
+    // this one. Smaller legacy operator pictures are retired here and their
+    // removal is carried by the next cache flush/save.
     void adopt(const openshow::domain::ThumbnailCache& cache, const QString& authoredDigest,
                bool writable);
     // The digest a save/load just installed; the next flush must match it.

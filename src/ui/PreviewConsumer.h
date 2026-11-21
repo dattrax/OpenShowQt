@@ -295,7 +295,9 @@ private:
     // Accommodates all cells at the supported large/small-thumbnail layout,
     // while retaining hard count and byte ceilings during scrolling.
     static constexpr std::size_t kThumbnailCacheEntries = 128;
-    static constexpr qint64 kThumbnailCacheBytes = 8 * 1024 * 1024;
+    // All 128 fixed 320x180 cards must fit, including a wide zoomed-out
+    // viewport; eviction while its last batch arrives would leave blanks.
+    static constexpr qint64 kThumbnailCacheBytes = 32 * 1024 * 1024;
     QVariantList fThumbnailWindow;
     QSet<QString> fThumbnailWindowAttempted;
     // TC.6: the overlay, the rows it is decoding, the (row, fingerprint) pairs

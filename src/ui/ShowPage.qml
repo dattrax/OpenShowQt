@@ -203,14 +203,11 @@ Rectangle {
              ? band.slice(-32).concat(band.slice(0, -32)) : band
     }
     function slideBand() { return showPage.slideWindow().slice(0, 32) }
-    // The ask tracks the cell (UI.3c): 16:9 at the tile's picture width, held
-    // inside the envelope every 640x360 preview slot accepts — the protocol
-    // caps each dimension at 32..512, and 512x288 is the largest 16:9 frame
-    // whose pixels fit the slot this app starts the stream at, so a size this
-    // control picks can never be refused on the wire.
+    // Operator cards use one 320x180 render at every zoom and panel width.
+    // PreviewView scales it for display, so resizing never invalidates the
+    // picture saved with the service. This fits the stream's slot envelope.
     function bandPixels() {
-        const w = Math.max(160, Math.min(512, Math.round(slideGrid.cellWidth - 18)))
-        return {w: w, h: Math.round(w * 9 / 16)}
+        return {w: 320, h: 180}
     }
     // Ask for the band. Every trigger — scroll, zoom, stepping, a document
     // edit, the page becoming visible — restarts the one timer below, so a

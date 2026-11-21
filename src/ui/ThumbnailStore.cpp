@@ -201,6 +201,14 @@ void ThumbnailStore::adopt(const openshow::domain::ThumbnailCache& cache,
     raiseGeneration();
     fCache = cache;
     openshow::domain::sanitizeThumbnailCache(&fCache);
+    // Pre-fixed-size cards depend on the old panel/grid width and will never
+    // satisfy an operator's 320x180 demand. Retire them from the next manifest
+    // snapshot as well as memory, including when no new pictures are rendered.
+    const auto before = fCache.entries.size();
+    std::erase_if(fCache.entries, [](const auto& entry) {
+        return entry.width < openshow::domain::kOperatorThumbnailWidth ||
+               entry.height < openshow::domain::kOperatorThumbnailHeight;
+    });
     fUsage.clear();
     for (const openshow::domain::ThumbnailCacheEntry& entry : fCache.entries) {
         fUsage.push_back(usageKey(QString::fromStdString(entry.slideId),
@@ -208,8 +216,9 @@ void ThumbnailStore::adopt(const openshow::domain::ThumbnailCache& cache,
     }
     fAuthoredDigest = authoredDigest;
     fWritable = writable;
-    fDirty = false;
+    fDirty = fCache.entries.size() != before;
     fFlushTimer.stop();
+    scheduleFlush();
     emit countersChanged();
 }
 
@@ -473,7 +482,10 @@ void ThumbnailStore::pumpJobs() {
 }
 
 void ThumbnailStore::adoptEntry(const openshow::domain::ThumbnailCacheEntry& entry) {
-    if (!fEnabled || entry.slideId.empty() || !openshow::domain::validateThumbnailEntry(entry, nullptr)) {
+    if (!fEnabled || entry.slideId.empty() ||
+        entry.width < openshow::domain::kOperatorThumbnailWidth ||
+        entry.height < openshow::domain::kOperatorThumbnailHeight ||
+        !openshow::domain::validateThumbnailEntry(entry, nullptr)) {
         return;
     }
     insertEntry(entry);

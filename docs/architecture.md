@@ -12,7 +12,7 @@ inspector sections now have populated geometry and interaction regressions.
 The [acceptance record](reviews/CS-remediation-acceptance-2026-11-05.md) documents
 the actual-worker capture tour. Thumbnail consumers retain a deduplicated window
 of at most 128 scenes, sending successive packets of at most 32, with a
-128-entry/8-MiB cache. Hidden Bible pages explicitly release Selection ownership;
+128-entry/32-MiB cache (raised for fixed operator pictures in TC.12). Hidden Bible pages explicitly release Selection ownership;
 returning reacquires it. RpcClient disconnects socket callbacks before its members
 are destroyed. These changes require no document schema or wire protocol bump;
 remaining TV/TA and physical M7 gates remain open.
@@ -770,8 +770,12 @@ These limit what historical DONE statuses prove. The review linked above adds
   failure can never fail an authored save. A prepared Library slide copies a
   matching variant under its new ids; the id-free identity is what lets a
   re-preparation reuse pixels while a different theme or lyric misses.
-  Since TC.11, records retain native render resolution (at most 512x288): a
-  larger card gets a sharper worker render instead of an enlarged proxy.
+  Since TC.12, Show/Edit use one 320x180 operator picture and smoothly scale it
+  for every card size. Smaller legacy records are retired at adoption and
+  removed through the next cache flush/save; the Library bridge refuses to
+  reintroduce them. Larger existing records still downscale within the codec's
+  512x288 envelope. The resident 128-entry/32-MiB bound accommodates a complete
+  fixed-size window without evicting its first batch as the last arrives.
   Memory validity includes the fingerprint; batch identity and encode serials
   retire stale results. Each image lane has two active jobs, at most 128 pending
   slides, and at most 8 MiB of queued encode images. Library writes coalesce

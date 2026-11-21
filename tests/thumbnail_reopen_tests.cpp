@@ -155,7 +155,7 @@ Measure measureBand(const std::filesystem::path& root, const QString& showId,
     const qint64 framesBefore = worker.thumbnailFrames();
     QElapsedTimer timer;
     timer.start();
-    worker.requestThumbnailWindow(band.rows, 160, 90);
+    worker.requestThumbnailWindow(band.rows, 320, 180);
     measure.painted = waitFor([&] { return allPainted(worker, band.keys); }, 30000);
     measure.ms = timer.elapsed();
     measure.frames = worker.thumbnailFrames() - framesBefore;
@@ -254,7 +254,7 @@ int main(int argc, char** argv) {
         DocumentController documents(nullptr, root, &store);
         const Band band = bandOf(documents, showId);
         const std::size_t expected = band.keys.size();
-        worker.requestThumbnailWindow(band.rows, 160, 90);
+        worker.requestThumbnailWindow(band.rows, 320, 180);
         check(waitFor([&] { return allPainted(worker, band.keys); }, 30000),
               "TC.10: the warming session paints the band");
         check(waitFor([&] { return store.entryCount() >= expected; }, 10000),

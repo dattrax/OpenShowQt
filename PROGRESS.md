@@ -1,6 +1,6 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-11-20 (Europe/London).
+Updated: 2026-11-21 (Europe/London).
 
 This file is the CURRENT handoff. Earlier checkpoint narratives — the media
 library, the type/effects review, the CS/TV/TS/TR series and the M6 milestones —
@@ -10,6 +10,26 @@ git history is the authority for what each of those commits did. Nothing in the
 archive is a current instruction.
 
 ## Current checkpoint
+
+**Fixed operator thumbnail size (TC.12, 2026-11-21): DONE.** Show and
+Edit now always request one 320x180 picture and smoothly scale it for display.
+The recovery file held 181-, 198- and 204-pixel records; slight layout growth
+previously missed those records and required another worker render. Adoption
+now retires smaller records and marks the cache for removal through its normal
+coalesced flush or next save/autosave; cleanup also writes an empty snapshot
+when every old record was too small. Library seeding refuses smaller variants.
+The resident bound is 128 entries / 32 MiB so all 128 fixed cards fit without
+evicting the first batch while the last arrives. UI and affected targets built;
+**8/8 affected checks passed**: thumbnail store/reopen, document/worker
+controllers, workspace UI, real-worker Library/service UI, UI load and song
+service/Library reuse. The earlier Edit-control check also passed. The 12-card separate-process fixture measured **838 ms /
+12 renders cold, 3 ms / zero renders / 12 hits warm**, with a 56,929 B manifest;
+timing starts after document load and worker startup. Migration checks verify
+the smaller records actually leave service.json without authored changes or
+another render. The first sandboxed run could not open local worker sockets;
+the passing run used local IPC/display access and Qt offscreen. Changes are
+local; restart the rebuilt application. Old smaller cards regenerate once at
+the fixed size, then zoom and panel/window resizing reuse them.
 
 **Thumbnail review corrections (TC.11, 2026-11-20): DONE.** Resident
 validity now includes the fingerprint, worker batches retain captured identity,

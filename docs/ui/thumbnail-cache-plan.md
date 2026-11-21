@@ -1,6 +1,6 @@
 # Service-card thumbnails in JSON (TC)
 
-Status: TC.1–TC.10 implemented 2026-11-20; review corrections are TC.11.
+Status: TC.1–TC.11 implemented 2026-11-20; fixed operator size is TC.12 (2026-11-21).
 `PLAN.md` owns the task ledger; this file records the current storage/runtime contract.
 
 ## What is being kept
@@ -64,19 +64,28 @@ decoded byte length. Base64 is the standard alphabet with padding and a strict
 decoder (no whitespace, no URL alphabet). The checksum is verified on the
 decode lane before PNG decoding, so a corrupt blob costs no allocation.
 
-## Size policy (corrected after review)
+## Size policy (TC.12)
 
-**512x288 is the maximum, not a synthetic canonical image.** Store the actual
-worker-rendered dimensions, and downscale only when a consumer asks for a
-smaller card. A larger request misses and obtains a fresh render at that size;
-a smaller render cannot overwrite a sharper record for the same fingerprint.
-The display extent remains outside the fingerprint, allowing reuse between
-Show/Edit and smaller sizes without upscaling low-resolution text. Policy
-`card-surface/2` retires old upscaled records once.
+**Show and Edit always request one 320x180 operator picture.** `PreviewView`
+smoothly scales it to the card on screen, including when the displayed card is
+larger. Zoom, stretched grid columns and panel/window resizing therefore reuse
+the same render and persisted entry. There are no per-size variants of a look.
+This operator preview does not change the audience rendering resolution.
 
-The resident LRU remains 128 entries / 8 MiB. Decode/encode each have at most
+At adoption, records smaller than 320x180 are dropped from memory and queued
+for removal from the manifest through the ordinary coalesced cache-only flush
+(or the next save/autosave for an unsaved recovery). Cleanup also runs when no
+new pictures arrive, including when it empties the whole block. The Library
+bridge refuses smaller variants so they cannot reintroduce retired records.
+Larger existing native records remain usable by downscaling; all new Show/Edit
+renders use 320x180. The codec's 512x288 maximum and fingerprint policy remain
+compatible with those existing pictures.
+
+The resident LRU is 128 entries / 32 MiB so the full 128-card window fits at
+320x180 (28.125 MiB of pixels) without evicting its first cards while its last
+batch arrives. Decode/encode each have at most
 two active jobs and 128 outstanding slide requests; queued encode images are
-also capped at 8 MiB. Pending requests coalesce per slide, and only jobs with
+still capped at 8 MiB. Pending requests coalesce per slide, and only jobs with
 an available lane permit enter the thread pool. Retirement removes queued
 images immediately, and completions must match both document epoch and request
 serial before they can publish. Base64 and PNG work run on the background lane.
@@ -276,3 +285,13 @@ under the new row's identity.
   renders / 12 persisted hits warm, with a 25,313 B manifest. Its timer begins
   after startup/load; these measurements do not establish p95 UI latency or
   audience deadline behavior under a prolonged soak.
+
+- 2026-11-21 TC.12: user chose a single operator render size with display
+  scaling. Show/Edit request 320x180 at every zoom/panel/window size; smaller
+  legacy records are removed through adoption plus flush/save, including an
+  entirely obsolete block. The 128-entry resident bound is now 32 MiB to hold
+  the whole fixed-size window. Eight affected checks passed, including actual
+  JSON cleanup without a new render, 128-card delivery, UI resize/zoom and
+  Library reuse. The separate-process 12-card fixture measured 838 ms / 12
+  worker renders cold versus 3 ms / zero renders / 12 hits warm (56,929 B
+  manifest). These intervals still exclude startup and document loading.
