@@ -1261,3 +1261,34 @@ background when replacing it with transparent presentation content. The Qt
 preview paints a checkerboard behind alpha; it never reaches worker scene
 content or audience frames. Details and regression evidence:
 [acceptance](reviews/transparent-presentations-2026-11-07.md).
+
+### Output profiles and layer routing (milestone FO, 2026-11-22)
+
+The contract is frozen in
+[ui/output-profiles-plan.md](ui/output-profiles-plan.md). Content
+(`slide.textContext`) and destination (`domain::OutputRole` = audience, stage,
+broadcast) are separate; NDI is the broadcast transport, never a content name.
+A theme carries sparse `OutputProfile` records keyed by `(role, content)`;
+`Documents::appearanceForSlideOn` resolves the audience chain, replaces its
+geometry with the role's own box, then applies the nearest authored profile
+property by property. The audience never reads a profile, and a per-slide
+customization never moves stage/broadcast geometry. Service format **16**
+stores the records; portable theme snapshots carry them verbatim.
+
+The scene wire is unchanged: `scene::compileSlideOn` bakes the destination's
+values into an ordinary scene 8, so a worker that predates FO draws the result.
+Machine state is separate: `domain::OutputRouting` owns the layer-by-destination
+mask (Background/Images/Words everywhere; Next cue and Notes stage-only; Clock
+and Aux not routable), its codec is the one semantic sentence every door
+quotes, and `AppSettings` stores masks/routes but never enablement. Protocol
+minor 22 adds `output.routing` + `output.routing.v1`; the worker applies the
+audience column and refuses a destination it cannot drive yet. The Theme
+Editor's Stage/NDI tiles and the Output layers dialog edit these records
+through the existing shared controls and the controller's profile verbs.
+
+Evidence: `domain_tests` (profile resolution, format 16, snapshots),
+`output_routing_tests` (defaults, legal cells, codec refusals), `scene_tests`
+(role compiles), `document_controller_tests` (sample/author/undo), `inspector_
+adapter_tests` (profile target), `workspace_panels_tests` (machine settings) and
+`workspace_ui_tests` (tiles, independent content selectors, four-scene batch).
+FO.1e/2/3/4a/5/6 and every physical HDMI/OBS/NDI check remain open.
