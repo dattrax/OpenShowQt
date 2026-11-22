@@ -767,6 +767,118 @@ struct TextContext {
     bool operator==(const TextContext&) const = default;
 };
 
+// --- output profiles (milestone FO, task FO.1a) -----------------------------
+//
+// A slide is drawn for more than one destination. The CONTENT (Songs, Bible,
+// a future named context) stays on `slide.textContext`; the DESTINATION is
+// this enum. NDI is a transport for `broadcast`, never a content name, so
+// `slide.textContext = "ndi"` does not exist and never will.
+//
+// `audience` is the look every earlier build drew: it has no profile record.
+// `stage` and `broadcast` may each carry sparse overrides on a theme, keyed
+// also by content name, so a Bible passage can be set differently from a
+// song on the same destination.
+enum class OutputRole { Audience = 0, Stage = 1, Broadcast = 2 };
+
+inline const char* outputRoleName(OutputRole role) {
+    switch (role) {
+        case OutputRole::Stage:
+            return "stage";
+        case OutputRole::Broadcast:
+            return "broadcast";
+        case OutputRole::Audience:
+            break;
+    }
+    return "audience";
+}
+
+inline bool outputRoleFromName(const std::string& name, OutputRole* role) {
+    if (name == "audience") {
+        *role = OutputRole::Audience;
+        return true;
+    }
+    if (name == "stage") {
+        *role = OutputRole::Stage;
+        return true;
+    }
+    if (name == "broadcast") {
+        *role = OutputRole::Broadcast;
+        return true;
+    }
+    return false;
+}
+
+// A role that may carry a profile. The audience answers through its themes'
+// own fields, so a profile naming it is refused rather than stored and
+// silently ignored.
+inline bool isProfileRole(OutputRole role) {
+    return role == OutputRole::Stage || role == OutputRole::Broadcast;
+}
+
+// The content names this build knows. An unknown non-empty name still
+// round-trips (the TextContext rule), so a future importer can name a view
+// before this build styles it.
+inline constexpr const char* kOutputContentSongs = "";
+inline constexpr const char* kOutputContentScripture = "scripture";
+
+// The role's built-in box, in authored 1920x1080 canvas units (FO.0 §3).
+// The stage box leaves the lower part of the frame for the next-cue layer;
+// the broadcast box is the lower third NDI receivers overlay onto video.
+// An authored profile box replaces these; anything the profile is silent on
+// inherits the audience's resolved look.
+inline constexpr BoxRect kStageDefaultBox{160.0, 120.0, 1600.0, 560.0};
+inline constexpr BoxRect kBroadcastDefaultBox{120.0, 760.0, 1680.0, 240.0};
+
+inline BoxRect outputRoleDefaultBox(OutputRole role) {
+    return role == OutputRole::Broadcast ? kBroadcastDefaultBox : kStageDefaultBox;
+}
+
+// Sparse like every appearance record here: a field is present exactly when
+// the profile speaks it, and silence inherits. `box` and `inset` are
+// mutually exclusive (the TextContext rule). Effects are atomic records, so
+// `enabled:false` is an explicit refusal of an inherited outline or shadow.
+struct OutputProfile {
+    OutputRole role = OutputRole::Stage;
+    std::string content;  // "" = Songs, "scripture" = Bible, other names round-trip
+    std::optional<std::string> textColor;
+    std::optional<std::string> fontFamily;
+    std::optional<double> fontSize;
+    std::optional<double> lineSpacing;
+    std::optional<std::string> align;
+    std::optional<BoxRect> box;
+    std::optional<double> inset;
+    std::optional<std::string> verticalAlign;
+    std::optional<bool> allCaps;
+    std::optional<int> fontWeight;
+    std::optional<std::string> fontStyle;
+    std::optional<bool> fontUnderline;
+    std::optional<std::string> fitMode;
+    std::optional<double> minFontSize;
+    std::optional<TextStroke> stroke;
+    std::optional<TextShadow> shadow;
+
+    bool operator==(const OutputProfile&) const = default;
+
+    bool empty() const {
+        return !textColor.has_value() && !fontFamily.has_value() &&
+               !fontSize.has_value() && !lineSpacing.has_value() &&
+               !align.has_value() && !box.has_value() && !inset.has_value() &&
+               !verticalAlign.has_value() && !allCaps.has_value() &&
+               !fontWeight.has_value() && !fontStyle.has_value() &&
+               !fontUnderline.has_value() && !fitMode.has_value() &&
+               !minFontSize.has_value() && !stroke.has_value() &&
+               !shadow.has_value();
+    }
+    bool addresses(OutputRole wantedRole, const std::string& wantedContent) const {
+        return role == wantedRole && content == wantedContent;
+    }
+};
+
+// The number of profiles one theme may carry (FO.0 §9), and the content
+// name's bound — the same budget the service loader quotes.
+inline constexpr std::size_t kMaxThemeOutputProfiles = 64;
+inline constexpr std::size_t kMaxOutputContentChars = 256;
+
 struct Theme {
     Id id;
     std::string name;
@@ -820,6 +932,10 @@ struct Theme {
     // slides opt into by name. Empty is exactly the pre-TF theme; names
     // are unique and the resolver takes the FIRST entry a name matches.
     std::vector<TextContext> contexts;
+    // Output profiles (milestone FO): sparse overrides for the stage and
+    // broadcast destinations, keyed by (role, content). Empty is exactly
+    // the pre-FO theme, and the audience never reads this list.
+    std::vector<OutputProfile> profiles;
 };
 
 // One slide's appearance after the whole chain has been walked
@@ -1283,6 +1399,43 @@ public:
     // The whole chain walked for one slide: customization -> current theme
     // -> slide theme -> show default -> (nobody) — see ResolvedAppearance.
     ResolvedAppearance appearanceForSlide(const Id& showId, const Id& slideId) const;
+
+    // --- output profiles (milestone FO, task FO.1a) ---
+
+    // The whole chain walked for one slide ON ONE DESTINATION. Audience is
+    // exactly appearanceForSlide. Stage and broadcast take the audience
+    // look, replace its geometry with the role's own box, then apply the
+    // nearest authored profile for (role, slide text context) property by
+    // property. Profiles therefore never move an audience pixel, and a
+    // per-slide customization never moves stage/broadcast geometry.
+    ResolvedAppearance appearanceForSlideOn(const Id& showId, const Id& slideId,
+                                            OutputRole role) const;
+
+    // Set (or replace in place) one theme's profile for this (role,
+    // content) pair. An audience role, an unknown role value, a duplicate
+    // pair in a whole-list write, a box AND an inset, or any value the
+    // existing style/geometry sentences refuse: nothing changes. The
+    // content name is not checked against a list — an unknown name is
+    // retained for a view this build cannot style yet.
+    bool setThemeOutputProfile(const Id& themeId, const OutputProfile& profile,
+                               std::string* error = nullptr);
+    // Remove one profile; naming a pair the theme does not carry refuses
+    // (a silent success would teach the editor a view exists when it does
+    // not). Removing an absent profile is not offered as a no-op.
+    bool removeThemeOutputProfile(const Id& themeId, OutputRole role,
+                                  const std::string& content, std::string* error = nullptr);
+    // Replace the WHOLE list — the loader's, the snapshot's and the copy
+    // verbs' door. Every profile is vetted by the same sentence and the
+    // (role, content) pairs must be unique; the budget is kMaxThemeOutputProfiles.
+    bool setThemeOutputProfiles(const Id& themeId, std::vector<OutputProfile> profiles,
+                                std::string* error = nullptr);
+    // The theme's profile for a pair, or nullptr. Lookups are pointers into
+    // the model: any theme edit invalidates them.
+    const OutputProfile* outputProfileFor(const Id& themeId, OutputRole role,
+                                          const std::string& content) const;
+    // The one semantic sentence about a profile, shared by the verbs, the
+    // loader, the snapshot codec and the routing validator's own layer.
+    static bool validOutputProfile(const OutputProfile& profile, std::string* error);
 
     // --- assets ---
 

@@ -737,6 +737,216 @@ void exerciseStyles() {
           "styleIds reflects removal");
 }
 
+// Milestone FO (task FO.1a): output profiles are a destination's own sparse
+// appearance, resolved over the audience look without ever moving an audience
+// pixel. The role boxes are independent of a slide's authored geometry, an
+// explicit false is an answer, and the (role, content) pair keeps a passage
+// styled apart from a song on the same stage or stream.
+void exerciseOutputProfiles() {
+    using openshow::domain::OutputProfile;
+    using openshow::domain::OutputRole;
+    using openshow::domain::TextStroke;
+
+    Documents docs;
+    std::string error;
+    const Id theme = docs.createTheme("House", "#ffffff", "#000000", "", "DejaVu Sans", 64.0,
+                                      "center", kDefaultLineSpacing, &error);
+    check(!theme.empty(), "an output-profile theme is created");
+    check(docs.setCurrentTheme(theme, &error), "the profile theme is worn");
+    const Id show = docs.createShow("Profiles", &error);
+    const Id slide = docs.appendSlide(show, &error);
+    check(docs.setSlideLines(show, slide, {"Amazing grace", "how sweet the sound"}, &error),
+          "profile sample slide carries words");
+
+    const ResolvedAppearance audience = docs.appearanceForSlide(show, slide);
+    check(!audience.placement.has_value(),
+          "an untouched audience slide keeps its authored box (no placement)");
+
+    // 1. No profile at all: the role answers with its own box and the
+    // audience's type/colour.
+    const ResolvedAppearance stageDefault =
+        docs.appearanceForSlideOn(show, slide, OutputRole::Stage);
+    check(stageDefault.placement.has_value() &&
+              *stageDefault.placement == openshow::domain::kStageDefaultBox,
+          "the stage defaults to the stage box with no profile authored");
+    check(stageDefault.fontFamily == audience.fontFamily &&
+              stageDefault.fontSize == audience.fontSize,
+          "a silent stage profile inherits the audience's type");
+    const ResolvedAppearance broadcastDefault =
+        docs.appearanceForSlideOn(show, slide, OutputRole::Broadcast);
+    check(broadcastDefault.placement.has_value() &&
+              *broadcastDefault.placement == openshow::domain::kBroadcastDefaultBox,
+          "broadcast defaults to the lower-third box");
+    check(openshow::domain::outputRoleName(OutputRole::Broadcast) ==
+              std::string("broadcast"),
+          "the wire names the broadcast role");
+
+    // 2. An authored Songs profile applies to the stage alone.
+    OutputProfile stage;
+    stage.role = OutputRole::Stage;
+    stage.content = openshow::domain::kOutputContentSongs;
+    stage.fontSize = 120.0;
+    stage.align = std::string("left");
+    stage.allCaps = false;
+    stage.box = BoxRect{80.0, 60.0, 1760.0, 480.0};
+    check(docs.setThemeOutputProfile(theme, stage, &error),
+          "a stage Songs profile is stored");
+    const ResolvedAppearance staged = docs.appearanceForSlideOn(show, slide, OutputRole::Stage);
+    check(staged.placement.has_value() &&
+              staged.placement->x == 80.0 && staged.placement->height == 480.0,
+          "the authored stage box replaces the role default");
+    check(staged.fontSize == 120.0 && staged.align == "left",
+          "the authored stage type applies");
+    check(staged.allCaps == false, "an explicit false is an answer, not silence");
+    check(docs.appearanceForSlide(show, slide).fontSize == 64.0,
+          "authoring a stage profile moves no audience pixel");
+
+    // 3. The content selector keeps a passage apart from a song.
+    const ResolvedAppearance broadcastUnprofiled =
+        docs.appearanceForSlideOn(show, slide, OutputRole::Broadcast);
+    check(broadcastUnprofiled.fontSize == 64.0,
+          "the stage profile never reaches the broadcast column");
+    OutputProfile bible;
+    bible.role = OutputRole::Stage;
+    bible.content = openshow::domain::kOutputContentScripture;
+    bible.fontSize = 48.0;
+    check(docs.setThemeOutputProfile(theme, bible, &error),
+          "a stage scripture profile is stored beside the songs one");
+    check(docs.setSlideTextContext(show, slide, "scripture", &error),
+          "the sample slide names the scripture context");
+    check(docs.appearanceForSlideOn(show, slide, OutputRole::Stage).fontSize == 48.0,
+          "the scripture profile answers for a scripture slide");
+    check(docs.appearanceForSlideOn(show, slide, OutputRole::Broadcast).fontSize == 64.0,
+          "a songs broadcast still inherits when only stage profiles exist");
+    check(docs.setSlideTextContext(show, slide, "", &error),
+          "the sample slide returns to Songs");
+
+    // 4. Per-slide audience customisations never move stage geometry; they
+    //    are inherited where the profile is silent.
+    SlideCustomization custom;
+    custom.placement = BoxRect{10.0, 20.0, 300.0, 200.0};
+    custom.textColor = std::string("#ff0000");
+    check(docs.setSlideCustomizations(show, slide, custom, &error),
+          "the audience slide customises its box and colour");
+    check(docs.appearanceForSlide(show, slide).placement->x == 10.0,
+          "the audience follows the customized box");
+    const ResolvedAppearance stageAfterCustom =
+        docs.appearanceForSlideOn(show, slide, OutputRole::Stage);
+    check(stageAfterCustom.placement->x == 80.0,
+          "the stage box is independent of the slide's audience box");
+    check(stageAfterCustom.textColor == "#ff0000",
+          "a silent profile field inherits the slide's customized colour");
+
+    // 5. An explicit effect record refuses an inherited one.
+    openshow::domain::ThemeTextStyle style;
+    TextStroke stroke;
+    stroke.enabled = true;
+    stroke.color = std::string("#00ff00");
+    stroke.width = 3.0;
+    style.stroke = stroke;
+    style.allCaps = true;
+    check(docs.setThemeTextStyle(theme, style, &error), "the theme carries an outline and caps");
+    check(docs.appearanceForSlideOn(show, slide, OutputRole::Stage).stroke.enabled,
+          "the stage inherits the theme's outline while silent");
+    stage.stroke = TextStroke{};  // enabled:false, an atomic refusal
+    check(docs.setThemeOutputProfile(theme, stage, &error),
+          "the stage profile refuses the outline explicitly");
+    check(!docs.appearanceForSlideOn(show, slide, OutputRole::Stage).stroke.enabled,
+          "enabled:false on a profile wins over an inherited outline");
+    check(docs.appearanceForSlide(show, slide).stroke.enabled,
+          "the audience still follows its theme's outline");
+
+    // 6. Replace-in-place keeps one record per (role, content).
+    check(docs.findTheme(theme)->profiles.size() == 2,
+          "the theme carries exactly two profiles after a replace");
+    check(docs.outputProfileFor(theme, OutputRole::Stage, "") != nullptr,
+          "a profile is looked up by role and content");
+    check(docs.outputProfileFor(theme, OutputRole::Broadcast, "") == nullptr,
+          "an unauthored column has no profile");
+
+    // 7. Inset shrinks the role box, never the audience box.
+    OutputProfile insetProfile;
+    insetProfile.role = OutputRole::Broadcast;
+    insetProfile.content = std::string("scripture");
+    insetProfile.inset = 40.0;
+    check(docs.setThemeOutputProfile(theme, insetProfile, &error),
+          "an inset-only broadcast profile is stored");
+    check(docs.setSlideTextContext(show, slide, "scripture", &error),
+          "the slide names scripture again");
+    const ResolvedAppearance inset =
+        docs.appearanceForSlideOn(show, slide, OutputRole::Broadcast);
+    check(inset.placement->x == 160.0 && inset.placement->width == 1600.0 &&
+              inset.placement->y == 800.0 && inset.placement->height == 160.0,
+          "the inset shrinks the broadcast default box");
+    check(docs.setSlideTextContext(show, slide, "", &error), "the slide returns to Songs");
+
+    // 8. Every refusal changes nothing.
+    const size_t before = docs.findTheme(theme)->profiles.size();
+    OutputProfile bad = stage;
+    bad.role = OutputRole::Audience;
+    check(!docs.setThemeOutputProfile(theme, bad, &error), "an audience profile is refused");
+    bad = stage;
+    bad.content = std::string("scripture");
+    bad.box = BoxRect{0.0, 0.0, 100.0, 100.0};
+    bad.inset = 10.0;
+    check(!docs.setThemeOutputProfile(theme, bad, &error), "a box and an inset are refused");
+    bad = stage;
+    bad.align = std::string("justify");
+    check(!docs.setThemeOutputProfile(theme, bad, &error), "an off-list align is refused");
+    bad = stage;
+    bad.fontWeight = 1000;
+    check(!docs.setThemeOutputProfile(theme, bad, &error), "an out-of-band weight is refused");
+    bad = stage;
+    bad.textColor = std::string("red");
+    check(!docs.setThemeOutputProfile(theme, bad, &error), "a bad colour is refused");
+    check(docs.findTheme(theme)->profiles.size() == before,
+          "refused profile writes leave the list unchanged");
+    std::vector<OutputProfile> duplicates{stage, stage};
+    check(!docs.setThemeOutputProfiles(theme, duplicates, &error),
+          "a whole-list write with duplicate pairs is refused");
+    std::vector<OutputProfile> tooMany(openshow::domain::kMaxThemeOutputProfiles + 1, stage);
+    for (size_t i = 0; i < tooMany.size(); ++i) {
+        tooMany[i].content = "view" + std::to_string(i);
+    }
+    check(!docs.setThemeOutputProfiles(theme, tooMany, &error),
+          "the theme's profile budget is enforced");
+    check(docs.findTheme(theme)->profiles.size() == before,
+          "refused whole-list writes leave the list unchanged");
+    check(!docs.removeThemeOutputProfile(theme, OutputRole::Stage, "nope", &error),
+          "removing an absent profile refuses naming the pair");
+    check(docs.removeThemeOutputProfile(theme, OutputRole::Stage, "", &error),
+          "removing an authored profile succeeds");
+    check(docs.outputProfileFor(theme, OutputRole::Stage, "") == nullptr,
+          "the removed profile is gone");
+
+    // 9. An unknown content name round-trips untouched (the context rule).
+    OutputProfile future;
+    future.role = OutputRole::Stage;
+    future.content = std::string("responsive");
+    future.fontSize = 40.0;
+    check(docs.setThemeOutputProfile(theme, future, &error),
+          "an unknown content name is retained");
+    check(docs.outputProfileFor(theme, OutputRole::Stage, "responsive") != nullptr,
+          "the retained name addresses its profile");
+
+    // 10. The nearest theme in the chain owns the profile.
+    const Id nearer = docs.createTheme("Nearer", "#ffffff", "#000000", "", "DejaVu Sans", 30.0,
+                                       "center", kDefaultLineSpacing, &error);
+    OutputProfile nearStage;
+    nearStage.role = OutputRole::Stage;
+    nearStage.content = std::string("");
+    nearStage.fontSize = 200.0;
+    check(docs.setThemeOutputProfile(nearer, nearStage, &error), "the nearer theme profiles");
+    const Id assigned = docs.insertSlide(show, 0, &error);
+    check(docs.setSlideLines(show, assigned, {"Near"}, &error), "the nearer slide carries words");
+    check(docs.applyThemeToSlides(show, std::vector<Id>{assigned}, nearer, &error),
+          "the nearer theme is assigned to the nearer slide");
+    check(docs.appearanceForSlideOn(show, assigned, OutputRole::Stage).fontSize == 200.0,
+          "the first theme carrying the pair answers");
+    check(docs.appearanceForSlideOn(show, slide, OutputRole::Stage).fontSize == 64.0,
+          "a slide not wearing the nearer theme keeps the worn profile");
+}
+
 void exercisePlaylists() {
     Documents docs;
     std::string error;
@@ -6090,6 +6300,7 @@ int main() {
     exerciseThemeChain();
     exerciseThemePlacement();
     exerciseTextContextChain();
+    exerciseOutputProfiles();
     exerciseTextStyle();
     exerciseTransition();
     exerciseThemeSnapshot();

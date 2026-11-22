@@ -2224,6 +2224,259 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
     return out;
 }
 
+// --- output profiles (milestone FO, task FO.1a) ------------------------------
+
+bool Documents::validOutputProfile(const OutputProfile& profile, std::string* error) {
+    const std::string owner = "output profile " + std::string(outputRoleName(profile.role)) +
+                              "/'" + profile.content + "'";
+    const auto refuse = [&](const std::string& why) {
+        fail(error, owner + ": " + why);
+        return false;
+    };
+    if (!isProfileRole(profile.role)) {
+        return refuse("names the audience; the audience draws its themes' own answers");
+    }
+    if (profile.content.size() > kMaxOutputContentChars) {
+        return refuse("its content name is over " + std::to_string(kMaxOutputContentChars) +
+                      " characters");
+    }
+    for (const char c : profile.content) {
+        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7f) {
+            return refuse("its content name carries a control character");
+        }
+    }
+    if (profile.box.has_value() && profile.inset.has_value()) {
+        return refuse("gives both a box and an inset; the inset would shrink nothing the box"
+                      " did not already say");
+    }
+    if (profile.box.has_value() &&
+        !placeableBox(profile.box->x, profile.box->y, profile.box->width,
+                      profile.box->height)) {
+        return refuse("needs a finite box with positive width and height");
+    }
+    if (profile.inset.has_value() &&
+        (!std::isfinite(*profile.inset) || *profile.inset < 0.0)) {
+        return refuse("carries an inset that shrinks nothing sane");
+    }
+    if (profile.textColor.has_value() && !validColor(*profile.textColor, error)) {
+        return false;
+    }
+    if (profile.fontFamily.has_value() && profile.fontFamily->size() > 512) {
+        return refuse("names a font family over 512 characters");
+    }
+    if (profile.fontSize.has_value() &&
+        (!std::isfinite(*profile.fontSize) || *profile.fontSize < 0.0)) {
+        return refuse("carries a font size the renderer cannot honour");
+    }
+    if (profile.lineSpacing.has_value() &&
+        (!std::isfinite(*profile.lineSpacing) || *profile.lineSpacing < 0.25 ||
+         *profile.lineSpacing > 8.0)) {
+        return refuse("carries a line spacing the renderer cannot honour");
+    }
+    if (profile.align.has_value() && !isThemeAlign(*profile.align)) {
+        return refuse("has align '" + *profile.align +
+                      "', not an alignment this build can draw");
+    }
+    // The style block is the theme's own sentence, shared so a profile can
+    // never carry a weight or an effect record a theme could not.
+    ThemeTextStyle styled;
+    styled.fontWeight = profile.fontWeight;
+    styled.fontStyle = profile.fontStyle;
+    styled.fontUnderline = profile.fontUnderline;
+    styled.fitMode = profile.fitMode;
+    styled.minFontSize = profile.minFontSize;
+    styled.verticalAlign = profile.verticalAlign;
+    styled.allCaps = profile.allCaps;
+    styled.stroke = profile.stroke;
+    styled.shadow = profile.shadow;
+    std::string detail;
+    if (!validThemeTextStyle(styled, &detail)) {
+        return refuse(detail);
+    }
+    return true;
+}
+
+bool Documents::setThemeOutputProfile(const Id& themeId, const OutputProfile& profile,
+                                      std::string* error) {
+    Theme* theme = findTheme_mut(themeId);
+    if (theme == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    if (!validOutputProfile(profile, error)) {
+        return false;
+    }
+    for (OutputProfile& existing : theme->profiles) {
+        if (existing.addresses(profile.role, profile.content)) {
+            existing = profile;  // replaces in place, keeping the authored order
+            return true;
+        }
+    }
+    if (theme->profiles.size() >= kMaxThemeOutputProfiles) {
+        fail(error, "theme '" + themeId + "' carries more than " +
+                        std::to_string(kMaxThemeOutputProfiles) + " output profiles");
+        return false;
+    }
+    theme->profiles.push_back(profile);
+    return true;
+}
+
+bool Documents::removeThemeOutputProfile(const Id& themeId, OutputRole role,
+                                         const std::string& content, std::string* error) {
+    Theme* theme = findTheme_mut(themeId);
+    if (theme == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    for (auto it = theme->profiles.begin(); it != theme->profiles.end(); ++it) {
+        if (it->addresses(role, content)) {
+            theme->profiles.erase(it);
+            return true;
+        }
+    }
+    fail(error, "theme '" + themeId + "' carries no " + outputRoleName(role) +
+                    "/'" + content + "' output profile to remove");
+    return false;
+}
+
+bool Documents::setThemeOutputProfiles(const Id& themeId,
+                                       std::vector<OutputProfile> profiles,
+                                       std::string* error) {
+    Theme* theme = findTheme_mut(themeId);
+    if (theme == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    if (profiles.size() > kMaxThemeOutputProfiles) {
+        fail(error, "theme '" + themeId + "' carries more than " +
+                        std::to_string(kMaxThemeOutputProfiles) + " output profiles");
+        return false;
+    }
+    for (size_t i = 0; i < profiles.size(); ++i) {
+        if (!validOutputProfile(profiles[i], error)) {
+            return false;
+        }
+        for (size_t earlier = 0; earlier < i; ++earlier) {
+            if (profiles[earlier].addresses(profiles[i].role, profiles[i].content)) {
+                fail(error, "theme '" + themeId + "' names output profile " +
+                                outputRoleName(profiles[i].role) + "/'" +
+                                profiles[i].content + "' twice");
+                return false;
+            }
+        }
+    }
+    theme->profiles = std::move(profiles);
+    return true;
+}
+
+const OutputProfile* Documents::outputProfileFor(const Id& themeId, OutputRole role,
+                                                 const std::string& content) const {
+    const Theme* theme = findTheme(themeId);
+    if (theme == nullptr) {
+        return nullptr;
+    }
+    for (const OutputProfile& profile : theme->profiles) {
+        if (profile.addresses(role, content)) {
+            return &profile;
+        }
+    }
+    return nullptr;
+}
+
+ResolvedAppearance Documents::appearanceForSlideOn(const Id& showId, const Id& slideId,
+                                                   OutputRole role) const {
+    // The audience is the chain every earlier build walked, untouched.
+    ResolvedAppearance out = appearanceForSlide(showId, slideId);
+    if (!isProfileRole(role)) {
+        return out;
+    }
+    const Show* show = findShow(showId);
+    if (show == nullptr) {
+        return out;
+    }
+    const int index = findSlideIndex(*show, slideId);
+    if (index < 0) {
+        return out;
+    }
+    const Slide& slide = show->slides[static_cast<size_t>(index)];
+    // The role's own geometry, BEFORE any authored profile: a stage or
+    // lower-third box does not move because a slide was dragged in the
+    // audience editor, and a profile that places one replaces it whole.
+    out.placement = outputRoleDefaultBox(role);
+    // The first theme in the normal chain carrying this (role, content)
+    // pair speaks; every property it is silent on keeps the audience answer.
+    const std::vector<const Theme*> layers = themeChainForSlide(showId, slideId);
+    const OutputProfile* profile = nullptr;
+    for (const Theme* theme : layers) {
+        for (const OutputProfile& candidate : theme->profiles) {
+            if (candidate.addresses(role, slide.textContext)) {
+                profile = &candidate;
+                break;
+            }
+        }
+        if (profile != nullptr) {
+            break;
+        }
+    }
+    if (profile == nullptr) {
+        return out;
+    }
+    if (profile->textColor.has_value()) {
+        out.textColor = *profile->textColor;
+    }
+    if (profile->fontFamily.has_value()) {
+        out.fontFamily = *profile->fontFamily;
+    }
+    if (profile->fontSize.has_value()) {
+        out.fontSize = *profile->fontSize;
+    }
+    if (profile->lineSpacing.has_value()) {
+        out.lineSpacing = *profile->lineSpacing;
+    }
+    if (profile->align.has_value()) {
+        out.align = *profile->align;
+    }
+    if (profile->verticalAlign.has_value()) {
+        out.verticalAlign = *profile->verticalAlign;
+    }
+    if (profile->allCaps.has_value()) {
+        out.allCaps = *profile->allCaps;
+    }
+    if (profile->fontWeight.has_value()) {
+        out.fontWeight = *profile->fontWeight;
+    }
+    if (profile->fontStyle.has_value()) {
+        out.fontStyle = *profile->fontStyle;
+    }
+    if (profile->fontUnderline.has_value()) {
+        out.fontUnderline = *profile->fontUnderline;
+    }
+    if (profile->fitMode.has_value()) {
+        out.fitMode = *profile->fitMode;
+    }
+    if (profile->minFontSize.has_value()) {
+        out.minFontSize = *profile->minFontSize;
+    }
+    if (profile->stroke.has_value()) {
+        out.stroke = *profile->stroke;
+    }
+    if (profile->shadow.has_value()) {
+        out.shadow = *profile->shadow;
+    }
+    if (profile->box.has_value()) {
+        out.placement = profile->box;
+    } else if (profile->inset.has_value()) {
+        BoxRect base = out.placement.value_or(outputRoleDefaultBox(role));
+        const double side = *profile->inset;
+        base.x += side;
+        base.y += side;
+        base.width = std::max(1.0, base.width - 2.0 * side);
+        base.height = std::max(1.0, base.height - 2.0 * side);
+        out.placement = base;
+    }
+    return out;
+}
+
 // --- assets ----------------------------------------------------------------
 
 Id Documents::addAsset(const std::string& name, const std::string& sourcePath,
