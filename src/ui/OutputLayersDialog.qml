@@ -123,7 +123,7 @@ Dialog {
         // reopening the dialog or restarting cannot put the stage on air.
         if (saved.stage === undefined)
             saved.stage = {enabled: false, layers: ["words", "next"]}
-        saved.stage.enabled = worker.stageEnabled
+        saved.stage.enabled = worker.stageEnabled === true
         layersDialog.draft = saved
         audienceMonitor.currentIndex = indexOfMonitor(worker.outputLive
                                                       ? worker.currentMonitor
