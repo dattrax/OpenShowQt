@@ -39,6 +39,185 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <memory>
+
+// Run independently of the long workspace journeys so dialog geometry and
+// actual pointer handling also have a focused, repeatable regression check.
+static int exerciseOutputLayers(QQuickWindow* window,
+                                openshow::ui::AppSettings& settings) {
+    bool failed = false;
+    auto check = [&](bool good, const char* message) {
+        if (!good) { std::fprintf(stderr, "FAIL: %s\n", message); failed = true; }
+    };
+    std::function<QQuickItem*(QQuickItem*, const QString&)> find =
+        [&](QQuickItem* item, const QString& name) -> QQuickItem* {
+            if (item->objectName() == name) return item;
+            for (auto* child : item->childItems())
+                if (auto* hit = find(child, name)) return hit;
+            return nullptr;
+        };
+    auto named = [&](const QString& name) { return find(window->contentItem(), name); };
+    auto click = [&](QQuickItem* item) {
+        if (!item) { check(false, "dialog control exists"); return; }
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          item->mapToScene(QPointF(item->width() / 2,
+                                                   item->height() / 2)).toPoint());
+        QTest::qWait(30);
+    };
+    auto* dialog = window->findChild<QObject*>("outputLayersDialog");
+    if (!dialog) return 1;
+    auto waitOpen = [&] {
+        check(QTest::qWaitFor([&] { return dialog->property("opened").toBool(); }),
+              "the dialog finishes opening");
+    };
+    auto waitClosed = [&] {
+        check(QTest::qWaitFor([&] { return !dialog->property("visible").toBool(); }),
+              "the dialog finishes closing");
+    };
+    const auto initialJson = settings.outputRoutingJson();
+    for (const auto size : {QSize(1380, 800), QSize(1000, 680)}) {
+        window->resize(size);
+        QTest::qWait(50);
+        click(named("outputLayersButton"));
+        waitOpen();
+        check(dialog->property("visible").toBool(), "the sidebar button opens the dialog");
+        const QRectF bounds(dialog->property("x").toDouble(),
+                            dialog->property("y").toDouble(),
+                            dialog->property("width").toDouble(),
+                            dialog->property("height").toDouble());
+        check(bounds.width() >= 700 && bounds.height() > 300,
+              "the matrix uses the window's width rather than the sidebar's");
+        check(QRectF(QPointF(), window->size()).contains(bounds),
+              "the dialog fits inside the operator window");
+        QQuickItem* previous = nullptr;
+        for (const auto* target : {"audience", "stage", "broadcast"}) {
+            const QString prefix = QStringLiteral("outputCell-") + target;
+            auto* cell = named(prefix + "-words");
+            check(cell && cell->isVisible() && cell->parentItem()->width() >= 150,
+                  "each destination has a readable, visible column");
+            if (cell && previous)
+                check(cell->mapToScene(QPointF()).x()
+                          - previous->mapToScene(QPointF()).x() >= 150,
+                      "the destination checkboxes occupy separate columns");
+            previous = cell;
+        }
+        auto* stageEnable = named("outputColumnEnable-stage");
+        auto* ndiEnable = named("outputColumnEnable-broadcast");
+        check(stageEnable && ndiEnable && !stageEnable->isEnabled() && !ndiEnable->isEnabled()
+                  && !stageEnable->property("checked").toBool()
+                  && !ndiEnable->property("checked").toBool(),
+              "unimplemented destinations cannot be enabled");
+        auto* illegal = named("outputCell-audience-next");
+        check(illegal && !illegal->isEnabled(), "next cue remains a stage-only layer");
+        auto* background = named("outputCell-audience-background");
+        const bool before = background && background->property("checked").toBool();
+        click(background);
+        check(background && background->property("checked").toBool() != before,
+              "a real pointer click edits the draft layer");
+        check(settings.outputRoutingJson() == initialJson, "draft editing writes no settings");
+        click(named("outputLayersCancel"));
+        waitClosed();
+        check(!dialog->property("visible").toBool() && settings.outputRoutingJson() == initialJson,
+              "Cancel is reachable and discards the draft");
+    }
+    click(named("outputLayersButton"));
+    waitOpen();
+    auto* background = named("outputCell-audience-background");
+    check(background && background->property("checked").toBool(),
+          "reopening reloads the stored layers after Cancel");
+    click(background);
+    click(named("outputLayersApply"));
+    waitClosed();
+    check(!dialog->property("visible").toBool() && settings.outputRoutingJson() != initialJson,
+          "Apply saves the edited mask and closes the dialog");
+    click(named("outputLayersButton"));
+    waitOpen();
+    background = named("outputCell-audience-background");
+    check(background && !background->property("checked").toBool(),
+          "reopening retains applied layers");
+
+    // A short viewport needs scrolling, with the actions still reachable.
+    window->setMinimumSize(QSize(0, 0));
+    window->resize(QSize(800, 420));
+    QTest::qWait(100);
+    auto* scroll = named("outputLayersScroll");
+    auto* apply = named("outputLayersApply");
+    check(scroll && scroll->property("contentHeight").toDouble()
+                       > scroll->property("availableHeight").toDouble(),
+          "a short window scrolls the matrix");
+    check(apply && QRectF(QPointF(), window->size()).contains(
+                      apply->mapRectToScene(QRectF(0, 0, apply->width(), apply->height()))),
+          "Apply remains inside the window when the matrix scrolls");
+    const auto capture = qEnvironmentVariable("OPENSHOW_OUTPUT_LAYERS_CAPTURE");
+    if (!capture.isEmpty()) window->grabWindow().save(capture + ".compact.png");
+    click(named("outputLayersCancel"));
+    waitClosed();
+    if (!capture.isEmpty()) {
+        window->resize(QSize(1380, 800));
+        QTest::qWait(100);
+        click(named("outputLayersButton"));
+        waitOpen();
+        window->grabWindow().save(capture + ".png");
+    }
+    QMetaObject::invokeMethod(dialog, "close");
+    waitClosed();
+
+    // A three-display peer exercises route submission without moving any
+    // physical window, and distinguishes saved preferences from live state.
+    auto* engine = qmlEngine(dialog);
+    QQmlComponent peerType(engine);
+    peerType.setData(R"(
+        import QtQml
+        QtObject {
+            property bool outputLive: true
+            property bool connected: true
+            property string outputRoutingStatus: "accepted"
+            property int currentMonitor: 1
+            property var displays: [
+                {index: 0, name: "Operator", size: "1920x1080"},
+                {index: 1, name: "Audience", size: "1920x1080"},
+                {index: 2, name: "Third display", size: "1920x1080"}
+            ]
+            property var layers: ({background: true, images: false, words: true})
+            property string submitted: ""
+            property int selected: -2
+            function applyOutputRouting(json) { submitted = json }
+            function selectDisplay(index) { selected = index }
+        }
+    )", QUrl());
+    std::unique_ptr<QObject> peer(peerType.create());
+    if (!peer) return 1;
+    QQmlContext routeContext(engine->rootContext());
+    routeContext.setContextProperty("worker", peer.get());
+    QQmlComponent dialogType(engine);
+    dialogType.loadFromModule("OpenShow", "OutputLayersDialog");
+    std::unique_ptr<QObject> routedDialog(dialogType.create(&routeContext));
+    if (!routedDialog) return 1;
+    routedDialog->setProperty("parent", QVariant::fromValue(window->contentItem()));
+    QMetaObject::invokeMethod(routedDialog.get(), "open");
+    QTest::qWait(250);
+    auto* routedContent = routedDialog->property("contentItem").value<QQuickItem*>();
+    auto* route = routedContent ? find(routedContent, "outputMonitorAudience") : nullptr;
+    auto* liveBackground = routedContent ? find(routedContent, "outputCell-audience-background") : nullptr;
+    auto* liveImages = routedContent ? find(routedContent, "outputCell-audience-images") : nullptr;
+    check(route && route->property("currentIndex").toInt() == 2,
+          "the display picker opens on the acknowledged audience display");
+    check(liveBackground && liveBackground->property("checked").toBool()
+              && liveImages && !liveImages->property("checked").toBool(),
+          "the draft starts with acknowledged audience layers");
+    QMetaObject::invokeMethod(routedDialog.get(), "apply");
+    check(peer->property("selected").toInt() == -2,
+          "applying unchanged routes does not move an output");
+    QMetaObject::invokeMethod(routedDialog.get(), "open");
+    QTest::qWait(250);
+    if (route) route->setProperty("currentIndex", 3);
+    QMetaObject::invokeMethod(routedDialog.get(), "apply");
+    check(peer->property("selected").toInt() == 2 && settings.audienceMonitor() == 2,
+          "Apply sends the selected display to the worker as well as storing it");
+    check(!peer->property("submitted").toString().isEmpty(),
+          "Apply submits the layer matrix to the live worker");
+    return failed ? 1 : 0;
+}
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
@@ -113,6 +292,15 @@ int main(int argc, char** argv) {
     auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
     if (!window) return 1;
     QTest::qWait(100);
+    if (app.arguments().contains(QStringLiteral("--output-layers-only"))) {
+        bool failed = exerciseOutputLayers(window, settings) != 0;
+        for (const auto& warning : warnings) {
+            if (warning.contains("Shortcut: Only binding to one of multiple key bindings")) continue;
+            std::fprintf(stderr, "QML: %s\n", qPrintable(warning));
+            failed = true;
+        }
+        return failed ? 1 : 0;
+    }
     bool failed = false;
     auto check = [&failed](bool good, const char* message) {
         if (!good) { std::fprintf(stderr, "FAIL: %s\n", message); failed = true; }

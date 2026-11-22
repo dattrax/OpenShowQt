@@ -1285,6 +1285,11 @@ minor 22 adds `output.routing` + `output.routing.v1`; the worker applies the
 audience column and refuses a destination it cannot drive yet. The Theme
 Editor's Stage/NDI tiles and the Output layers dialog edit these records
 through the existing shared controls and the controller's profile verbs.
+The dialog is sized against the window overlay, scrolls its matrix separately
+from its actions, and loads live audience layers/display from worker status.
+Apply sends an explicitly changed audience route through `output.select`.
+Stage and NDI enable controls remain unavailable until their runtime outputs
+exist; their editable masks/routes are preferences for future implementation.
 
 Evidence: `domain_tests` (profile resolution, format 16, snapshots),
 `output_routing_tests` (defaults, legal cells, codec refusals), `scene_tests`

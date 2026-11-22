@@ -303,6 +303,10 @@ if(OPENSHOW_BUILD_UI)
   target_link_libraries(workspace_ui_tests PRIVATE openshow::ui-core
     Qt6::Quick Qt6::QuickControls2 Qt6::Test)
   add_test(NAME workspace_ui_tests COMMAND workspace_ui_tests)
+  add_test(NAME output_layers_ui_tests COMMAND workspace_ui_tests --output-layers-only)
+  set_tests_properties(output_layers_ui_tests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    TIMEOUT 30)
   set_tests_properties(workspace_ui_tests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
     # The CS.8 grouped band-and-scroll matrix grew the suite past the old

@@ -1,6 +1,6 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-11-21 (Europe/London).
+Updated: 2026-11-22 (Europe/London).
 
 This file is the CURRENT handoff. Earlier checkpoint narratives — the media
 library, the type/effects review, the CS/TV/TS/TR series and the M6 milestones —
@@ -10,6 +10,34 @@ git history is the authority for what each of those commits did. Nothing in the
 archive is a current instruction.
 
 ## Current checkpoint
+
+**Stage rendering implementation plan (2026-11-22): prepared, not implemented.**
+`PLAN.md` → **Stage HDMI delivery plan** is the next execution path. It splits
+the existing FO.5a/b/c and shared host work into reviewable leaves, freezes
+current/next cue and display-loss behaviour, and separates the rendering and
+operator-delivery checkpoints. NDI, sender/export and additional preview streams
+do not gate Stage HDMI. All new leaves remain TODO. Next action on an
+implementation request: **FO.5a.1**, the two-surface lifecycle/timing spike on
+the attached GPU/displays, before choosing production presentation ownership.
+This turn changes planning documents only; no runtime/output activation or new
+physical verification is claimed. Plan validation: 11 unique TODO leaves,
+no dependency cycles, and `git diff --check` passes.
+
+**Output layers dialog regression fixes (2026-11-22):** corrected the QML
+property read that prevented draft loading, moved the dialog onto the window
+overlay, gave its matrix readable columns and scrolling, and kept Apply/Cancel
+in a fixed footer. Audience layers/display start from acknowledged worker state;
+Apply now sends changed audience display selections to the worker. Stage/NDI
+activation is visibly unavailable: only profiles/settings have landed, and
+the worker still owns one audience window. Stage runtime remains **FO.1e and
+FO.5a–c TODO**; three connected displays do not change that. Focused pointer,
+geometry, persistence and simulated three-display routing verification passes
+in `output_layers_ui_tests` at scales 1/1.5/2. Desktop UI/test builds,
+`workspace_ui_tests`, `output_routing_tests`, `workspace_panels_tests`,
+`ui_loads` and `git diff --check` pass. No physical output activation or
+verification was performed. Restart the rebuilt app for these fixes. Next
+stage implementation action: FO.5a's two-surface lifecycle spike before
+FO.1e/FO.5b–c.
 
 **Output profiles, layer routing and the Stage/NDI tiles (FO.0–FO.1f, FO.4b,
 2026-11-22): first slice DONE.** The frozen contract is

@@ -22,7 +22,9 @@ WYSIWYG Edit workspace, slide drag/drop and insertion: **EW.1–EW.10** below
 Persistent service-card PNGs: **TC** below (investigated 2026-11-20;
 includes storage, invalidation and agent ownership).
 Stage HDMI, NDI lower thirds and the output-layer checkbox matrix: **FO** below
-(researched 2026-11-22; implementation handoff, not an implemented feature).
+(2026-11-22: profiles/settings landed; stage rendering remains unimplemented).
+The **Stage HDMI delivery plan** within FO is the next implementation path;
+it covers the attached operator, audience and stage displays without requiring NDI.
 
 ## Goal and reference
 
@@ -94,9 +96,10 @@ estimate is historical; re-estimate remaining work before productization.
 - **Bible import:** online, passage-only lookup into today's schedule, with
   measured theme-sized slides and a named scripture context (BI/TF delivered).
   View/editor follow-ups are TV and CS below. No installed Bible or passage cache.
-- **Next planned output extension:** FO adds a worker-owned stage HDMI display,
-  NDI lower thirds and a layer-by-destination routing dialog. The running code
-  still supports one audience output; editing a future profile must not enable it.
+- **Next planned output extension:** deliver worker-owned Stage HDMI using the
+  stage delivery plan in FO. Profiles and the routing dialog already exist;
+  the running worker still supports one audience output. NDI sending follows
+  separately and does not gate stage rendering. Editing a profile enables no output.
 - **Deferred:** FreeShow import/round-trip,
   Vulkan display-plane output, effects beyond TS below, remote control, streaming,
   SDI, cloud services, Windows and macOS.
@@ -2936,16 +2939,19 @@ the frozen overlay API. No proactive rendering of the whole Library/service.
 
 ### Output profiles, stage HDMI, NDI lower thirds and layer routing (FO)
 
-**Research/handoff: 2026-11-22. All implementation work is TODO.** The user
+**Updated 2026-11-22: profiles/settings are implemented; runtime stage and NDI
+outputs are TODO.** The user
 wants Stage and NDI alongside Songs/Bible in the Theme Editor, a stage screen
 on another HDMI output, and NDI lower thirds in OBS or another receiver.
 They additionally require a dialog consisting of a **layer-by-output checkbox
 matrix**, so each display/stream receives its own chosen layers.
 
-This request promotes FO to the next planned extension and supersedes the
-old blanket deferral behind every TV/TA leaf. It authorizes this research and
-plan, not implementation in this turn. When implementation is requested,
-start with FO.0 and the two spikes below. Reuse completed CS/TS/TR work;
+FO is the next planned extension and supersedes the old blanket deferral
+behind every TV/TA leaf. The current request is to prepare the stage rendering
+plan, not activate displays or implement it in this turn. On implementation,
+follow the **Stage HDMI delivery plan** below, starting at FO.5a.1; FO.0 and
+FO.1a–c are already delivered. NDI's FO.3/FO.4a work is a separate path.
+Reuse completed CS/TS/TR work;
 do not mark unfinished TV/TA or M7 tasks DONE. TV.3/TV.4 are dependencies only
 if their appearance/extra-caption contracts are actually used. M7.1b/c's
 bounded waits and display-loss behavior are required on new physical paths;
@@ -2955,7 +2961,7 @@ FO.6 remains a separate physical/release gate. Split leaves exceeding two days.
 
 | Evidence in the current tree | Consequence for implementation |
 |---|---|
-| `ThemeEditorPage.qml` uses `selectedView = ""` for Songs and `"scripture"` for Bible; `DocumentController::compileThemeSample` compiles one selected text context. `TextContext` is a sparse text/box record, not a destination or full output appearance. | Stage/NDI cannot be implemented correctly by only adding two context names or copying two view buttons. Preserve content type and output role as separate dimensions. |
+| Output roles/profiles, service format 16, `scene::compileSlideOn` and Stage/NDI editor tiles already exist. `TextContext` remains the Songs/Bible content dimension. | Reuse these delivered contracts; the missing work is the live scene bundle and worker destination, not another theme/context model. |
 | `OutputSession.h` owns one `fWindow`, `fVk`, `fContext`, `fSwapchain`, `fScene` and published frame; `VulkanContext::create` creates/checks one presentation surface. | Introduce a worker graphics host and per-output resources/state, checking presentation support for every physical surface. The frontend continues to own documents, not display windows. |
 | `OutputWindow::close` calls `glfwTerminate`; `Swapchain` uses infinite acquire/fence waits and device-wide idle at destruction. | Closing/recreating stage must not terminate audience GLFW or wait unboundedly on its GPU work. A second call to the existing audience frame loop is not an isolated stage implementation. |
 | `SceneRenderer::draw` clears black unless an explicitly transparent scene is drawn as an alpha preview. `PreviewProducer` uses premultiplied RGBA, synchronous readback, a small shared stream and three target kinds. | Add an explicit output clear/alpha policy and full-size export lane. Do not upscale the 640x360 operator preview, depend on a UI preview release, or run synchronous 1080p export on the audience loop. |
@@ -3004,8 +3010,8 @@ Primary-source checks (accessed 2026-11-22):
    audience geometry for their own target; absence inherits a defined default,
    explicit false/off remains meaningful. Use existing style/geometry validators.
    Include profiles in theme copies, portable snapshots, undo and service
-   save/reopen. Service format is currently 15: new authored fields require an
-   explicit version/migration decision, not an unversioned cache-style add-on.
+   save/reopen. Service format **16** already carries output profiles; any
+   additional authored fields need an explicit version/migration decision.
    Hardware routes, stream name/mode and the layer matrix belong to machine
    workspace settings, separate from portable theme appearance.
 3. **Live content:** one Go carries an immutable cue/scene bundle, output-profile
@@ -3079,7 +3085,7 @@ frames so a late receiver cannot be sent stale words.
 | FO.1b | DONE | FO.1a | Persistence: version service/profile and theme-snapshot codecs; legacy files retain audience pixels/IDs and no enabled extra outputs. Round-trip profiles/copy/undo/autosave, reject invalid/old-format new fields atomically. Keep machine matrix/routes in AppSettings/WorkspacePanels storage, not portable theme snapshots. |
 | FO.1c | DONE | FO.1a | Compiler: produce bounded per-target scenes from one cue and its content type. Preserve every selected word and audience boundaries; test multi-box/image-only, long Bible/song text, small lower-third boxes, effects and explicit overflow refusal. No independent service reflow. |
 | FO.1d | PARTIAL | FO.1c, FO.0 | Protocol/controller: capability-gated output configuration, atomic routing matrix and target scene bundles; extend RpcMethods/WorkerController/PresentationModel with bounded dimensions/layers, target IDs and generations. Legacy methods remain audience-scoped; old peers never receive unknown preview targets. Fake-peer tests pin stale config/acks, illegal stage-only cells and disconnect recovery. |
-| FO.1e | TODO | FO.1d, FO.5a | Worker host: refactor OutputSession/SceneStore into shared graphics/event ownership plus per-target renderer/resources/status. Preserve one scene timeline/audio owner; snapshot routing masks once, prioritize audience and bound secondary work. Prove a disabled/slow target cannot advance or stall another. Split host extraction/scheduling if over two days. |
+| FO.1e | TODO | FO.5a; FO.1d for live integration | Worker host: shared graphics/event ownership plus per-target renderer/resources/status. Stage delivery children FO.1e.1–2 below preserve one timeline/audio owner and bound secondary work; NDI extensions remain separate. |
 | FO.1f | PARTIAL | FO.1b, FO.1c, FO.2c | Theme UI: add Stage/NDI tiles and per-target Songs/Bible selector using shared inspector controls/adapters. Matching sample/handles, reset/inherit, undo and save/reopen; switching targets cancels unfinished gestures and delayed previews. No output activation from editor browsing. Test minimum width and scale 1/1.5/2. |
 | FO.2 | TODO | FO.1a–c | Parent: alpha/export/preview; DONE only when FO.2a–c pass. |
 | FO.2a | TODO | FO.1c | Compositor: explicit opaque/transparent clear policies and immutable per-target layer masks; honor all supported matrix cells, including optional NDI backgrounds/images. Transparent idle/clear/fades and effect edges match checkerboard references; audience remains unchanged. Update alpha/render source guards deliberately, not by disabling them. |
@@ -3092,9 +3098,9 @@ frames so a late receiver cannot be sent stale words.
 | FO.4a | TODO | FO.2b, FO.3b | Worker sender client: paced video-only lower thirds, premultiplied-to-straight conversion, retained latest clean/transparent frame and bounded process supervision. The helper owns SDK waits; drop superseded exports, isolate slow clients and use bounded shutdown/escalation. Report enabled/starting/sending/no-receivers/fault distinctly, never claim OBS presentation from a send return. |
 | FO.4b | PARTIAL | FO.1b, FO.1d | Output settings UI: implement the checkbox matrix and per-column routes/enable/name/mode, with draft Apply/Cancel and acknowledged state. Capability-driven unavailable NDI cells allow this and stage work before the real sender is ready. Keyboard/screen-reader row+column labels, invalid/colliding display selections, unavailable helper and reconnect tested. Store desired masks separately from session enablement; editing an NDI cell changes no HDMI mask. |
 | FO.5 | TODO | FO.0 | Parent: stage output; DONE only when FO.5a–c pass. |
-| FO.5a | TODO | FO.0 | Display spike/lifecycle: prove two worker windows/surfaces on target GPU/Wayland/X11; move GLFW initialization/termination to a process owner and keep window/events on the main thread. Check presentation support per surface; design bounded acquire/present and per-target recreation without routine device-wide stalls. Record mixed refresh/scale and unplug behavior; feeds M7.1b/c. |
-| FO.5b | TODO | FO.1c, FO.1d | Stage content/layout: current/next cue from acknowledged occurrence and versioned lookahead, independently styled Songs/Bible text. Add a real stage-only next layer with matrix capability; notes/clock stay unavailable until real data/production renderers exist. Test repeated songs, last cue, order edits, no cue, clear/restore and delayed metadata without audience/NDI leakage. |
-| FO.5c | TODO | FO.1e, FO.5a, FO.5b, FO.4b | Stage HDMI destination: explicit monitor selection, collision refusal and independent enable/disable; native framebuffer/scale with aspect-fit profile. Hide/disable on removal, require explicit reselection, never fall back to the operator monitor; closing stage leaves audience/NDI alive. Test device/surface failure and per-target landed state. |
+| FO.5a | TODO | FO.0 | Display spike/lifecycle parent: FO.5a.1–2 below prove two surfaces, choose bounded presentation ownership and establish identity/hotplug rules on Wayland/X11. Feeds M7.1b/c. |
+| FO.5b | TODO | FO.1c, FO.1d stage extension | Stage content/layout parent: FO.5b.1–2 below deliver occurrence-aware current/next bundles and independent routing with production rendering. Notes/clock remain unavailable. |
+| FO.5c | TODO | FO.1e, FO.5a, FO.5b, FO.4b stage extension | Stage destination parent: FO.5c.1–3 below deliver native HDMI, acknowledged enable/disable, display-loss handling and three-display acceptance. Stage can close while audience continues. |
 | FO.6 | TODO | FO.1–FO.5 | Parent: integrated, physical and distribution acceptance; DONE only when FO.6a–c pass. |
 | FO.6a | TODO | All implementation leaves | Fake/helper and real-worker journeys: one cue, three layouts, all valid matrix combinations, absent SDK, corrupt/stale IPC, receiver backpressure, display loss and process restart. Quantify frame deadlines, audio continuity, queue/byte/GPU bounds and sustained resource recovery against an audience-only baseline; no skipped physical check counts as passed. |
 | FO.6b | TODO | FO.6a | Physical acceptance: operator monitor + audience/projector + separate stage HDMI, OBS/DistroAV on loopback and another machine. Test transparent overlay over real video, clear/restore, late receivers, enabled background/image routing, mixed refresh rates and unplug/replug under song/Bible/media playback. Save exact matrix/modes/versions/captures and sustained timing evidence. |
@@ -3139,7 +3145,9 @@ this build, each with its own commit and regressions:
   sweeps for the new rails.
 - **FO.4b** (`ad0b8d0`, `ee9425c`): the Output layers dialog — rows are
   layers, columns are destinations, stage-only cells visibly disabled, draft
-  Apply/Cancel, route pickers, and the worker status line. Missing: live
+  Apply/Cancel, route pickers, and the worker status line. Regression follow-up:
+  overlay sizing/scrolling, draft property loading and audience route submission;
+  Stage/NDI activation explicitly unavailable (`output_layers_ui_tests`). Missing: live
   screen-reader/keyboard row+column sweep and reconnect journeys with a real
   helper.
 
@@ -3147,16 +3155,155 @@ Still open: FO.1e (worker graphics host), FO.2a–c (compositor/export/preview),
 FO.3a–b (NDI sender spike/helper), FO.4a (sender client), FO.5a–c (stage
 display/content/destination), FO.6a–c (acceptance/physical/packaging).
 
+#### Stage HDMI delivery plan — next implementation path
+
+**Requested 2026-11-22. Status: TODO; planning only.** Three physical displays
+are now attached. The deliverable is an operator window, the existing audience
+output and a separately rendered stage output operating together. Display
+indices are discovered at runtime; “third display” must never mean a hard-coded
+index 2. Keep the existing FO parent IDs and DONE evidence above.
+
+**Delivery boundaries.** First prove two worker surfaces with a development
+fixture, then a current-cue stage renderer, then complete current/next rendering
+and operator enablement. A synthetic window, a profile thumbnail or a saved
+Stage checkbox is not a delivered stage display. NDI SDK/helper/export work,
+broadcast alpha, a stage preview stream, speaker notes and a production clock
+are outside this delivery. Leave their capabilities/controls unavailable;
+do not make FO.2b/2c, FO.3 or FO.4a prerequisites. Shared opaque-rendering and
+matrix changes contribute to FO.2a/FO.4b without marking those wider leaves DONE.
+
+**Stage v1 behaviour to implement:**
+
+- The operator explicitly chooses an attached monitor distinct from audience
+  and enables Stage. `Not chosen` cannot enable it. Create a borderless native
+  framebuffer output, aspect-fit the 1920×1080 stage scene, clear opaque black,
+  and preserve the Stage → Songs/Bible appearance already authored. Default
+  routing is Words + Next; Background/Images are independently optional.
+- Current text belongs to the successfully presented audience cue, identified
+  by running-order entry occurrence and slide, never the Library selection,
+  editing cursor or a pending Go. Freeze a bounded stage bundle with each Go;
+  make it eligible only after the corresponding audience frame commits. Stage
+  reports its own presented revision and may lag; its failure does not undo
+  audience presentation or falsely report the stage current.
+- Stage v1 cuts to an eligible current cue and to newer valid next metadata;
+  audience crossfades continue unchanged. Theme/profile edits affect the next
+  Go, while the current live/restore bundle retains its captured appearance.
+  Changing stage layers/monitor redraws that retained bundle without restarting
+  the audience transition or media. Lookahead order updates change next alone.
+- Next means the immediate next cue in that presentation sequence, including
+  the next running-order entry. Keep sequence ownership in a frontend model,
+  independent of `ShowPage.qml` visibility/browsing. Direct/non-service Go uses
+  an explicitly identified sequence, or has no next cue; never guess an entry
+  for a repeated song. The last cue/no cue has an empty next region. Order edits
+  publish a newer lookahead generation for the same live occurrence; delayed
+  updates from another occurrence/Go cannot replace it. Deleting the live entry
+  preserves its frozen current text and clears next until a valid new Go.
+- Current uses the existing stage profile box (default 160,120,1600,560).
+  Next uses a separate default slot (160,740,1600,260), the **next cue's** resolved
+  Stage → Songs/Bible style and a starting font size 55% of that style's size.
+  Use the existing worker fit/measurement rules, with a next-slot minimum scaled
+  by the same factor; preserve every selected word and report overflow. These
+  are v1 layout defaults, not new persisted theme fields. Detect/report custom
+  current-box overlap with the next slot. Independent next-box authoring is a
+  later versioned extension. Do not repurpose diagnostic clock/aux or slide
+  section labels as stage next/speaker notes.
+- Per-layer audience clears keep their existing scope. Clear All invalidates
+  pending stage bundles and clears current/next and optional visual layers on
+  every enabled target, retaining existing audio-stop behaviour. Restore uses
+  the retained acknowledged bundle; generation checks prevent an old deferred
+  frame from repopulating a cleared/disabled stage. Enabling Stage during a live
+  cue draws that cue's retained bundle; before any valid Go it stays black.
+- Enabling Stage creates no audio source, decoder or second presentation clock.
+  Optional video/camera backgrounds reuse the existing transport's immutable
+  frame/lease at the sampled media time; lifetime extends through both GPU
+  submissions and is tied to the same cue bundle, so a lagging stage cannot
+  combine old words with the next cue's video. An image-only cue has no invented
+  current words and can still show its next cue. A failed stage layout clears the affected stage content
+  and reports an error; audience Go and its media continue.
+- Stage starts disabled after app/worker restart. Closing, disabling or losing
+  its monitor affects Stage alone; replugging never re-enables it. Hide the
+  disconnected target before another render/event pass can remap it windowed.
+  Reject audience/stage route collisions in both directions and stale monitor
+  selections in both UI and worker. Do not compare Qt and GLFW numeric indices
+  to identify the operator display, and never choose a fallback monitor for Stage.
+- Surface/window faults can disable Stage alone. Shared Vulkan device loss is
+  a worker-wide fault: invalidate all affected live status, preserve frontend
+  documents, and follow the black-on-restart/explicit-Go recovery contract.
+  Do not claim audience continuity through loss of its shared device.
+
+**Implementation ledger** (target 0.5–2 engineer-days per leaf; split larger
+discoveries before implementation). All rows start TODO. A parent's completion
+requires its children's evidence, not an enabled development flag.
+
+| ID | Status | Depends on | Concrete change and acceptance |
+|---|---|---|---|
+| FO.5a.1 | TODO | FO.0 | Two-surface spike: development-only fixture on the attached GPU creates audience + stage windows with distinct synthetic patterns. Prove stage maps onto its selected monitor without first showing an unassigned window on the operator display; the current `OutputWindow::open` show-then-fullscreen sequence needs explicit review. Record backend, GPU/driver, monitor inventory, framebuffer sizes/scales/refresh, per-surface queue support, acquire/fence/present timings, resize/close/unplug and remaining audience frames. Test Wayland and X11 separately; record unavailable sessions as open physical checks. Decide the supported presentation/retirement design before production enablement. |
+| FO.5a.2 | TODO | FO.5a.1 | Display inventory and loss: main-thread connect/disconnect callbacks; connection-scoped identity + inventory generation, separate from mutable index/name. Validate identity at configuration acceptance and execution, invalidate queued enables on disconnect/reorder, refresh frontend inventory and require explicit reselection. Test identical monitor names, index reuse, removal between Apply and execute, and collisions with audience moves. Saved indices are preferences only. |
+| FO.1e.1 | TODO | FO.5a.1 | Extract process-owned GLFW lifetime/events and shared Vulkan device/Ganesh ownership from `OutputWindow`/`OutputSession`; retain existing audience behaviour. Windows own their surfaces; one GPU-owning thread uses Ganesh. Check presentation support for each surface and destroy child renderers/swapchains/surfaces before the device and final GLFW termination. Window close must not call process termination. Existing audience/preview/media journeys pass. |
+| FO.1e.2 | TODO | FO.1e.1 | Per-target resources/scheduling: independent renderer/layout cache, swapchain, dirty state, captured mask, accepted/presented revisions and bounded in-flight resources. Give audience first service; stage uses spare budget and drops superseded work. Add finite acquire/fence handling and safe per-target retirement; no routine device-wide idle for stage resize/disable. Fault/slow-target tests and spike measurements prove presentation itself cannot monopolize the audience path. |
+| FO.1d.stage | TODO | FO.5a.2, FO.1e.2 | Freeze and implement stage configuration/bundle/status DTOs with a protocol minor bump and dedicated stage capability; existing `output.routing.v1` alone must not imply stage support. Keep legacy methods audience-scoped. Configuration carries monitor identity/inventory generation, routing generation and explicit session enablement; bundles carry Go/occurrence/order/profile generations and bounded target scenes. Separate requested/accepted/starting/active/disabled/lost/fault and per-target presented state. Reject unsupported cells, malformed/oversized bundles, collisions and stale updates atomically; fake old-peer, reconnect and out-of-order-ack tests pass. |
+| FO.5b.1 | TODO | FO.1d.stage, FO.1c | Frontend live-content producer: reuse `compileSlideOn(..., Stage, ...)`; build current + next from the presentation sequence and retain the bundle beside the Go/restore state. Send no stage layout from the editing cursor. Test repeated service entries, song→Bible boundaries, direct/Library presentations, final cue, reorder/removal while live and superseded Go/prepare completions. Stage updates cannot require the Show page to remain open. |
+| FO.5b.2 | TODO | FO.5b.1, FO.1e.2 | Real stage compositor: current and separate next layer, immutable per-frame stage mask, shared text services, independent layout caches, opaque clear and native aspect-fit. Background/Images/Words/Next each work independently without changing audience masks or authored item order. Reuse shared media leases; no new audio/decoder. Raster/pixel and real-worker fixtures cover Songs/Bible styles, long/multi-box/image-only cues, overlap/overflow errors, Clear All/Restore and no audience timing/preview changes. |
+| FO.5c.1 | TODO | FO.5a.2, FO.1d.stage, FO.5b.2 | Production stage lifecycle: explicit enable creates/maps the selected target and presents the eligible live bundle or black; publish active only after successful present. Route changes, resize/scale, disable/close, surface failure and hotplug use target-local recovery. Disconnect clears session enablement, queued work and physical visibility. Test audience continuity, failure isolation, replug without auto-enable and bounded teardown/repeated enable cycles. |
+| FO.4b.stage | TODO | FO.5c.1 | Replace the Stage unavailable indicator only when the worker advertises real stage rendering. Draft route/masks/enable apply as one validated configuration; Cancel is inert, errors keep the last accepted worker configuration and session state, and pending differs from presented. Keep desired saved masks separate from acknowledged live state. Disable Notes/Clock/NDI activation. Extend `output_layers_ui_tests` with capability, collision, pending/refusal, keyboard, disconnect/reconnect and 100/150/200% scale journeys. |
+| FO.5c.2 | TODO | FO.4b.stage | Integrated acceptance with the production frontend/worker: three-display enable, Go/current/next, profile changes under a defined generation, independent matrix combinations, Clear All/Restore, audience/stage route changes, rapid Go, delayed prepares, unplug/reorder, stage close and worker restart. Add a focused stage journey fixture; verify failed stage work never changes audience published truth, audio ownership or preview release semantics. |
+| FO.5c.3 | TODO | FO.5c.2 | Physical acceptance on operator + audience + stage: run Songs/Bible/stills/video/camera content where available, mixed refresh/scale, closing Stage, unplug/replug and reconnect. Record exact device/backend/routes/modes, captures, timing/queue/memory results and skipped cases separately. Run a 10-minute mixed-content timing comparison and 30-minute enable/disable/service soak; reconcile PLAN/PROGRESS/architecture and document how to enable Stage. |
+
+**Execution order and checkpoints:**
+
+1. FO.5a.1 → FO.5a.2 and FO.1e.1 → FO.1e.2 → FO.1d.stage.
+   The display spike is the decision gate: bounded acquire alone does not prove
+   `vkQueuePresentKHR` or swapchain destruction cannot block. If the shared queue
+   fails isolation, document and measure a supported presentation queue/thread
+   arrangement before proceeding; never share Ganesh concurrently. A platform
+   that fails the gate must refuse stage activation with its measured reason.
+2. FO.5b.1 → FO.5b.2 → FO.5c.1 is the **rendering checkpoint**: a development
+   driver can put real current/next content on the selected stage monitor while
+   audience and audio continue. Keep production Stage activation unavailable
+   until the matching lifecycle and capability/status paths pass.
+3. FO.4b.stage → FO.5c.2 → FO.5c.3 is the **operator delivery checkpoint**.
+   Only then describe Stage HDMI as implemented and physically verified for
+   the tested backend. FO.6's NDI/other-platform/release gates remain open.
+
+**Verification and completion evidence.** Reuse the domain/scene/routing,
+SceneStore/frame, worker-controller, output-status, production-output, preview
+ownership and workspace tests. Add focused tests for stage policy, target
+lifecycle and the integrated stage journey; use dependency injection for
+presentation failures and deterministic ordering rather than timing guesses.
+Run `cmake --build --preset desktop` and affected desktop CTests; run the
+Qt-free/domain/source guards under the headless preset. Preserve the existing
+no-per-layer-render-target guard. Use hardware for physical surface checks;
+offscreen/synthetic/fake-peer success never satisfies FO.5c.3.
+
+Before claiming the operator delivery checkpoint, record:
+
+- A first-frame capture showing different audience and stage layouts and the
+  configured current/next cue identities on all three physical displays.
+- A passing matrix of enable/disable, layer filtering, collision refusal,
+  Clear All/Restore, hotplug/replug, stage close and restart-safe defaults.
+- Audience-only vs audience+stage p50/p95/p99 frame timing, missed deadlines,
+  Go-to-present latency, audio underruns and peak queue/cache/GPU bytes. Retain
+  the existing <1% missed-deadline and p95 <100 ms Go targets; target stage
+  Go-to-present p95 <100 ms after audience eligibility when resources are ready.
+  Set numeric per-frame stage budget, queue caps and retirement timeout from
+  FO.5a.1 measurements before FO.1e.2; record actual values, not just “bounded”.
+- Passing soak evidence with stable resource counts after repeated cycles,
+  no duplicated audio/decoders, and no worker hang when Stage is slow or lost.
+  Log unsupported driver/backend combinations as limitations, not successful
+  multi-display acceptance. No SDK install, commit, push or live display
+  activation is part of this planning change.
+
 #### Implementation runbook and budgets
 
 - Read current PLAN/PROGRESS and inspect Git status first. Implement a selected
   leaf, preserving unrelated changes; keep original FO parent references used
   by `docs/ndi-camera-input.md`. No commit/push, SDK installation or live output
   activation is implied by this planning handoff.
-- Start FO.0, then FO.3a/FO.5a spikes and FO.1a–d. Continue FO.1e, compositor/
-  readback/helper work, then target previews/editor and matrix UI; finish stage
-  destination and acceptance. This describes independent work, not a request to
-  spawn agents now. Record spike decisions before downstream implementation.
+- For Stage HDMI, follow the stage delivery ledger above, beginning at
+  FO.5a.1; reuse delivered FO.0/FO.1a–c and the partial routing/editor work.
+  For the later NDI path, begin with FO.3a, then helper/export/client and its
+  acceptance. Stage does not wait for NDI or extra operator preview streams.
+  Record spike decisions before downstream implementation.
 - Prefer one worker graphics host; a shared Ganesh context has one GPU-owning
   thread. If the display spike requires another presentation queue/context,
   document ownership and measured isolation first; never share a Ganesh context
