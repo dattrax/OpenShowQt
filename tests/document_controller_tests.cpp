@@ -4635,6 +4635,65 @@ void exerciseThemeSampleViews(const std::filesystem::path& root) {
               && unknown.value(QStringLiteral("boxX")).toDouble() == 300.0,
           "a context name no theme carries resolves as no layer — the theme's own numbers stand");
 
+    // Milestone FO (task FO.1d): the stage and NDI tiles sample their own
+    // destination without recording anything, and an unknown role is a
+    // refusal rather than a silent fallback to the audience.
+    QVariantMap stageProfile;
+    stageProfile.insert(QStringLiteral("fontSize"), 88.0);
+    stageProfile.insert(QStringLiteral("y"), 70.0);
+    stageProfile.insert(QStringLiteral("x"), 120.0);
+    stageProfile.insert(QStringLiteral("width"), 1680.0);
+    stageProfile.insert(QStringLiteral("height"), 500.0);
+    check(docs.applyThemeOutputProfile(house, QStringLiteral("stage"), QString(), stageProfile),
+          "a stage profile is authored from the editor's map");
+    const QVariantMap stageLook =
+        docs.themeSampleAppearance(house, QString(), QStringLiteral("stage"));
+    check(stageLook.value(QStringLiteral("ok")).toBool()
+              && stageLook.value(QStringLiteral("role")).toString()
+                     == QStringLiteral("stage")
+              && stageLook.value(QStringLiteral("boxY")).toDouble() == 70.0
+              && stageLook.value(QStringLiteral("boxHeight")).toDouble() == 500.0
+              && stageLook.value(QStringLiteral("fontSize")).toDouble() == 88.0,
+          "the stage tile samples its own box and type");
+    const QVariantMap broadcastLook =
+        docs.themeSampleAppearance(house, QString(), QStringLiteral("broadcast"));
+    check(broadcastLook.value(QStringLiteral("ok")).toBool()
+              && broadcastLook.value(QStringLiteral("role")).toString()
+                     == QStringLiteral("broadcast")
+              && broadcastLook.value(QStringLiteral("boxY")).toDouble() == 760.0
+              && broadcastLook.value(QStringLiteral("boxHeight")).toDouble() == 240.0
+              && broadcastLook.value(QStringLiteral("fontSize")).toDouble() == 40.0,
+          "an unauthored broadcast column samples the lower-third default and the theme's type");
+    check(!docs.themeSampleAppearance(house, QString(), QStringLiteral("ndi"))
+                   .value(QStringLiteral("ok"))
+                   .toBool(),
+          "an unknown role samples nothing rather than falling back to the audience");
+    const QVariantMap stageRow =
+        docs.themeOutputProfile(house, QStringLiteral("stage"), QString());
+    check(stageRow.value(QStringLiteral("set")).toBool()
+              && stageRow.value(QStringLiteral("fontSizeSet")).toBool()
+              && stageRow.value(QStringLiteral("textColorSet")).toBool() == false,
+          "the profile read row distinguishes an answer from silence");
+    check(!docs.applyThemeOutputProfile(house, QStringLiteral("audience"), QString(),
+                                        stageProfile),
+          "the editor cannot author an audience profile");
+    docs.undo();
+    check(!docs.themeOutputProfile(house, QStringLiteral("stage"), QString())
+                   .value(QStringLiteral("set"))
+                   .toBool(),
+          "one undo takes the authored stage profile off");
+    docs.redo();
+    check(docs.themeOutputProfile(house, QStringLiteral("stage"), QString())
+              .value(QStringLiteral("set"))
+              .toBool(),
+          "redo puts the authored stage profile back");
+    check(docs.removeThemeOutputProfile(house, QStringLiteral("stage"), QString()),
+          "the stage profile is removable");
+    check(!docs.themeOutputProfile(house, QStringLiteral("stage"), QString())
+                   .value(QStringLiteral("set"))
+                   .toBool(),
+          "the removed stage profile reads as silence");
+
     // The worn theme cannot bleed into a BROWSED theme's picture: the
     // fixture clears the current theme on its copy, so the sample answers
     // for the selected row and not for whatever the service wears.

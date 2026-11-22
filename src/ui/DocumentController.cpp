@@ -1848,6 +1848,240 @@ bool DocumentController::removeThemeContext(const QString& themeId, const QStrin
     return true;
 }
 
+namespace {
+
+// --- output profile maps (milestone FO, task FO.1d) -------------------------
+//
+// One spelling between QML and the domain record. Present keys are answers,
+// absent keys are silence, and a `...Set` flag tells the editor which of the
+// two a field is — exactly the text context row's vocabulary, so a shared
+// appearance control can drive either.
+
+// The QML spelling of an output role; anything unknown is refused rather
+// than guessed at, so a typo shows an empty sample instead of the audience.
+bool outputRoleFromQml(const QString& name, openshow::domain::OutputRole* role) {
+    return openshow::domain::outputRoleFromName(name.toStdString(), role);
+}
+
+QVariantMap outputProfileToMap(const openshow::domain::OutputProfile& profile) {
+    QVariantMap out;
+    out.insert(QStringLiteral("set"), true);
+    out.insert(QStringLiteral("role"),
+               QString::fromUtf8(openshow::domain::outputRoleName(profile.role)));
+    out.insert(QStringLiteral("content"), QString::fromStdString(profile.content));
+    const auto putString = [&out](const char* name, const std::optional<std::string>& value) {
+        out.insert(QString::fromLatin1(name), value.has_value()
+                                                  ? QVariant(QString::fromStdString(*value))
+                                                  : QVariant());
+        out.insert(QString::fromLatin1(name) + QStringLiteral("Set"), value.has_value());
+    };
+    const auto putNumber = [&out](const char* name, const std::optional<double>& value) {
+        out.insert(QString::fromLatin1(name), value.has_value() ? QVariant(*value)
+                                                               : QVariant());
+        out.insert(QString::fromLatin1(name) + QStringLiteral("Set"), value.has_value());
+    };
+    const auto putBool = [&out](const char* name, const std::optional<bool>& value) {
+        out.insert(QString::fromLatin1(name), value.has_value() ? QVariant(*value)
+                                                               : QVariant());
+        out.insert(QString::fromLatin1(name) + QStringLiteral("Set"), value.has_value());
+    };
+    const auto putInt = [&out](const char* name, const std::optional<int>& value) {
+        out.insert(QString::fromLatin1(name), value.has_value() ? QVariant(*value)
+                                                               : QVariant());
+        out.insert(QString::fromLatin1(name) + QStringLiteral("Set"), value.has_value());
+    };
+    putString("textColor", profile.textColor);
+    putString("fontFamily", profile.fontFamily);
+    putNumber("fontSize", profile.fontSize);
+    putNumber("lineSpacing", profile.lineSpacing);
+    putString("align", profile.align);
+    putString("verticalAlign", profile.verticalAlign);
+    putBool("allCaps", profile.allCaps);
+    putInt("fontWeight", profile.fontWeight);
+    putString("fontStyle", profile.fontStyle);
+    putBool("fontUnderline", profile.fontUnderline);
+    putString("fitMode", profile.fitMode);
+    putNumber("minFontSize", profile.minFontSize);
+    out.insert(QStringLiteral("boxSet"), profile.box.has_value());
+    if (profile.box.has_value()) {
+        out.insert(QStringLiteral("x"), profile.box->x);
+        out.insert(QStringLiteral("y"), profile.box->y);
+        out.insert(QStringLiteral("width"), profile.box->width);
+        out.insert(QStringLiteral("height"), profile.box->height);
+    }
+    putNumber("inset", profile.inset);
+    out.insert(QStringLiteral("strokeSet"), profile.stroke.has_value());
+    if (profile.stroke.has_value()) {
+        QVariantMap stroke;
+        stroke.insert(QStringLiteral("enabled"), profile.stroke->enabled);
+        stroke.insert(QStringLiteral("color"), QString::fromStdString(profile.stroke->color));
+        stroke.insert(QStringLiteral("width"), profile.stroke->width);
+        out.insert(QStringLiteral("stroke"), stroke);
+    }
+    out.insert(QStringLiteral("shadowSet"), profile.shadow.has_value());
+    if (profile.shadow.has_value()) {
+        QVariantMap shadow;
+        shadow.insert(QStringLiteral("enabled"), profile.shadow->enabled);
+        shadow.insert(QStringLiteral("color"), QString::fromStdString(profile.shadow->color));
+        shadow.insert(QStringLiteral("opacity"), profile.shadow->opacity);
+        shadow.insert(QStringLiteral("offsetX"), profile.shadow->offsetX);
+        shadow.insert(QStringLiteral("offsetY"), profile.shadow->offsetY);
+        shadow.insert(QStringLiteral("blurSigma"), profile.shadow->blurSigma);
+        out.insert(QStringLiteral("shadow"), shadow);
+    }
+    return out;
+}
+
+bool outputProfileFromMap(const QVariantMap& fields,
+                          openshow::domain::OutputRole role, std::string content,
+                          openshow::domain::OutputProfile* out, std::string* error) {
+    openshow::domain::OutputProfile profile;
+    profile.role = role;
+    profile.content = std::move(content);
+    const auto has = [&fields](const char* name) {
+        return fields.contains(QString::fromLatin1(name));
+    };
+    const auto text = [&fields](const char* name) {
+        return fields.value(QString::fromLatin1(name)).toString().toStdString();
+    };
+    if (has("textColor")) {
+        profile.textColor = text("textColor");
+    }
+    if (has("fontFamily")) {
+        profile.fontFamily = text("fontFamily");
+    }
+    if (has("fontSize")) {
+        profile.fontSize = fields.value(QStringLiteral("fontSize")).toDouble();
+    }
+    if (has("lineSpacing")) {
+        profile.lineSpacing = fields.value(QStringLiteral("lineSpacing")).toDouble();
+    }
+    if (has("align")) {
+        profile.align = text("align");
+    }
+    if (has("verticalAlign")) {
+        profile.verticalAlign = text("verticalAlign");
+    }
+    if (has("allCaps")) {
+        profile.allCaps = fields.value(QStringLiteral("allCaps")).toBool();
+    }
+    if (has("fontWeight")) {
+        profile.fontWeight = fields.value(QStringLiteral("fontWeight")).toInt();
+    }
+    if (has("fontStyle")) {
+        profile.fontStyle = text("fontStyle");
+    }
+    if (has("fontUnderline")) {
+        profile.fontUnderline = fields.value(QStringLiteral("fontUnderline")).toBool();
+    }
+    if (has("fitMode")) {
+        profile.fitMode = text("fitMode");
+    }
+    if (has("minFontSize")) {
+        profile.minFontSize = fields.value(QStringLiteral("minFontSize")).toDouble();
+    }
+    if (has("inset")) {
+        profile.inset = fields.value(QStringLiteral("inset")).toDouble();
+    }
+    // A box is one unit: all four edges travel or none does.
+    if (has("x") || has("y") || has("width") || has("height")) {
+        openshow::domain::BoxRect box;
+        box.x = fields.value(QStringLiteral("x")).toDouble();
+        box.y = fields.value(QStringLiteral("y")).toDouble();
+        box.width = fields.value(QStringLiteral("width")).toDouble();
+        box.height = fields.value(QStringLiteral("height")).toDouble();
+        profile.box = box;
+    }
+    if (has("stroke")) {
+        const QVariantMap map = fields.value(QStringLiteral("stroke")).toMap();
+        openshow::domain::TextStroke stroke;
+        stroke.enabled = map.value(QStringLiteral("enabled")).toBool();
+        stroke.color = map.value(QStringLiteral("color")).toString().toStdString();
+        stroke.width = map.value(QStringLiteral("width")).toDouble();
+        profile.stroke = stroke;
+    }
+    if (has("shadow")) {
+        const QVariantMap map = fields.value(QStringLiteral("shadow")).toMap();
+        openshow::domain::TextShadow shadow;
+        shadow.enabled = map.value(QStringLiteral("enabled")).toBool();
+        shadow.color = map.value(QStringLiteral("color")).toString().toStdString();
+        shadow.opacity = map.value(QStringLiteral("opacity")).toDouble();
+        shadow.offsetX = map.value(QStringLiteral("offsetX")).toDouble();
+        shadow.offsetY = map.value(QStringLiteral("offsetY")).toDouble();
+        shadow.blurSigma = map.value(QStringLiteral("blurSigma")).toDouble();
+        profile.shadow = shadow;
+    }
+    *out = std::move(profile);
+    (void)error;
+    return true;
+}
+
+}  // namespace
+
+QVariantMap DocumentController::themeOutputProfile(const QString& themeId,
+                                                   const QString& role,
+                                                   const QString& content) const {
+    QVariantMap out;
+    out.insert(QStringLiteral("set"), false);
+    out.insert(QStringLiteral("role"), role);
+    out.insert(QStringLiteral("content"), content);
+    openshow::domain::OutputRole roleValue = openshow::domain::OutputRole::Audience;
+    if (!outputRoleFromQml(role, &roleValue) ||
+        !openshow::domain::isProfileRole(roleValue)) {
+        return out;
+    }
+    const openshow::domain::OutputProfile* profile = fDocuments.outputProfileFor(
+        themeId.toStdString(), roleValue, content.toStdString());
+    if (profile == nullptr) {
+        return out;
+    }
+    return outputProfileToMap(*profile);
+}
+
+bool DocumentController::applyThemeOutputProfile(const QString& themeId, const QString& role,
+                                                 const QString& content,
+                                                 const QVariantMap& fields) {
+    flushText();
+    openshow::domain::OutputRole roleValue = openshow::domain::OutputRole::Audience;
+    if (!outputRoleFromQml(role, &roleValue) ||
+        !openshow::domain::isProfileRole(roleValue)) {
+        setStatus(QStringLiteral("output profile: '%1' is not a destination this build "
+                                 "styles").arg(role));
+        return false;
+    }
+    std::string error;
+    openshow::domain::OutputProfile profile;
+    outputProfileFromMap(fields, roleValue, content.toStdString(), &profile, &error);
+    if (!edit([&] {
+            return fDocuments.setThemeOutputProfile(themeId.toStdString(), profile, &error);
+        })) {
+        setStatus(QStringLiteral("output profile: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::removeThemeOutputProfile(const QString& themeId,
+                                                  const QString& role,
+                                                  const QString& content) {
+    flushText();
+    openshow::domain::OutputRole roleValue = openshow::domain::OutputRole::Audience;
+    if (!outputRoleFromQml(role, &roleValue)) {
+        setStatus(QStringLiteral("output profile: '%1' is not a destination this build "
+                                 "styles").arg(role));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.removeThemeOutputProfile(themeId.toStdString(), roleValue,
+                                                       content.toStdString(), &error);
+        })) {
+        setStatus(QStringLiteral("output profile: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
 bool DocumentController::createThemeFromCurrent(const QString& name) {
     flushText();
     const openshow::domain::Id slideId = currentSlideId();
@@ -2064,7 +2298,7 @@ namespace {
 // dies with the call: no history, no dirty flag, nothing presented.
 bool compileThemeSample(const openshow::domain::Documents& documents,
                         const openshow::domain::Id& themeId, const std::string& view,
-                        openshow::scene::Scene* scene,
+                        openshow::domain::OutputRole role, openshow::scene::Scene* scene,
                         openshow::domain::ResolvedAppearance* look = nullptr) {
     const openshow::domain::Theme* source = documents.findTheme(themeId);
     if (source == nullptr) {
@@ -2095,31 +2329,44 @@ bool compileThemeSample(const openshow::domain::Documents& documents,
         return false;
     }
     if (look != nullptr) {
-        *look = fixture.appearanceForSlide(show, slide);
+        *look = fixture.appearanceForSlideOn(show, slide, role);
     }
-    return openshow::scene::compileSlide(fixture, show, slide, scene);
+    // Milestone FO (task FO.1d): the sample can be compiled for a
+    // destination. The role never changes what is recorded, only which
+    // chain the picture walks, so browsing a stage or NDI tile never opens
+    // a display or starts a sender.
+    return openshow::scene::compileSlideOn(fixture, show, slide, role, scene);
 }
+
+// The QML spelling of an output role lives with the profile map helpers;
+// every sample and edit verb above already quotes that one function.
 
 }  // namespace
 
 QString DocumentController::themeSampleSceneJson(const QString& themeId,
-                                                 const QString& contextName) const {
+                                                 const QString& contextName,
+                                                 const QString& role) const {
+    openshow::domain::OutputRole outputRole = openshow::domain::OutputRole::Audience;
     openshow::scene::Scene scene;
-    if (!compileThemeSample(fDocuments, themeId.toStdString(), contextName.toStdString(),
-                            &scene)) {
+    if (!outputRoleFromQml(role, &outputRole) ||
+        !compileThemeSample(fDocuments, themeId.toStdString(), contextName.toStdString(),
+                            outputRole, &scene)) {
         return QString();
     }
     return QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
 }
 
 QVariantMap DocumentController::themeSampleAppearance(const QString& themeId,
-                                                      const QString& contextName) const {
+                                                      const QString& contextName,
+                                                      const QString& role) const {
     QVariantMap out;
     out.insert(QStringLiteral("ok"), false);
+    openshow::domain::OutputRole outputRole = openshow::domain::OutputRole::Audience;
     openshow::scene::Scene scene;
     openshow::domain::ResolvedAppearance look;
-    if (!compileThemeSample(fDocuments, themeId.toStdString(), contextName.toStdString(),
-                            &scene, &look)) {
+    if (!outputRoleFromQml(role, &outputRole) ||
+        !compileThemeSample(fDocuments, themeId.toStdString(), contextName.toStdString(),
+                            outputRole, &scene, &look)) {
         return out;
     }
     // The primary lyric box is the FIRST TEXT item, exactly as the compile
@@ -2139,6 +2386,10 @@ QVariantMap DocumentController::themeSampleAppearance(const QString& themeId,
         out.insert(QStringLiteral("align"), QString::fromStdString(item.align));
         out.insert(QStringLiteral("fontFamily"), QString::fromStdString(item.fontFamily));
         out.insert(QStringLiteral("context"), QString::fromStdString(look.contextName));
+        // Milestone FO: which destination this sample was compiled for, so
+        // the editor's tile can label its overlay without re-deriving it.
+        out.insert(QStringLiteral("role"),
+                   QString::fromUtf8(openshow::domain::outputRoleName(outputRole)));
         out.insert(QStringLiteral("textColor"), QString::fromStdString(look.textColor));
         out.insert(QStringLiteral("backgroundColor"), QString::fromStdString(look.backgroundColor));
         out.insert(QStringLiteral("backgroundGradient"),

@@ -427,6 +427,28 @@ public:
     Q_INVOKABLE bool applyThemeContext(const QString& themeId, const QString& name,
                                        const QVariantMap& fields);
     Q_INVOKABLE bool removeThemeContext(const QString& themeId, const QString& name);
+
+    // --- output profiles (milestone FO, task FO.1d) ---
+    //
+    // A theme's stage/broadcast look. `themeOutputProfile` answers
+    // {set, role, content, textColor, fontFamily, fontSize, lineSpacing,
+    // align, x, y, width, height, inset, verticalAlign, allCaps, fontWeight,
+    // fontStyle, fontUnderline, fitMode, minFontSize, stroke, shadow} with a
+    // ...Set flag per field, exactly the context row's shape, plus `role`
+    // ("stage"|"broadcast") and `content` ("" for Songs, "scripture" for
+    // Bible). Absent `set` means the theme carries no profile for that pair
+    // and the destination inherits its role default. `applyThemeOutputProfile`
+    // replaces the whole record with a map whose present keys are answers and
+    // whose absent keys are silence; one history entry, validated by the
+    // domain's own sentence. `removeThemeOutputProfile` refuses an absent pair.
+    // Neither verb opens a display or starts a sender.
+    Q_INVOKABLE QVariantMap themeOutputProfile(const QString& themeId, const QString& role,
+                                               const QString& content = QString()) const;
+    Q_INVOKABLE bool applyThemeOutputProfile(const QString& themeId, const QString& role,
+                                             const QString& content,
+                                             const QVariantMap& fields);
+    Q_INVOKABLE bool removeThemeOutputProfile(const QString& themeId, const QString& role,
+                                              const QString& content);
     // Creates a theme wearing whatever the current slide draws now
     // (resolved theme or built-in defaults) and overrides only that slide.
     Q_INVOKABLE bool createThemeFromCurrent(const QString& name);
@@ -466,7 +488,8 @@ public:
     // sit in the chain as the audience would walk them, and whatever the
     // service happens to wear cannot bleed into another theme's sample.
     Q_INVOKABLE QString themeSampleSceneJson(const QString& themeId,
-                                             const QString& contextName = QString()) const;
+                                             const QString& contextName = QString(),
+                                             const QString& role = QStringLiteral("audience")) const;
     // What the sample's PRIMARY text box actually resolves to — the same
     // fixture and the same resolver, answered as a row instead of pixels:
     // {ok, boxX, boxY, boxWidth, boxHeight, fontSize (0 = the renderer's
@@ -476,7 +499,8 @@ public:
     // and the picture underneath it can never disagree about which view
     // is being edited. Unknown id or an uncompilable fixture: {ok: false}.
     Q_INVOKABLE QVariantMap themeSampleAppearance(const QString& themeId,
-                                                  const QString& contextName = QString()) const;
+                                                  const QString& contextName = QString(),
+                                                  const QString& role = QStringLiteral("audience")) const;
 
     // The Bible importer's off-air look (task BI.5). A scripture slide
     // belongs to a young show that wears nothing of its own, so what it
