@@ -32,7 +32,10 @@ matrix remain open.
   `ShowPage` compiles the current + immediate next cue on the Stage role; the
   bundle is presented only after that cue is the acknowledged LIVE cue.
   Clear All clears current/next on the stage; Restore re-files the retained
-  bundle.
+  bundle. A document/order edit while that cue is live re-files the bundle
+  with the retained CURRENT scene passed through unchanged and only the next
+  region recompiled; deleting the live entry keeps its current words and
+  empties next.
 
 ## Physical environment
 
