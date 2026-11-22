@@ -4861,6 +4861,50 @@ QString DocumentController::stageBundleJson(const QString& showId, const QString
     return QString::fromStdString(boost::json::serialize(bundle));
 }
 
+QString DocumentController::stageLookaheadBundleJson(const QString& retainedBundleJson,
+                                                     const QString& nextShowId,
+                                                     const QString& nextSlideId) const {
+    if (retainedBundleJson.isEmpty()) {
+        return QString();
+    }
+    boost::json::value parsed;
+    try {
+        parsed = boost::json::parse(retainedBundleJson.toStdString());
+    } catch (const std::exception&) {
+        return QString();
+    }
+    if (!parsed.is_object()) {
+        return QString();
+    }
+    boost::json::object bundle = parsed.as_object();
+    const auto currentEntry = bundle.find("current");
+    if (currentEntry == bundle.end() || !currentEntry->value().is_object()) {
+        return QString();
+    }
+    // The current scene stays byte-for-byte the retained one: a live cue's
+    // captured appearance is not recompiled by an edit.
+    bundle.erase("next");
+    bundle["overlap"] = false;
+    if (!nextShowId.isEmpty() && !nextSlideId.isEmpty()) {
+        openshow::scene::Scene nextCue;
+        std::string error;
+        if (openshow::scene::compileSlideOn(fDocuments, nextShowId.toStdString(),
+                                            nextSlideId.toStdString(),
+                                            openshow::domain::OutputRole::Stage, &nextCue,
+                                            &error)) {
+            const openshow::scene::Scene overlay = openshow::scene::stageNextOverlay(nextCue);
+            if (!overlay.items.empty()) {
+                bundle["next"] = openshow::scene::toJson(overlay);
+            }
+        }
+        openshow::scene::Scene current;
+        if (openshow::scene::fromJson(currentEntry->value(), &current, &error)) {
+            bundle["overlap"] = openshow::scene::stageNextSlotOverlaps(current);
+        }
+    }
+    return QString::fromStdString(boost::json::serialize(bundle));
+}
+
 bool DocumentController::stampAsset(const std::string& assetId, const std::string& sourcePath,
                                     std::vector<openshow::domain::ThumbnailAssetStamp>* stamps) {
     const QString key = QString::fromStdString(sourcePath);

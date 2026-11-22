@@ -4609,6 +4609,49 @@ void exerciseStageBundle(const std::filesystem::path& root) {
     }
     check(docs.stageBundleJson(QString(), currentId, showId, nextId).isEmpty(),
           "a go without a show id has no stage bundle");
+
+    // Live lookahead (FO.5b.1): an edit changes NEXT alone; the retained
+    // current scene passes through byte-for-byte. Deleting the successor
+    // empties the next region while the current words stay frozen.
+    const std::string originalCurrent =
+        boost::json::serialize(bundle.at("current"));
+    docs.selectSlide(1);
+    docs.setSlideText(QStringLiteral("Edited next words"));
+    docs.flushText();
+    const QString lookahead =
+        docs.stageLookaheadBundleJson(bundleText, showId, nextId);
+    check(!lookahead.isEmpty(), "the lookahead bundle recompiles");
+    try {
+        const boost::json::object updated =
+            boost::json::parse(lookahead.toStdString()).as_object();
+        check(boost::json::serialize(updated.at("current")) == originalCurrent,
+              "a live edit does not recompile the current stage scene");
+        openshow::scene::Scene updatedNext;
+        std::string error;
+        if (updated.contains("next")) {
+            check(openshow::scene::fromJson(updated.at("next"), &updatedNext, &error),
+                  "the updated next overlay is valid");
+            check(!updatedNext.items.empty() &&
+                      updatedNext.items.front().lines.front() == "Edited next words",
+                  "the lookahead carries the edited next cue");
+        } else {
+            check(false, "the lookahead still has a next cue");
+        }
+    } catch (const std::exception&) {
+        check(false, "the lookahead bundle is valid JSON");
+    }
+    const QString noSuccessor =
+        docs.stageLookaheadBundleJson(bundleText, QString(), QString());
+    try {
+        const boost::json::object emptied =
+            boost::json::parse(noSuccessor.toStdString()).as_object();
+        check(!emptied.contains("next") && !emptied.at("overlap").as_bool(),
+              "a deleted/last successor empties next and clears overlap");
+        check(boost::json::serialize(emptied.at("current")) == originalCurrent,
+              "the deleted successor keeps the frozen current scene");
+    } catch (const std::exception&) {
+        check(false, "the no-successor lookahead bundle is valid JSON");
+    }
 }
 
 void exerciseThemeSampleViews(const std::filesystem::path& root) {

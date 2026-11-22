@@ -796,6 +796,16 @@ public:
     Q_INVOKABLE QString stageBundleJson(const QString& showId, const QString& slideId,
                                         const QString& nextShowId,
                                         const QString& nextSlideId) const;
+    // The look-ahead half after a document edit while a cue is live. The
+    // CURRENT scene is taken verbatim from `retainedBundleJson` (a theme or
+    // text edit must not change what the stage already has); only the next
+    // region is recompiled from the new sequence position, or emptied when
+    // the live entry was deleted / has no successor. Delayed callers cannot
+    // resurrect an older lookahead because the worker files this under a new
+    // generation and the controller ignores a superseded prepare ack.
+    Q_INVOKABLE QString stageLookaheadBundleJson(const QString& retainedBundleJson,
+                                                 const QString& nextShowId,
+                                                 const QString& nextSlideId) const;
     // TC.5 diagnostics: what the derived picture overlay currently holds and
     // how often it has written the manifest. Never authoring state.
     Q_INVOKABLE int thumbnailCacheEntries() const;

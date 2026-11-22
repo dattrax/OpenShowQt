@@ -266,6 +266,7 @@ public:
     Q_PROPERTY(bool stageNext READ stageNext NOTIFY stageChanged)
     Q_PROPERTY(bool stageOverlap READ stageOverlap NOTIFY stageChanged)
     Q_PROPERTY(qint64 displaysGeneration READ displaysGeneration NOTIFY displaysChanged)
+    Q_PROPERTY(QString stageRetainedBundleJson READ stageRetainedBundleJson NOTIFY stageChanged)
     bool stageCapable() const { return fStageCapable; }
     bool stageEnabled() const { return fStageEnabled; }
     bool stageActive() const { return fStageActive; }
@@ -278,6 +279,7 @@ public:
     bool stageNext() const { return fStageNext; }
     bool stageOverlap() const { return fStageOverlap; }
     qint64 displaysGeneration() const { return fDisplayGeneration; }
+    QString stageRetainedBundleJson() const { return fStageRetainedBundleJson; }
 
     // Apply the dialog's Stage column and route. `monitorIndex` is a GLFW
     // index from displays(); the controller sends its identity and the
@@ -298,6 +300,12 @@ public:
     Q_INVOKABLE void clearStageOutput();
     // Re-file and present the retained bundle after a restore.
     Q_INVOKABLE void restoreStageOutput();
+    // A document edit while a cue is live: `bundleJson` keeps the retained
+    // current scene and carries the newly resolved next cue (or none). The
+    // stage's next region changes alone; the audience and the current scene
+    // are untouched. Ignored unless the retained Go is the acknowledged live
+    // cue, so a delayed edit from another sequence cannot replace it.
+    Q_INVOKABLE void refreshStageLookahead(const QString& bundleJson);
 
     // Scenes (task 2.4c): prepare a scene object (the JSON the frontend's
     // compiler emitted), present a prepared revision, or compile one of

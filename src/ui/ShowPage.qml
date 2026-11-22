@@ -240,6 +240,22 @@ Rectangle {
         worker.requestThumbnailWindow(showPage.slideWindow(), px.w, px.h)
     }
     Timer { id: thumbnailAsk; interval: 80; onTriggered: showPage.requestSlideBand() }
+    Timer { id: stageLookaheadAsk; interval: 120; onTriggered: showPage.refreshStageLookahead() }
+    // Stage delivery: a sequence edit while a cue is live refreshes ONLY the
+    // next region. The retained current scene is passed through untouched.
+    // A deleted live entry leaves no row, so next becomes empty while the
+    // current words stay frozen on the stage.
+    function refreshStageLookahead() {
+        if (!worker.stageCapable || worker.stageRetainedBundleJson === "") return
+        if (worker.liveCueKey === "") return
+        const at = showPage.cueRows.findIndex(row => row.cueKey === worker.liveCueKey)
+        const next = at >= 0 && at + 1 < showPage.cueRows.length
+                   ? showPage.cueRows[at + 1] : null
+        const bundle = docs.stageLookaheadBundleJson(
+                    worker.stageRetainedBundleJson,
+                    next ? next.showId : "", next ? next.slideId : "")
+        if (bundle !== "") worker.refreshStageLookahead(bundle)
+    }
     onThumbCellWidthChanged: thumbnailAsk.restart()
     Connections {
         target: docs
@@ -249,6 +265,7 @@ Rectangle {
     onCueRowsChanged: {
         if (showPage.cueIndex >= showPage.cueRows.length) showPage.cueIndex = -1
         thumbnailAsk.restart()
+        stageLookaheadAsk.restart()
     }
     // Scroll-to-cue follows the cue's MAPPED cell, not a raw model index
     // (CS.7): with group padding the two are different numbers.

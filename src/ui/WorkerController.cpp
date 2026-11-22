@@ -2353,6 +2353,25 @@ void WorkerController::restoreStageOutput() {
     refileStageBundle(true);
 }
 
+void WorkerController::refreshStageLookahead(const QString& bundleJson) {
+    if (!fStageCapable || bundleJson.isEmpty() ||
+        bundleJson == fStageRetainedBundleJson) {
+        return;
+    }
+    // Only the Go whose cue the audience actually has may update the stage's
+    // next region. A delayed edit from a superseded sequence names a different
+    // live cue and is ignored here.
+    if (fStagePendingCueKey.isEmpty() || fPresent->liveCueKey() != fStagePendingCueKey) {
+        return;
+    }
+    fStageRetainedBundleJson = bundleJson;
+    emit stageChanged();
+    if (!fStageEnabled) {
+        return;  // enabling re-files the now-current retained bundle
+    }
+    refileStageBundle(false);
+}
+
 void WorkerController::refileStageBundle(bool waitForAudience) {
     if (!fConnected || !fHandshakeDone || !fStageCapable ||
         fStageRetainedBundleJson.isEmpty()) {
