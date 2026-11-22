@@ -315,6 +315,17 @@ SidePanel {
                     Accessible.name: "Configure output layers"
                     onClicked: outputLayersDialog.open()
                 }
+                Text {
+                    objectName: "outputRoutingNotice"
+                    width: parent.width
+                    visible: worker.connected && worker.outputRoutingStatus !== ""
+                             && worker.outputRoutingStatus !== "accepted"
+                             && worker.outputRoutingStatus !== "pending"
+                    wrapMode: Text.WordWrap
+                    color: "#d9a441"
+                    font.pixelSize: 11
+                    text: "Routing: " + worker.outputRoutingStatus
+                }
 
                 // ---------------- transport ----------------
                 // The on-air slide's video, played, seeked and looped as the
