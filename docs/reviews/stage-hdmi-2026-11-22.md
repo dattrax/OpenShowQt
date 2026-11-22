@@ -71,6 +71,9 @@ that no fallback window was created on it.
   collision refused in the other direction after the audience moves.
 - `document_controller_tests` stage-bundle fixture: current cue on the Stage
   role, next row's cue in the next slot at 55%, last cue has no next region.
+- `output_layers_ui_tests`: capability-gated Stage activation, next-cell
+  legality, Notes refusal, saved identity reselection and Apply sending the
+  enable + route + layer mask.
 - Existing audience/preview/media display journeys (production output, live
   fade, output status, RPC lifecycle/limits/transport) re-run green.
 - Headless preset and source guards: see the run recorded in `PROGRESS.md` at
