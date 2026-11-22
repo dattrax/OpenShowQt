@@ -14,6 +14,7 @@
 #include <filesystem>
 
 #include <QCoreApplication>
+#include <QSettings>
 
 #include "WorkspacePanels.h"
 #include "AppSettings.h"
@@ -150,6 +151,85 @@ void exerciseAppSettings(const std::filesystem::path& settingsPath) {
           "an under-low size step lands on the smallest instead");
 }
 
+// Milestone FO: the machine's layer matrix and routes are workspace state.
+// Applying validates the whole answer, keeps the desired masks, never
+// restores a destination as enabled, and an invalid/hand-edited block falls
+// back to the role defaults instead of refusing to start.
+void exerciseOutputRouting(const std::filesystem::path& root) {
+    std::filesystem::create_directories(root);
+    const std::filesystem::path settings = root / "routing.ini";
+    std::filesystem::remove(settings);
+    {
+        AppSettings fresh(nullptr, settings);
+        check(fresh.outputRouting().isEnabled(openshow::domain::OutputTarget::Audience) ==
+                      false &&
+                  fresh.outputRouting().mask(openshow::domain::OutputTarget::Broadcast) ==
+                      openshow::domain::routingLayerBit(
+                          openshow::domain::RoutingLayer::Words),
+              "a fresh machine starts disabled with the FO.0 default masks");
+        check(fresh.audienceMonitor() == -1 && fresh.stageMonitor() == -1 &&
+                  fresh.broadcastSource() == QStringLiteral("OpenShow"),
+              "a fresh machine has no chosen display and the default NDI source name");
+        check(fresh.applyOutputRouting(QStringLiteral(
+                  R"({"audience":{"enabled":true,"layers":["background","images","words"]},
+                      "stage":{"enabled":true,"layers":["words","next"]}})")) &&
+                  fresh.outputRoutingError().isEmpty(),
+              "a whole valid matrix applies");
+        check(!fresh.outputRouting().isEnabled(openshow::domain::OutputTarget::Stage) &&
+                  fresh.outputRouting().mask(openshow::domain::OutputTarget::Stage) ==
+                      (openshow::domain::routingLayerBit(
+                           openshow::domain::RoutingLayer::Words) |
+                       openshow::domain::routingLayerBit(
+                           openshow::domain::RoutingLayer::Next)),
+              "Apply keeps the desired masks and starts the column disabled");
+        check(!fresh.applyOutputRouting(QStringLiteral(
+                  R"({"broadcast":{"layers":["next"]}})")),
+              "an illegal stage-only cell on the broadcast is refused");
+        check(!fresh.outputRoutingError().isEmpty() &&
+                  fresh.outputRouting().mask(openshow::domain::OutputTarget::Stage) ==
+                      (openshow::domain::routingLayerBit(
+                           openshow::domain::RoutingLayer::Words) |
+                       openshow::domain::routingLayerBit(
+                           openshow::domain::RoutingLayer::Next)),
+              "a refusal reports why and retains the last accepted matrix");
+        fresh.setStageMonitor(2);
+        fresh.setAudienceMonitor(0);
+        fresh.setBroadcastSource(QStringLiteral("  FOH lower third  "));
+    }
+    {
+        AppSettings reopened(nullptr, settings);
+        check(reopened.outputRouting().mask(openshow::domain::OutputTarget::Stage) ==
+                      (openshow::domain::routingLayerBit(
+                           openshow::domain::RoutingLayer::Words) |
+                       openshow::domain::routingLayerBit(
+                           openshow::domain::RoutingLayer::Next)) &&
+                  !reopened.outputRouting().isEnabled(
+                      openshow::domain::OutputTarget::Stage),
+              "the desired matrix is remembered and the column starts disabled");
+        check(reopened.stageMonitor() == 2 && reopened.audienceMonitor() == 0 &&
+                  reopened.broadcastSource() == QStringLiteral("FOH lower third"),
+              "routes and the NDI source name are remembered, trimmed");
+        reopened.setBroadcastSource(QStringLiteral("   "));
+        check(reopened.broadcastSource() == QStringLiteral("OpenShow"),
+              "a blank NDI source name falls back rather than starting an unnamed stream");
+    }
+    {
+        // A hand-edited ini naming an illegal cell is not a hard failure:
+        // the matrix falls back to the role defaults, outputs stay off.
+        QSettings raw(QString::fromStdString(settings.string()), QSettings::IniFormat);
+        raw.setValue(QStringLiteral("outputRouting"),
+                     QStringLiteral(R"({"audience":{"layers":["notes"]}})"));
+        raw.sync();
+        AppSettings edited(nullptr, settings);
+        check(edited.outputRouting().mask(openshow::domain::OutputTarget::Audience) ==
+                      openshow::domain::defaultRoutingMask(
+                          openshow::domain::OutputTarget::Audience) &&
+                  edited.outputRoutingJson().toStdString().find("notes") ==
+                      std::string::npos,
+              "an invalid saved matrix falls back to the defaults without a stray cell");
+    }
+}
+
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     const std::filesystem::path settings =
@@ -160,6 +240,11 @@ int main(int argc, char* argv[]) {
     exerciseSession(settings);
     exerciseDrawer(settings);
     exerciseAppSettings(settings);
+    const std::filesystem::path routingRoot =
+        std::filesystem::temp_directory_path() /
+        ("openshow-routing-" + std::to_string(QCoreApplication::applicationPid()));
+    exerciseOutputRouting(routingRoot);
+    std::filesystem::remove_all(routingRoot);
     std::filesystem::remove(settings);
     if (gFailed) {
         return 1;

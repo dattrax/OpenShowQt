@@ -4,6 +4,9 @@
 
 #include <QObject>
 #include <QSettings>
+#include <QString>
+
+#include "openshow/domain/outputrouting.h"
 
 namespace openshow::ui {
 
@@ -22,6 +25,17 @@ class AppSettings : public QObject {
     Q_PROPERTY(bool fullscreen READ fullscreen WRITE setFullscreen NOTIFY settingsChanged)
     Q_PROPERTY(int showThumbLevel READ showThumbLevel WRITE
                    setShowThumbLevel NOTIFY settingsChanged)
+    // Milestone FO: the machine's output routes and layer matrix. These are
+    // workspace settings, never portable service/theme state. `enabled` is
+    // deliberately not persisted: a restart always begins with every
+    // destination off, and an operator re-enables explicitly.
+    Q_PROPERTY(QString outputRoutingJson READ outputRoutingJson NOTIFY settingsChanged)
+    Q_PROPERTY(QString outputRoutingError READ outputRoutingError NOTIFY settingsChanged)
+    Q_PROPERTY(int audienceMonitor READ audienceMonitor WRITE setAudienceMonitor NOTIFY
+                   settingsChanged)
+    Q_PROPERTY(int stageMonitor READ stageMonitor WRITE setStageMonitor NOTIFY settingsChanged)
+    Q_PROPERTY(QString broadcastSource READ broadcastSource WRITE setBroadcastSource NOTIFY
+                   settingsChanged)
 
 public:
     // The Show page owns the step table (docs/reference.md §4: the reference
@@ -42,14 +56,39 @@ public:
     int showThumbLevel() const { return fThumbLevel; }
     void setShowThumbLevel(int level);
 
+    // The desired masks as the settings/RPC JSON. Read is cheap and always
+    // returns this machine's answer; `applyOutputRouting` validates the
+    // WHOLE configuration before writing anything and answers false with
+    // `outputRoutingError` naming the refusal. A successful apply stores the
+    // masks with every destination disabled and emits settingsChanged.
+    QString outputRoutingJson() const;
+    QString outputRoutingError() const { return fOutputError; }
+    Q_INVOKABLE bool applyOutputRouting(const QString& json);
+    openshow::domain::OutputRouting outputRouting() const { return fRouting; }
+
+    // Display/source routes are machine-local too. -1 means "not chosen".
+    int audienceMonitor() const { return fAudienceMonitor; }
+    void setAudienceMonitor(int index);
+    int stageMonitor() const { return fStageMonitor; }
+    void setStageMonitor(int index);
+    QString broadcastSource() const { return fBroadcastSource; }
+    void setBroadcastSource(const QString& name);
+
 signals:
     void settingsChanged();
 
 private:
+    void writeRouting();
+
     QSettings fSettings;
     bool fNumberKeys = false;
     bool fFullscreen = false;
     int fThumbLevel = kDefaultThumbLevel;
+    openshow::domain::OutputRouting fRouting;
+    QString fOutputError;
+    int fAudienceMonitor = -1;
+    int fStageMonitor = -1;
+    QString fBroadcastSource = QStringLiteral("OpenShow");
 };
 
 }  // namespace openshow::ui

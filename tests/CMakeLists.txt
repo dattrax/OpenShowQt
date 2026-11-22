@@ -4,6 +4,12 @@ add_executable(domain_tests
 target_link_libraries(domain_tests PRIVATE openshow::domain)
 add_test(NAME domain_tests COMMAND domain_tests)
 
+# Milestone FO: the layer routing matrix — FO.0's default table, the cells
+# that do not exist (notes on the projector), and the settings/RPC codec.
+add_executable(output_routing_tests output_routing_tests.cpp)
+target_link_libraries(output_routing_tests PRIVATE openshow::domain)
+add_test(NAME output_routing_tests COMMAND output_routing_tests)
+
 # Task SL.1/SL.2: the shared catalog's model, revisions, history watermark
 # and its durable independent package. Qt-free, so both presets run it.
 add_executable(catalog_tests catalog_tests.cpp)
