@@ -1864,6 +1864,112 @@ void exerciseAssetReferences(const Fixture& fx) {
     }
 }
 
+// Milestone FO (task FO.1c): one cue compiles for each destination. The
+// audience is exactly the old compile; stage and broadcast place the primary
+// lyric box in their own rectangle, honour an authored profile, never move a
+// picture or a second text box, and their result is an ordinary scene on the
+// unchanged scene wire.
+void exerciseOutputRoleCompile() {
+    using openshow::domain::OutputProfile;
+    using openshow::domain::OutputRole;
+    std::string error;
+    Documents docs;
+    const Id house = docs.createTheme("House", "#ffffff", "#000000", "", "DejaVu Sans", 64.0,
+                                      "center", kDefaultLineSpacing, &error);
+    const Id show = docs.createShow("Roles", &error);
+    check(docs.setShowDefaultTheme(show, house, &error), "the role compile wears a theme");
+    const Id slide = docs.appendSlide(show, &error);
+    const Id asset = docs.addAsset("plate.jpg", "/services/svc/assets/plate.jpg", &error);
+    openshow::domain::SlideItem title;
+    title.lines = {"Title"};
+    title.x = 100.0;
+    title.y = 40.0;
+    title.width = 800.0;
+    title.height = 120.0;
+    openshow::domain::SlideItem picture;
+    picture.kind = openshow::domain::ItemKind::Image;
+    picture.assetId = asset;
+    picture.x = 1000.0;
+    picture.y = 80.0;
+    picture.width = 800.0;
+    picture.height = 450.0;
+    const Id secondary = docs.addItem(show, slide, picture, &error);
+    check(!secondary.empty(), "the role fixture carries a picture item");
+
+    scene::Scene audienceScene;
+    scene::Scene stageScene;
+    scene::Scene broadcastScene;
+    check(scene::compileSlide(docs, show, slide, &audienceScene, &error),
+          "the audience scene compiles");
+    check(scene::compileSlideOn(docs, show, slide, OutputRole::Audience, &audienceScene, &error),
+          "the explicit audience role compiles");
+    check(audienceScene.items[0].x == 160.0 && audienceScene.items[0].width == 1600.0,
+          "the audience role still draws the authored lyric box");
+    check(scene::compileSlideOn(docs, show, slide, OutputRole::Stage, &stageScene, &error),
+          "the stage scene compiles");
+    check(stageScene.items[0].x == openshow::domain::kStageDefaultBox.x &&
+              stageScene.items[0].y == openshow::domain::kStageDefaultBox.y &&
+              stageScene.items[0].width == openshow::domain::kStageDefaultBox.width &&
+              stageScene.items[0].height == openshow::domain::kStageDefaultBox.height,
+          "the stage scene places the primary lyric box in the stage box");
+    check(stageScene.items[1].isImage && stageScene.items[1].x == 1000.0,
+          "the stage role never moves an authored picture");
+    check(scene::compileSlideOn(docs, show, slide, OutputRole::Broadcast, &broadcastScene,
+                                &error) &&
+              broadcastScene.items[0].y == openshow::domain::kBroadcastDefaultBox.y &&
+              broadcastScene.items[0].height == openshow::domain::kBroadcastDefaultBox.height,
+          "broadcast compiles into the lower-third box");
+    check(audienceScene.items[0].y == 100.0,
+          "compiling for stage/broadcast moved no audience scene");
+
+    OutputProfile stageProfile;
+    stageProfile.role = OutputRole::Stage;
+    stageProfile.content = std::string("");
+    stageProfile.fontSize = 144.0;
+    stageProfile.align = std::string("left");
+    stageProfile.box = openshow::domain::BoxRect{40.0, 30.0, 1840.0, 460.0};
+    stageProfile.fitMode = std::string("fixed");
+    stageProfile.minFontSize = 18.0;
+    check(docs.setThemeOutputProfile(house, stageProfile, &error),
+          "the stage profile is authored on the worn theme");
+    check(scene::compileSlideOn(docs, show, slide, OutputRole::Stage, &stageScene, &error) &&
+              stageScene.items[0].x == 40.0 && stageScene.items[0].width == 1840.0 &&
+              stageScene.items[0].fontSize == 144.0 && stageScene.items[0].align == "left" &&
+              stageScene.items[0].fitMode == "fixed" &&
+              stageScene.items[0].minFontSize == 18.0,
+          "the authored profile is baked into the stage scene");
+    check(scene::compileSlideOn(docs, show, slide, OutputRole::Broadcast, &broadcastScene,
+                                &error) &&
+              broadcastScene.items[0].fontSize == 64.0 &&
+              broadcastScene.items[0].x == openshow::domain::kBroadcastDefaultBox.x,
+          "a stage profile changes no broadcast pixel");
+
+    // The role scene is ordinary scene-wire traffic: it round-trips and
+    // needs no new scene format or capability.
+    boost::json::value wire = scene::toJson(stageScene);
+    scene::Scene parsed;
+    check(scene::fromJson(wire, &parsed, &error) && parsed == stageScene,
+          "a role-compiled scene round-trips on the unchanged wire");
+
+    // A scripture slide can be styled apart from a song on the same stage.
+    OutputProfile scripture;
+    scripture.role = OutputRole::Stage;
+    scripture.content = std::string("scripture");
+    scripture.fontSize = 48.0;
+    check(docs.setThemeOutputProfile(house, scripture, &error) &&
+              docs.setSlideTextContext(show, slide, "scripture", &error),
+          "the slide names the scripture context");
+    check(scene::compileSlideOn(docs, show, slide, OutputRole::Stage, &stageScene, &error) &&
+              stageScene.items[0].fontSize == 48.0,
+          "the scripture stage profile answers for a passage");
+
+    // Unknown ids refuse exactly as the audience compile does.
+    scene::Scene refused;
+    check(!scene::compileSlideOn(docs, show, "slide999", OutputRole::Stage, &refused, &error) &&
+              error.find("slide999") != std::string::npos,
+          "an unknown slide is refused naming it on every role");
+}
+
 void exerciseMeasuredSizes(const Fixture& fx) {
     std::string error;
     scene::Scene compiled;
@@ -2037,6 +2143,7 @@ int main() {
     exerciseChainCompile();
     exerciseTextLayoutCompile();
     exercisePlacementCompile();
+    exerciseOutputRoleCompile();
     exerciseMeasuredSizes(fx);
     exerciseClearedScene();
     exerciseDemoFixture();

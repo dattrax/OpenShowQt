@@ -576,8 +576,15 @@ bool assetPathIsLocal(const std::string& path, std::string* why) {
     return true;
 }
 
-bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
-                  const domain::Id& slideId, Scene* out, std::string* error) {
+namespace {
+
+// One implementation for every destination: the audience and the role-aware
+// entry points differ ONLY in which appearance chain is walked, so a stage or
+// lower-third scene cannot drift from the audience's compile in any other
+// way (items, assets, audio and every refusal stay identical).
+bool compileSlideResolved(const domain::Documents& documents, const domain::Id& showId,
+                          const domain::Id& slideId, domain::OutputRole role, Scene* out,
+                          std::string* error) {
     if (out == nullptr) {
         fail(error, "compileSlide needs a target");
         return false;
@@ -604,7 +611,8 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
     // theme, then the show's default. A property no layer spoke comes back
     // silent — "" or 0 — and the silence is exactly this compile's built-in:
     // white text on black, platform font, renderer size.
-    const domain::ResolvedAppearance look = documents.appearanceForSlide(showId, slideId);
+    const domain::ResolvedAppearance look =
+        documents.appearanceForSlideOn(showId, slideId, role);
 
     Scene scene;
     scene.showId = showId;
@@ -847,6 +855,20 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 
     *out = std::move(scene);
     return true;
+}
+
+}  // namespace
+
+bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
+                  const domain::Id& slideId, Scene* out, std::string* error) {
+    return compileSlideResolved(documents, showId, slideId, domain::OutputRole::Audience, out,
+                                error);
+}
+
+bool compileSlideOn(const domain::Documents& documents, const domain::Id& showId,
+                    const domain::Id& slideId, domain::OutputRole role, Scene* out,
+                    std::string* error) {
+    return compileSlideResolved(documents, showId, slideId, role, out, error);
 }
 
 // --- wire form ---------------------------------------------------------------

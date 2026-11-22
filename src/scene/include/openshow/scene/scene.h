@@ -258,6 +258,17 @@ Scene clearedScene();
 bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
                   const domain::Id& slideId, Scene* out, std::string* error = nullptr);
 
+// Milestone FO (task FO.1c): the same slide compiled for ONE destination.
+// `Audience` is exactly compileSlide. `Stage` and `Broadcast` walk
+// Documents::appearanceForSlideOn, so the primary text box lands in the
+// role's own rectangle (or the theme's authored profile box) while every
+// other compile decision — items, assets, audio, refusals — is shared. The
+// scene wire does not change: profiles are resolved into concrete values
+// here, so a worker that predates FO draws the result exactly as any scene.
+bool compileSlideOn(const domain::Documents& documents, const domain::Id& showId,
+                    const domain::Id& slideId, domain::OutputRole role, Scene* out,
+                    std::string* error = nullptr);
+
 // --- wire form ---------------------------------------------------------------
 
 // {"scene":8,"showId":...,"slideId":...,"backgroundColor":<int>,
