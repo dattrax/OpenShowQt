@@ -21,6 +21,8 @@ WYSIWYG Edit workspace, slide drag/drop and insertion: **EW.1–EW.10** below
 (planned 2026-11-19; includes the agent implementation runbook).
 Persistent service-card PNGs: **TC** below (investigated 2026-11-20;
 includes storage, invalidation and agent ownership).
+Stage HDMI, NDI lower thirds and the output-layer checkbox matrix: **FO** below
+(researched 2026-11-22; implementation handoff, not an implemented feature).
 
 ## Goal and reference
 
@@ -92,9 +94,12 @@ estimate is historical; re-estimate remaining work before productization.
 - **Bible import:** online, passage-only lookup into today's schedule, with
   measured theme-sized slides and a named scripture context (BI/TF delivered).
   View/editor follow-ups are TV and CS below. No installed Bible or passage cache.
-- **Deferred:** FreeShow import/round-trip, stage/additional outputs,
+- **Next planned output extension:** FO adds a worker-owned stage HDMI display,
+  NDI lower thirds and a layer-by-destination routing dialog. The running code
+  still supports one audience output; editing a future profile must not enable it.
+- **Deferred:** FreeShow import/round-trip,
   Vulkan display-plane output, effects beyond TS below, remote control, streaming,
-  NDI/SDI, cloud services, Windows and macOS.
+  SDI, cloud services, Windows and macOS.
   Future output-profile/NDI/stage work is recorded separately in FO below;
   reserving its design does not enable another output in this release.
 
@@ -2929,25 +2934,249 @@ the frozen overlay API. No proactive rendering of the whole Library/service.
   Resolve any material regression against TC.1's agreed budgets before closing.
   Run `git diff --check`; planning alone supplies none of this runtime evidence.
 
-### Future output profiles — lower thirds to OBS and stage (FO)
+### Output profiles, stage HDMI, NDI lower thirds and layer routing (FO)
 
-**Entry gate: CS.1–CS.9, SL.1–SL.9, SI.1–SI.4, LRF.1–LRF.4, the remaining TV leaves and TA.1 must be DONE, with
-the current one-audience release gates satisfied, before starting FO.1.**
-Section order is not authorization to bypass those dependencies.
+**Research/handoff: 2026-11-22. All implementation work is TODO.** The user
+wants Stage and NDI alongside Songs/Bible in the Theme Editor, a stage screen
+on another HDMI output, and NDI lower thirds in OBS or another receiver.
+They additionally require a dialog consisting of a **layer-by-output checkbox
+matrix**, so each display/stream receives its own chosen layers.
 
-Deferred beyond TV/TS/TR/CS and the current one-audience release. Content view
-(Songs/Bible) and destination (audience/broadcast/stage) are separate dimensions.
-Do not implement NDI as a slide context or advertise an active sender from an
-editor placeholder. Spike first and split any leaf exceeding two days.
+This request promotes FO to the next planned extension and supersedes the
+old blanket deferral behind every TV/TA leaf. It authorizes this research and
+plan, not implementation in this turn. When implementation is requested,
+start with FO.0 and the two spikes below. Reuse completed CS/TS/TR work;
+do not mark unfinished TV/TA or M7 tasks DONE. TV.3/TV.4 are dependencies only
+if their appearance/extra-caption contracts are actually used. M7.1b/c's
+bounded waits and display-loss behavior are required on new physical paths;
+FO.6 remains a separate physical/release gate. Split leaves exceeding two days.
 
-| ID | Status | Work | Acceptance |
+#### Source audit and external findings
+
+| Evidence in the current tree | Consequence for implementation |
+|---|---|
+| `ThemeEditorPage.qml` uses `selectedView = ""` for Songs and `"scripture"` for Bible; `DocumentController::compileThemeSample` compiles one selected text context. `TextContext` is a sparse text/box record, not a destination or full output appearance. | Stage/NDI cannot be implemented correctly by only adding two context names or copying two view buttons. Preserve content type and output role as separate dimensions. |
+| `OutputSession.h` owns one `fWindow`, `fVk`, `fContext`, `fSwapchain`, `fScene` and published frame; `VulkanContext::create` creates/checks one presentation surface. | Introduce a worker graphics host and per-output resources/state, checking presentation support for every physical surface. The frontend continues to own documents, not display windows. |
+| `OutputWindow::close` calls `glfwTerminate`; `Swapchain` uses infinite acquire/fence waits and device-wide idle at destruction. | Closing/recreating stage must not terminate audience GLFW or wait unboundedly on its GPU work. A second call to the existing audience frame loop is not an isolated stage implementation. |
+| `SceneRenderer::draw` clears black unless an explicitly transparent scene is drawn as an alpha preview. `PreviewProducer` uses premultiplied RGBA, synchronous readback, a small shared stream and three target kinds. | Add an explicit output clear/alpha policy and full-size export lane. Do not upscale the 640x360 operator preview, depend on a UI preview release, or run synchronous 1080p export on the audience loop. |
+| `tools/ndi-helper` is an optional, separately built MIT helper with runtime loading, JSON pipes and a receive-side shared-memory ring. Its probe advertises receiving; `live.sources.v1` is an input capability. | Extend/reuse the helper boundary for sending, with a separate sender lifecycle/capability. Keep NDI SDK headers/symbols out of the GPL frontend/worker and avoid disturbing camera reception. |
+| `LayerId` has background/images/words/aux/clock, but the renderer's enabled mask is shared state. Aux is a placeholder and clock includes diagnostics. `DisplayInfo` exposes an index/name/mode, not a persistent connector identity. | Route a captured mask per destination; never change one shared renderer mask repeatedly to draw different outputs. Expose only real production layers, and resolve/validate display identity at runtime. |
+
+Primary-source checks (accessed 2026-11-22):
+
+- NDI BGRA/RGBA buffers use **straight alpha**, unlike the current Skia
+  preview buffers. Convert explicitly, including zero-alpha pixels and soft
+  glyph/shadow edges; BGRX/RGBX is not an alpha export format.
+  [NDI frame formats](https://docs.ndi.video/all/developing-with-ndi/sdk/frame-types).
+- The installed SDK header names `NDIlib_send_send_video_async_v2` (some online
+  prose orders the suffix differently). Async sending retains its buffer;
+  a later synchronizing send can wait. Calls and shutdown synchronization
+  belong in the helper's sender thread/process, never the audience loop.
+  Standard-SDK operation must not depend on Advanced-SDK completion handlers.
+  [NDI send contract](https://docs.ndi.video/all/developing-with-ndi/sdk/ndi-send),
+  [Advanced completion behavior](https://docs.ndi.video/all/developing-with-ndi/advanced-sdk/ndi-sdk-review/sending/asynchronous-sending-completions).
+- GLFW window creation/destruction and events belong on the main thread;
+  each Vulkan surface needs presentation support. Disconnecting a fullscreen
+  monitor can turn its window into a windowed one before the callback: hide
+  and disable that target instead of exposing it on the operator screen.
+  [GLFW threading](https://www.glfw.org/docs/latest/intro_guide.html),
+  [Vulkan surfaces](https://www.glfw.org/docs/latest/vulkan_guide.html),
+  [monitor lifecycle](https://www.glfw.org/docs/latest/monitor_guide.html).
+- OBS can receive through **DistroAV**. Its current README requires OBS
+  31.1.1+ and NDI Runtime 6.3+ and documents Linux/Flatpak discovery setup.
+  Pin actual tested versions in FO.3a; do not assume a stock OBS install has
+  an NDI source. [DistroAV](https://github.com/DistroAV/DistroAV).
+- Preserve the optional helper boundary, but verify the exact SDK's current
+  license, redistributables and attribution requirements before packaging;
+  a separate MIT directory alone is not a licensing conclusion.
+  [NDI SDK distribution terms](https://docs.ndi.video/all/developing-with-ndi/sdk/licensing).
+
+#### Proposed v1 contract for FO.0 to freeze
+
+1. **Editor:** four top-level tiles: Songs, Bible, Stage, NDI. Songs/Bible keep
+   their audience meanings. Stage/NDI each offer a Songs/Bible content selector
+   beneath their tile, so scripture styling survives on either destination.
+   Internally use output roles `audience`, `stage`, `broadcast`; NDI is a
+   transport for broadcast, not `slide.textContext = "ndi"`. Every tile has
+   a worker-rendered sample; browsing never opens a display or starts a sender.
+2. **Data:** retain existing audience theme/context fields and add versioned
+   per-theme output-profile appearance/layout overrides. Profiles outrank
+   audience geometry for their own target; absence inherits a defined default,
+   explicit false/off remains meaningful. Use existing style/geometry validators.
+   Include profiles in theme copies, portable snapshots, undo and service
+   save/reopen. Service format is currently 15: new authored fields require an
+   explicit version/migration decision, not an unversioned cache-style add-on.
+   Hardware routes, stream name/mode and the layer matrix belong to machine
+   workspace settings, separate from portable theme appearance.
+3. **Live content:** one Go carries an immutable cue/scene bundle, output-profile
+   generation and routing generation. Each target records its own accepted,
+   rendered and presented/submitted revisions; NDI submission is not proof OBS
+   displayed it. Stage follows the acknowledged live cue, not the editing cursor.
+   Supply bounded current/next metadata from the frontend's running-order model,
+   including entry/slide occurrence IDs and order generation; repeated songs and
+   order edits cannot be reconstructed from show ID alone. Existing slide notes
+   can be section labels, so do not reinterpret them as speaker notes.
+4. **Layout/content:** initially preserve audience cue boundaries. Use the
+   primary lyric body for song/Bible profiles; FO.0 must specify extraction for
+   authored decks/multiple text boxes and behavior for image-only cues. Recommend
+   ordered visible text blocks for text-based decks, blank text for image-only
+   cues. Fit/wrap all selected words in the target box using explicit target-local
+   limits; refuse an impossible layout with a preview reason, never silently
+   truncate, independently advance to another slide, or reflow the service.
+   New Bible caption roles remain TV.4 work unless explicitly pulled into scope.
+5. **Physical/transport defaults:** Stage is a separate worker-owned borderless
+   HDMI window on an explicitly selected monitor, opaque black with current words
+   and optional next-cue text. Broadcast is a full 1920x1080 transparent frame,
+   initially 30/1 fps, with text placed in the lower-third profile box; negotiate
+   supported rational rates with OBS. Both outputs start disabled. Audio remains
+   owned once by the existing transport; NDI v1 is video-only. A shared source
+   clock does not imply duplicate audio players or an independent show timeline.
+
+#### Required Output layers dialog
+
+One accessible dialog under output settings: **rows are layers, columns are
+destinations**. Each column has its enable control and destination selector
+(HDMI monitor for Audience/Stage, source name/mode for NDI). Do not create one
+set of global layer tick boxes disguised as three outputs. Proposed defaults:
+
+| Layer | Audience HDMI | Stage HDMI | NDI lower thirds |
 |---|---|---|---|
-| FO.1 | TODO | Define independent output profiles, per-target scene/state/preview ownership and reflow policy | Same cue resolves different Songs/Bible layouts for three targets without changing audience pagination or leaking stage-only content; migration and isolation fixtures |
-| FO.2 | TODO | Alpha-aware broadcast/lower-third compositor and preview | Transparent clears/background omission, premultiplied edges/effects and sizing tested over checkerboards; audience remains opaque and unchanged |
-| FO.3 | TODO | NDI sender dependency/build and OBS compatibility spike | Record SDK/distribution requirements, supported alpha/pixel formats, receiver/plugin setup, frame pacing and measured network/resource budgets on target machines |
-| FO.4 | TODO | Bounded paced NDI sender and destination controls after spike | Real OBS receives lower thirds/alpha; discovery/reconnect/disable work; sender pressure/loss never stalls audience, previews or audio |
-| FO.5 | TODO | Stage layout, current/next/notes bindings and independent output | Off-air and on-device tests prove correct current/next content, transition policy and no audience leakage; independent destination/removal lifecycle |
-| FO.6 | TODO | Physical multi-output and network acceptance | Mixed service with projector, OBS receiver and stage, disconnect/reconnect/backpressure and resource budgets recorded; packaging/notices and recovery gates extended before enabling release |
+| Background | checked | unchecked | unchecked |
+| Images | checked | unchecked | unchecked |
+| Words / current text | checked | checked | checked |
+| Next cue | unavailable | checked once implemented | unavailable |
+| Notes | unavailable | off; future explicit speaker-note source | unavailable |
+| Clock | unavailable until a production clock exists | off until implemented | unavailable |
+
+Background/Images/Words must be independently selectable for **all three**
+destinations: words-only NDI is a default, not a hard-coded prohibition on
+backgrounds/images. An unchecked broadcast Background leaves alpha zero outside
+other routed content; unchecked stage Background still clears its physical
+surface black. Layer choice does not reorder the authored image/text stack.
+Do not expose the demo Aux badge or diagnostic footer as production features.
+Unsupported cells are visibly disabled, not checked-but-ignored; stage-only
+next/notes must never become routable to audience/broadcast by malformed RPC.
+
+Use Apply/Cancel: edit a draft matrix, validate the entire configuration and
+submit one versioned update. Apply can change live routing at a frame boundary;
+Cancel writes nothing. Show pending/acknowledged/error state and retain the last
+accepted matrix after a refusal. A worker restart must not silently enable a
+saved physical/network destination. FO.0 must freeze how existing clear/restore
+actions map to targets: recommended per-layer audience controls remain audience
+scoped, while explicit Clear All clears all enabled visual destinations and
+retains its existing audio-stop meaning. Checking a cell never starts an output
+whose column is disabled. Destination masks remain independent when another
+column is changed or disabled; clearing a target must also invalidate held NDI
+frames so a late receiver cannot be sent stale words.
+
+#### Work items (parents retain the original FO IDs)
+
+| ID | Status | Depends on | Work, ownership and acceptance |
+|---|---|---|---|
+| FO.0 | DONE | Research above | Freeze profile/content/layer IDs, precedence, source extraction, fit, clear/restore and restart semantics, machine-vs-service persistence and migration/RPC shapes. Produce a compact contract/example matrix; mark any unresolved product choices with a recommendation. No renderer/UI feature work before this contract. |
+| FO.1 | TODO | FO.0 | Parent: profile/model/RPC/editor work; DONE only when FO.1a–f pass. |
+| FO.1a | DONE | FO.0 | Domain/scene: add typed output-role/profile appearance and layout values without abusing `TextContext`; inherit/off and audience isolation fixtures, including Songs/Bible, Default, item theme and slide overrides. |
+| FO.1b | DONE | FO.1a | Persistence: version service/profile and theme-snapshot codecs; legacy files retain audience pixels/IDs and no enabled extra outputs. Round-trip profiles/copy/undo/autosave, reject invalid/old-format new fields atomically. Keep machine matrix/routes in AppSettings/WorkspacePanels storage, not portable theme snapshots. |
+| FO.1c | DONE | FO.1a | Compiler: produce bounded per-target scenes from one cue and its content type. Preserve every selected word and audience boundaries; test multi-box/image-only, long Bible/song text, small lower-third boxes, effects and explicit overflow refusal. No independent service reflow. |
+| FO.1d | PARTIAL | FO.1c, FO.0 | Protocol/controller: capability-gated output configuration, atomic routing matrix and target scene bundles; extend RpcMethods/WorkerController/PresentationModel with bounded dimensions/layers, target IDs and generations. Legacy methods remain audience-scoped; old peers never receive unknown preview targets. Fake-peer tests pin stale config/acks, illegal stage-only cells and disconnect recovery. |
+| FO.1e | TODO | FO.1d, FO.5a | Worker host: refactor OutputSession/SceneStore into shared graphics/event ownership plus per-target renderer/resources/status. Preserve one scene timeline/audio owner; snapshot routing masks once, prioritize audience and bound secondary work. Prove a disabled/slow target cannot advance or stall another. Split host extraction/scheduling if over two days. |
+| FO.1f | PARTIAL | FO.1b, FO.1c, FO.2c | Theme UI: add Stage/NDI tiles and per-target Songs/Bible selector using shared inspector controls/adapters. Matching sample/handles, reset/inherit, undo and save/reopen; switching targets cancels unfinished gestures and delayed previews. No output activation from editor browsing. Test minimum width and scale 1/1.5/2. |
+| FO.2 | TODO | FO.1a–c | Parent: alpha/export/preview; DONE only when FO.2a–c pass. |
+| FO.2a | TODO | FO.1c | Compositor: explicit opaque/transparent clear policies and immutable per-target layer masks; honor all supported matrix cells, including optional NDI backgrounds/images. Transparent idle/clear/fades and effect edges match checkerboard references; audience remains unchanged. Update alpha/render source guards deliberately, not by disabling them. |
+| FO.2b | TODO | FO.1e, FO.2a, FO.3a | GPU export: full-resolution broadcast target and fixed-size asynchronous readback/staging pool with fence polling and newest-wins handoff; skip export when capacity is occupied. No synchronous `readPixels` in the audience path and no dependency on operator preview slots. Measure GPU/readback/copy cost before picking final frame/byte budgets. |
+| FO.2c | TODO | FO.1d, FO.1e, FO.2a | Preview: capability-gated per-output identity/revision/stream release; extend PreviewProducer/PreviewConsumer/PreviewView safely. Existing consumer fallback can misread unknown target IDs as audience: negotiate or use separate streams. Bound all previews together; profile/layer/extent changes invalidate only correct cached scenes/pictures. |
+| FO.3 | TODO | FO.0 | Parent: NDI dependency/compatibility and helper protocol; DONE only when FO.3a–b pass. |
+| FO.3a | TODO | FO.0 | Sender spike: use installed SDK headers and a synthetic transparent colour/text frame; verify straight-alpha channel order, OBS/DistroAV reception, 25/30 and supported higher rates, slow/no receivers and flush/disable behavior. Record actual SDK/runtime/OBS/plugin versions, CPU/network observations, deployment terms and capability probe. Fake success is not real NDI evidence. |
+| FO.3b | TODO | FO.3a | MIT helper: add a separate sender mode/process/lifecycle, `canSend` and versioned bounded open/status/close control. Worker writes a send ring; helper copies a stable frame into SDK-owned-lifetime buffers before async send. Existing receive ring has no SDK leases: never hand an overwriteable ring pointer directly to NDI. Test delayed completion, overwrite, crash/restart, ring cleanup and concurrent camera reception. |
+| FO.4 | TODO | FO.2b, FO.3 | Parent: production NDI integration and routing UI; DONE only when FO.4a–b pass. |
+| FO.4a | TODO | FO.2b, FO.3b | Worker sender client: paced video-only lower thirds, premultiplied-to-straight conversion, retained latest clean/transparent frame and bounded process supervision. The helper owns SDK waits; drop superseded exports, isolate slow clients and use bounded shutdown/escalation. Report enabled/starting/sending/no-receivers/fault distinctly, never claim OBS presentation from a send return. |
+| FO.4b | PARTIAL | FO.1b, FO.1d | Output settings UI: implement the checkbox matrix and per-column routes/enable/name/mode, with draft Apply/Cancel and acknowledged state. Capability-driven unavailable NDI cells allow this and stage work before the real sender is ready. Keyboard/screen-reader row+column labels, invalid/colliding display selections, unavailable helper and reconnect tested. Store desired masks separately from session enablement; editing an NDI cell changes no HDMI mask. |
+| FO.5 | TODO | FO.0 | Parent: stage output; DONE only when FO.5a–c pass. |
+| FO.5a | TODO | FO.0 | Display spike/lifecycle: prove two worker windows/surfaces on target GPU/Wayland/X11; move GLFW initialization/termination to a process owner and keep window/events on the main thread. Check presentation support per surface; design bounded acquire/present and per-target recreation without routine device-wide stalls. Record mixed refresh/scale and unplug behavior; feeds M7.1b/c. |
+| FO.5b | TODO | FO.1c, FO.1d | Stage content/layout: current/next cue from acknowledged occurrence and versioned lookahead, independently styled Songs/Bible text. Add a real stage-only next layer with matrix capability; notes/clock stay unavailable until real data/production renderers exist. Test repeated songs, last cue, order edits, no cue, clear/restore and delayed metadata without audience/NDI leakage. |
+| FO.5c | TODO | FO.1e, FO.5a, FO.5b, FO.4b | Stage HDMI destination: explicit monitor selection, collision refusal and independent enable/disable; native framebuffer/scale with aspect-fit profile. Hide/disable on removal, require explicit reselection, never fall back to the operator monitor; closing stage leaves audience/NDI alive. Test device/surface failure and per-target landed state. |
+| FO.6 | TODO | FO.1–FO.5 | Parent: integrated, physical and distribution acceptance; DONE only when FO.6a–c pass. |
+| FO.6a | TODO | All implementation leaves | Fake/helper and real-worker journeys: one cue, three layouts, all valid matrix combinations, absent SDK, corrupt/stale IPC, receiver backpressure, display loss and process restart. Quantify frame deadlines, audio continuity, queue/byte/GPU bounds and sustained resource recovery against an audience-only baseline; no skipped physical check counts as passed. |
+| FO.6b | TODO | FO.6a | Physical acceptance: operator monitor + audience/projector + separate stage HDMI, OBS/DistroAV on loopback and another machine. Test transparent overlay over real video, clear/restore, late receivers, enabled background/image routing, mixed refresh rates and unplug/replug under song/Bible/media playback. Save exact matrix/modes/versions/captures and sustained timing evidence. |
+| FO.6c | TODO | FO.3a, FO.6a | Packaging/docs: optional helper/runtime installation and probe, required attribution/current terms, OBS receiver instructions, discovery/network permissions and missing-dependency behavior. GPL binaries build/run without NDI headers/runtime; maintain source/link guards and independent receive-helper tests. Reconcile architecture/PROGRESS and M7 gates before a release claim. |
+
+#### Progress 2026-11-22
+
+FO.0 is frozen in
+[`docs/ui/output-profiles-plan.md`](docs/ui/output-profiles-plan.md). Landed in
+this build, each with its own commit and regressions:
+
+- **FO.1a** (`424bc31`): `domain::OutputRole`, the sparse `OutputProfile`
+  record on a theme, `Documents::appearanceForSlideOn` — the audience chain,
+  the role's own box, then the nearest authored `(role, content)` profile —
+  and every validator. `domain_tests::exerciseOutputProfiles` proves role
+  defaults, Songs/Bible separation, explicit `false`, effect refusal, inset,
+  chain precedence, budget and every refusal leaving the document unchanged.
+- **FO.1b** (`7de58d5`): service format **16** carries a theme's optional
+  `outputProfiles`; a pre-16 file naming the key is refused by era; a look
+  with no profile writes no new key. The portable theme snapshot carries the
+  profiles through its codec and `ensureThemeFromSnapshot`.
+  `domain_tests::exerciseOutputProfileStorage` proves round-trip, byte-equal
+  re-save, era refusal, semantic refusals and the snapshot path.
+- **FO.1c** (`475ae3f`): `scene::compileSlideOn` compiles one cue for a
+  destination. Scene format 8 is unchanged (profiles become concrete values),
+  and `scene_tests::exerciseOutputRoleCompile` proves the stage/lower-third
+  boxes, picture/stack isolation, broadcast isolation and the wire round-trip.
+- **FO.1d** (`d9957e8`, `e817d48`, `ee9425c`): the controller samples and
+  authors profiles (`themeSampleSceneJson/Appearance(..., role)`,
+  `themeOutputProfile`, `applyThemeOutputProfile`,
+  `removeThemeOutputProfile`); `domain::OutputRouting` freezes the matrix and
+  its codec; `AppSettings` stores masks/routes without enablement; protocol
+  minor **22** adds `output.routing` + `output.routing.v1`, and the worker
+  applies the audience column while refusing the stage/NDI destinations it
+  cannot drive yet. Remaining evidence: fake-peer stale-ack, disconnect and
+  illegal-cell journeys, and a real-worker routing reply test.
+- **FO.1f** (`06be678`): the Theme Editor's Songs/Bible pair is joined by Stage
+  and NDI tiles with per-destination Songs/Bible selectors, role-aware samples
+  and thumbnails, and a `profile` inspector target driving the same shared
+  appearance controls. `workspace_ui_tests` proves selection independence and
+  the four-key thumbnail batch. Missing: the minimum-width and scale 1/1.5/2
+  sweeps for the new rails.
+- **FO.4b** (`ad0b8d0`, `ee9425c`): the Output layers dialog — rows are
+  layers, columns are destinations, stage-only cells visibly disabled, draft
+  Apply/Cancel, route pickers, and the worker status line. Missing: live
+  screen-reader/keyboard row+column sweep and reconnect journeys with a real
+  helper.
+
+Still open: FO.1e (worker graphics host), FO.2a–c (compositor/export/preview),
+FO.3a–b (NDI sender spike/helper), FO.4a (sender client), FO.5a–c (stage
+display/content/destination), FO.6a–c (acceptance/physical/packaging).
+
+#### Implementation runbook and budgets
+
+- Read current PLAN/PROGRESS and inspect Git status first. Implement a selected
+  leaf, preserving unrelated changes; keep original FO parent references used
+  by `docs/ndi-camera-input.md`. No commit/push, SDK installation or live output
+  activation is implied by this planning handoff.
+- Start FO.0, then FO.3a/FO.5a spikes and FO.1a–d. Continue FO.1e, compositor/
+  readback/helper work, then target previews/editor and matrix UI; finish stage
+  destination and acceptance. This describes independent work, not a request to
+  spawn agents now. Record spike decisions before downstream implementation.
+- Prefer one worker graphics host; a shared Ganesh context has one GPU-owning
+  thread. If the display spike requires another presentation queue/context,
+  document ownership and measured isolation first; never share a Ganesh context
+  concurrently or clone OutputSession with duplicate audio/media clocks.
+- Full-HD RGBA is 8,294,400 bytes/frame; three such slots are 24,883,200 bytes
+  before GPU surfaces, staging and helper buffers. At 30 fps raw payload is
+  248,832,000 bytes/s **per full-frame copy**, not the compressed network rate.
+  Fix pool capacities before allocation; include all copies and queued SDK
+  buffers in the budget. Static lyrics may reuse a rendered frame while the
+  sender maintains its own cadence; do not redraw audience at the NDI clock.
+- A lower-third layout still sends a full-size frame. Measure actual network
+  use; NDI's reference notes up to roughly 150 Mbps for a typical 1080p60
+  stream, not a guaranteed rate for this app or its proposed 30 fps mode.
+  [NDI bandwidth guidance](https://docs.ndi.video/all/getting-started/white-paper/bandwidth).
+- Reuse `domain_tests`, `scene_tests`, `document_controller_tests`,
+  `worker_controller_tests`, `preview_*`, `workspace_ui_tests`, existing
+  alpha/pixel tests and the helper's independent fake build. Add focused
+  output-profile/matrix/multi-output/sender tests. Run desktop/headless/source
+  guards appropriate to each leaf; real OBS/HDMI results remain separate from
+  automated fake/offscreen results. This research ran no new runtime benchmark.
 
 ### M7 — Productization, reliability and installable alpha
 

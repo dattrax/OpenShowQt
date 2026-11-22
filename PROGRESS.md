@@ -11,6 +11,47 @@ archive is a current instruction.
 
 ## Current checkpoint
 
+**Output profiles, layer routing and the Stage/NDI tiles (FO.0–FO.1f, FO.4b,
+2026-11-22): first slice DONE.** The frozen contract is
+[`docs/ui/output-profiles-plan.md`](docs/ui/output-profiles-plan.md): content
+(Songs/Bible) and destination (audience/stage/broadcast) are separate
+dimensions, NDI is a transport for `broadcast`, and the layer matrix is machine
+state with stage-only cells that every door refuses elsewhere. The theme editor
+now offers **Songs, Bible, Stage and NDI** tiles; Stage and NDI carry their own
+Songs/Bible selector and are edited through the same shared appearance controls
+(a `profile` inspector target), so a scripture slide can be set apart from a
+song on either destination. Browsing them opens no display and starts no
+sender.
+
+Domain and persistence: a theme's sparse `OutputProfile` (`domain_tests::
+exerciseOutputProfiles`) resolves over the audience look with the role's own
+box (stage 160,120,1600,560; lower third 120,760,1680,240), never moving an
+audience pixel or a per-slide audience box. Service format **16** carries
+`outputProfiles`; a pre-16 file naming the key is refused by era, a theme with
+none writes no new key, and the portable remembered look carries the profiles
+(`exerciseOutputProfileStorage`). `scene::compileSlideOn` compiles one cue per
+destination with scene format 8 unchanged (`exerciseOutputRoleCompile`).
+
+Machine routing: `domain::OutputRouting` freezes the FO.0 table (Background/
+Images/Words on all three; Next cue and Notes stage-only; Clock/Aux absent),
+its codec refuses unknown bits, unknown layers and illegal cells, and
+`AppSettings` stores the masks, monitor choices and NDI source name while never
+persisting enablement — a restart starts every destination off
+(`output_routing_tests`, `workspace_panels_tests`). The Output layers dialog
+(OutputPanel → **Output layers…**) submits the whole draft matrix once with
+Apply/Cancel and states plainly that the stage window and NDI sender are later
+leaves. Protocol minor **22** adds `output.routing` + `output.routing.v1`; the
+worker applies the audience column and refuses stage/broadcast by name until
+they exist.
+
+Verification: domain (desktop + headless), output routing, scene, catalog,
+theme apply, document controller, inspector adapter, workspace panels,
+worker controller, protocol and UI-load checks all passed. `workspace_ui_tests`
+passed all new FO checks; its two remaining failures are the known
+focus-sensitive environment flakes (`Shift+F10` service-row menu, and once the
+camera Delete check) that also fail on the pre-FO tree. No physical HDMI,
+OBS/DistroAV or NDI evidence is claimed — FO.3a/FO.5a/FO.6b remain open.
+
 **Library preview selection (UI.3d, 2026-11-21): DONE.** An empty browsed
 show ID previously meant the combined service regardless of the open folder.
 Show now receives the folder separately: Songs and Presentations show only a
