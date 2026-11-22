@@ -50,6 +50,24 @@ matrix remain open.
 | Measured stage wait | worst present 3.642 ms, worst acquire 0.028 ms over the `stage_output_tests` run |
 | Retreat | stage swapchain retirement uses a queue-scoped idle, never `vkDeviceWaitIdle`; enable/disable and resize only |
 
+## Spike decisions
+
+- **Map sequence.** Setting the monitor while the GLFW window is hidden was
+  measured on KWin/Wayland: the toplevel mapped at its 1280x720 creation size
+  and never reached 1920x1080, even after a second `glfwSetWindowMonitor`.
+  The chosen sequence is therefore create hidden, `glfwShowWindow`, then
+  `glfwSetWindowMonitor` on the selected panel in the same event turn, before
+  the Vulkan surface or first frame exists. The measured result is a native
+  1920x1080 toplevel on DP-10; no window is created on the operator display
+  and the capture's middle panel stayed untouched.
+- **Presentation ownership.** One process-owned GLFW lifetime, one Vulkan
+  device and one Ganesh context on the render thread. Each target owns its
+  window/surface/swapchain/companion renderer. The stage's acquire is bounded
+  at 16 ms; retirement uses a queue-scoped idle (never `vkDeviceWaitIdle`) and
+  happens only on an explicit resize/disable. The shared graphics queue is a
+  recorded limitation for the full timing matrix, not silently treated as
+  isolated.
+
 ## Capture
 
 ![Audience on eDP-1, stage current/next on DP-10, DP-9 uninvolved](stage-hdmi-first-frame-2026-11-22.png)
