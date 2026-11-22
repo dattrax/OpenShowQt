@@ -1287,13 +1287,49 @@ Editor's Stage/NDI tiles and the Output layers dialog edit these records
 through the existing shared controls and the controller's profile verbs.
 The dialog is sized against the window overlay, scrolls its matrix separately
 from its actions, and loads live audience layers/display from worker status.
-Apply sends an explicitly changed audience route through `output.select`.
-Stage and NDI enable controls remain unavailable until their runtime outputs
-exist; their editable masks/routes are preferences for future implementation.
+Apply sends an explicitly changed audience route through `output.select`, and
+the stage column/route through the stage configuration below. NDI enable
+remains unavailable until its sender exists; its editable mask/route is a
+preference for later.
+
+**Stage HDMI target (2026-11-22 first slice).** The stage is a second
+worker-owned window on the shared Vulkan device. `DisplayInventory` gives every
+attached panel a connection-scoped identity (`name|position|mode`, with an
+ordinal for indistinguishable panels) and a generation; `OutputWindow` no
+longer terminates GLFW when a window closes, and the process owner terminates
+it once after every window is gone. Platform minor **23** adds
+`stage.output.v1` and `stage.configure`/`stage.prepare`/`stage.present`/
+`stage.clear`. Acceptance is recorded; `active` moves only after the render
+thread has presented. The stage owns its window, `VkSurfaceKHR`, swapchain and
+companion `SceneRenderer` (its own layout/image caches), uses a finite acquire
+wait and queue-scoped retirement, and never starts audio, a decoder or a
+presentation clock. `output.status.stage` reports monitor identity/extent,
+presented bundle revision/generation, next/overlap, frames, failures, worst
+acquire/present waits and the last error.
+
+Current and next are compiled on the frontend from one Go: the current cue on
+the Stage role, the immediate next row's cue transformed by
+`scene::stageNextOverlay` into the v1 next slot at 55% of its resolved style.
+The bundle is presented on the stage only once that audience cue is LIVE.
+Clear All clears current/next on every enabled stage; per-layer clears stay
+audience-scoped; Restore re-files the retained bundle. Route collisions are
+refused in both directions, and a disconnected stage panel clears enablement
+without a fallback. The Stage enable control appears only toward a worker
+naming `stage.output.v1`.
+
+Evidence: `stage_tests` (identity/ordinals/inventory/overlay/overlap),
+`stage_output_tests` (real worker: stale inventory, both collision directions,
+active-after-present, current/next, Clear All, target-local disable, invalid
+scene), `document_controller_tests` (stage bundle, next row, last-cue empty
+next), and the physical record
+[`docs/reviews/stage-hdmi-2026-11-22.md`](reviews/stage-hdmi-2026-11-22.md)
+(Wayland/KWin, RADV, three displays; X11 and unplug-under-load open).
 
 Evidence: `domain_tests` (profile resolution, format 16, snapshots),
 `output_routing_tests` (defaults, legal cells, codec refusals), `scene_tests`
 (role compiles), `document_controller_tests` (sample/author/undo), `inspector_
 adapter_tests` (profile target), `workspace_panels_tests` (machine settings) and
 `workspace_ui_tests` (tiles, independent content selectors, four-scene batch).
-FO.1e/2/3/4a/5/6 and every physical HDMI/OBS/NDI check remain open.
+The stage rendering checkpoint is delivered on Wayland (FO.5a.1–2, FO.1e.1,
+FO.5b.1, FO.5c.1 core). FO.1e.2/2a–c/3/4a/5b.2/6 and the X11, hotplug-under-load
+and full timing/soak checks remain open.

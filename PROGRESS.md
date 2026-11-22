@@ -11,33 +11,47 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Stage rendering implementation plan (2026-11-22): prepared, not implemented.**
-`PLAN.md` → **Stage HDMI delivery plan** is the next execution path. It splits
-the existing FO.5a/b/c and shared host work into reviewable leaves, freezes
-current/next cue and display-loss behaviour, and separates the rendering and
-operator-delivery checkpoints. NDI, sender/export and additional preview streams
-do not gate Stage HDMI. All new leaves remain TODO. Next action on an
-implementation request: **FO.5a.1**, the two-surface lifecycle/timing spike on
-the attached GPU/displays, before choosing production presentation ownership.
-This turn changes planning documents only; no runtime/output activation or new
-physical verification is claimed. Plan validation: 11 unique TODO leaves,
-no dependency cycles, and `git diff --check` passes.
+**Stage HDMI rendering checkpoint (2026-11-22): DELIVERED on Wayland.** The
+worker now owns a second presentation window. `stage.output.v1` (protocol
+minor **23**) adds `stage.configure` / `stage.prepare` / `stage.present` /
+`stage.clear` and `output.status.stage`; a STAGE column is activatable from
+**Output layers…** only toward a worker naming the capability. The Stage's
+current cue is compiled on the Stage role and the immediate next row's cue is
+placed in the v1 next slot at 55% of its resolved style. The bundle is
+presented only after that audience cue is acknowledged LIVE. Clear All clears
+current/next; per-layer clears stay audience-scoped; Restore re-files the
+retained bundle. GLFW lifetime is process-owned and the process-owned Vulkan
+device/Ganesh context is shared; each target owns its surface, swapchain and
+companion compositor. Display identity is connection-scoped, with an inventory
+generation: a stale selection, a removed panel, or a collision with the
+audience is refused by name and never falls back to another monitor.
+
+Physical evidence: [`docs/reviews/stage-hdmi-2026-11-22.md`](docs/reviews/stage-hdmi-2026-11-22.md)
+— three displays on Wayland/KWin, RADV Mesa 26.2.6, stage 1920x1080 with
+current+next on DP-10 and the audience scene on eDP-1. Measured stage worst
+present 3.642 ms / acquire 0.028 ms in the fixture. Automated evidence:
+`stage_tests`, `stage_output_tests` (real worker: stale inventory, both
+collision directions, active-after-present, current/next, Clear All,
+target-local disable, invalid scene), `document_controller_tests` (bundle and
+next-row/last-cue rules), plus the existing audience/preview/media display
+journeys. Headless build/tests and source guards are recorded below.
+
+Still open before the operator-delivery claim: FO.1e.2 scheduling evidence and
+a stage raster/pixel fixture; FO.5b.2 scope beyond the delivered compositor;
+FO.5c.2 full UI/worker journeys; X11, unplug-under-load, mixed-refresh timing,
+10-minute comparison and 30-minute soak (FO.5c.3); NDI (FO.3/FO.4a) remains a
+separate path. Stage starts disabled after app/worker restart.
 
 **Output layers dialog regression fixes (2026-11-22):** corrected the QML
 property read that prevented draft loading, moved the dialog onto the window
 overlay, gave its matrix readable columns and scrolling, and kept Apply/Cancel
 in a fixed footer. Audience layers/display start from acknowledged worker state;
-Apply now sends changed audience display selections to the worker. Stage/NDI
-activation is visibly unavailable: only profiles/settings have landed, and
-the worker still owns one audience window. Stage runtime remains **FO.1e and
-FO.5a–c TODO**; three connected displays do not change that. Focused pointer,
-geometry, persistence and simulated three-display routing verification passes
-in `output_layers_ui_tests` at scales 1/1.5/2. Desktop UI/test builds,
-`workspace_ui_tests`, `output_routing_tests`, `workspace_panels_tests`,
-`ui_loads` and `git diff --check` pass. No physical output activation or
-verification was performed. Restart the rebuilt app for these fixes. Next
-stage implementation action: FO.5a's two-surface lifecycle spike before
-FO.1e/FO.5b–c.
+Apply now sends changed audience display selections to the worker. Stage
+activation is now offered when the worker advertises `stage.output.v1`; NDI
+activation remains visibly unavailable. Focused pointer, geometry, persistence
+and simulated three-display routing verification passes in
+`output_layers_ui_tests` at scales 1/1.5/2. Restart the rebuilt app for these
+fixes.
 
 **Output profiles, layer routing and the Stage/NDI tiles (FO.0–FO.1f, FO.4b,
 2026-11-22): first slice DONE.** The frozen contract is
@@ -69,8 +83,9 @@ persisting enablement — a restart starts every destination off
 (OutputPanel → **Output layers…**) submits the whole draft matrix once with
 Apply/Cancel and states plainly that the stage window and NDI sender are later
 leaves. Protocol minor **22** adds `output.routing` + `output.routing.v1`; the
-worker applies the audience column and refuses stage/broadcast by name until
-they exist.
+worker applies the audience column and refuses NDI by name until its sender
+exists. Protocol minor **23** (delivered above) adds the stage destination;
+`output.routing` alone does not imply it.
 
 Verification: domain (desktop + headless), output routing, scene, catalog,
 theme apply, document controller, inspector adapter, workspace panels,
