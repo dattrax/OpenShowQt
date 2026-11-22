@@ -34,6 +34,12 @@ class AppSettings : public QObject {
     Q_PROPERTY(int audienceMonitor READ audienceMonitor WRITE setAudienceMonitor NOTIFY
                    settingsChanged)
     Q_PROPERTY(int stageMonitor READ stageMonitor WRITE setStageMonitor NOTIFY settingsChanged)
+    // The connection-scoped identity the saved stage index named when it was
+    // chosen (stage delivery FO.5a.2). On reopen, a saved index whose panel
+    // identity no longer matches is STALE: the dialog requires an explicit
+    // reselection instead of silently using whatever now occupies the index.
+    Q_PROPERTY(QString stageMonitorIdentity READ stageMonitorIdentity
+               WRITE setStageMonitorIdentity NOTIFY settingsChanged)
     Q_PROPERTY(QString broadcastSource READ broadcastSource WRITE setBroadcastSource NOTIFY
                    settingsChanged)
 
@@ -70,7 +76,9 @@ public:
     int audienceMonitor() const { return fAudienceMonitor; }
     void setAudienceMonitor(int index);
     int stageMonitor() const { return fStageMonitor; }
+    QString stageMonitorIdentity() const { return fStageMonitorIdentity; }
     void setStageMonitor(int index);
+    void setStageMonitorIdentity(const QString& identity);
     QString broadcastSource() const { return fBroadcastSource; }
     void setBroadcastSource(const QString& name);
 
@@ -88,6 +96,7 @@ private:
     QString fOutputError;
     int fAudienceMonitor = -1;
     int fStageMonitor = -1;
+    QString fStageMonitorIdentity;
     QString fBroadcastSource = QStringLiteral("OpenShow");
 };
 

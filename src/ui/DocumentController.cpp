@@ -17,6 +17,7 @@
 #include "openshow/domain/reflowsource.h"
 #include "openshow/domain/themesnapshot.h"
 #include "openshow/scene/scene.h"
+#include "openshow/scene/stage.h"
 
 namespace openshow::ui {
 
@@ -4820,6 +4821,44 @@ qint64 DocumentController::thumbnailCacheFlushes() const {
 QString DocumentController::sceneJsonForSlide(const QString& slideId) {
     flushText();
     return compileSlideJson(slideId.toStdString());
+}
+
+QString DocumentController::stageBundleJson(const QString& showId, const QString& slideId,
+                                            const QString& nextShowId,
+                                            const QString& nextSlideId) const {
+    if (showId.isEmpty() || slideId.isEmpty()) {
+        return QString();
+    }
+    openshow::scene::Scene current;
+    std::string error;
+    if (!openshow::scene::compileSlideOn(fDocuments, showId.toStdString(),
+                                         slideId.toStdString(),
+                                         openshow::domain::OutputRole::Stage, &current,
+                                         &error)) {
+        return QString();
+    }
+    boost::json::object bundle;
+    bundle["current"] = openshow::scene::toJson(current);
+    bool overlap = false;
+    if (!nextShowId.isEmpty() && !nextSlideId.isEmpty()) {
+        openshow::scene::Scene nextCue;
+        if (openshow::scene::compileSlideOn(fDocuments, nextShowId.toStdString(),
+                                            nextSlideId.toStdString(),
+                                            openshow::domain::OutputRole::Stage, &nextCue,
+                                            &error)) {
+            // The next cue's own resolved Stage style, moved into the v1 next
+            // slot at 55%. Pictures and the background are deliberately not
+            // carried: next is a words preview, not a second cue on air.
+            const openshow::scene::Scene overlay =
+                openshow::scene::stageNextOverlay(nextCue);
+            if (!overlay.items.empty()) {
+                bundle["next"] = openshow::scene::toJson(overlay);
+            }
+            overlap = openshow::scene::stageNextSlotOverlaps(current);
+        }
+    }
+    bundle["overlap"] = overlap;
+    return QString::fromStdString(boost::json::serialize(bundle));
 }
 
 bool DocumentController::stampAsset(const std::string& assetId, const std::string& sourcePath,

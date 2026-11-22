@@ -193,6 +193,57 @@ bool VulkanContext::createHeadless(bool validation) {
     return true;
 }
 
+bool VulkanContext::createSurface(GLFWwindow* window, VkSurfaceKHR* out, std::string* error) {
+    if (out == nullptr) {
+        return false;
+    }
+    *out = VK_NULL_HANDLE;
+    if (fInstance == VK_NULL_HANDLE || fDevice == VK_NULL_HANDLE || window == nullptr) {
+        if (error) {
+            *error = "the Vulkan device is not open";
+        }
+        return false;
+    }
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    if (glfwCreateWindowSurface(fInstance, window, nullptr, &surface) != VK_SUCCESS ||
+        surface == VK_NULL_HANDLE) {
+        if (error) {
+            *error = "could not create a Vulkan surface for the target window";
+        }
+        return false;
+    }
+    if (!surfacePresentable(surface)) {
+        if (error) {
+            *error = "the graphics queue cannot present to that display";
+        }
+        vkDestroySurfaceKHR(fInstance, surface, nullptr);
+        return false;
+    }
+    *out = surface;
+    return true;
+}
+
+void VulkanContext::destroySurface(VkSurfaceKHR surface) {
+    if (surface != VK_NULL_HANDLE && fInstance != VK_NULL_HANDLE) {
+        // The surface belongs to this instance; destroying it is legal while
+        // the device lives as long as no swapchain still uses it (the caller
+        // retires the target's swapchain first).
+        vkDestroySurfaceKHR(fInstance, surface, nullptr);
+    }
+}
+
+bool VulkanContext::surfacePresentable(VkSurfaceKHR surface) const {
+    if (surface == VK_NULL_HANDLE || fPhysicalDevice == VK_NULL_HANDLE) {
+        return false;
+    }
+    VkBool32 supported = VK_FALSE;
+    if (vkGetPhysicalDeviceSurfaceSupportKHR(fPhysicalDevice, fQueueIndex, surface, &supported) !=
+        VK_SUCCESS) {
+        return false;
+    }
+    return supported == VK_TRUE;
+}
+
 bool VulkanContext::selectPhysicalDevice() {
     vkb::PhysicalDeviceSelector selector{fPhysical->instance};
     if (fSurface != VK_NULL_HANDLE) {

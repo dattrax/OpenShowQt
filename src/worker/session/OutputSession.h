@@ -61,6 +61,7 @@
 
 #include "media/MediaProbe.h"
 
+#include "output/DisplayInventory.h"
 #include "output/OutputWindow.h"
 #include "output/Swapchain.h"
 #include "output/VulkanContext.h"
@@ -120,13 +121,62 @@ public:
     };
 
     // One physical panel, as the frontend sees it. index is the value
-    // output.select takes; -1 (windowed) is not in this list.
-    struct DisplayInfo {
-        int index = 0;
-        std::string name;
-        int width = 0;
+    // output.select takes; -1 (windowed) is not in this list. The identity
+    // and connection generation (stage delivery FO.5a.2) are what a stage
+    // configuration is validated against; a saved index is a preference.
+    using DisplayInfo = openshow::worker::DisplayInfo;
+
+    // --- stage output (stage delivery FO.5a/FO.5b/FO.5c) -------------------
+    //
+    // A second worker-owned window. It is created only by an explicit
+    // configuration that names an attached monitor identity distinct from
+    // the audience's, aspect-fits the 1920x1080 stage scene, clears opaque
+    // black and draws the retained current/next bundle. Everything about it
+    // is target-local: its own window, surface, swapchain, compositor and
+    // layout cache. It shares the process's GLFW lifetime and Vulkan device;
+    // it never owns an audio source, decoder or presentation clock.
+    struct StageConfiguration {
+        bool enabled = false;
+        int monitorIndex = -1;            // current GLFW index, validated by identity
+        std::string identity;             // connection-scoped display identity
+        uint64_t inventoryGeneration = 0; // the snapshot the identity was read from
+        uint32_t layers = 0;              // domain routing bits (stage column)
+        uint64_t generation = 0;          // frontend configuration generation
+    };
+
+    // The stage bundle the frontend compiled for one Go. `current` is the cue
+    // compiled on the Stage role; `next` is the next cue's 55% overlay, or
+    // null for the last/direct cue. Both are parsed and validated by the RPC
+    // layer before they reach this seam.
+    struct StageBundle {
+        const openshow::scene::Scene* current = nullptr;
+        const openshow::scene::Scene* next = nullptr;
+        bool overlap = false;
+        uint64_t generation = 0;
+    };
+
+    struct StageStatus {
+        bool enabled = false;    // session enablement (requested or active)
+        bool active = false;     // window + swapchain presenting
+        bool lost = false;       // the selected monitor vanished or a surface fault
+        int monitor = -1;
+        std::string monitorName;
+        std::string identity;
+        int width = 0;           // presented swapchain extent
         int height = 0;
-        int refreshHz = 0;
+        uint64_t generation = 0;      // accepted configuration generation
+        uint64_t presented = 0;       // stage bundle revision last presented
+        uint64_t presentedGeneration = 0;
+        bool next = false;            // presented bundle carried next-cue text
+        bool overlap = false;         // current box overlapped the next slot
+        unsigned long long frames = 0;
+        unsigned long long presentFailures = 0;
+        // Stage delivery FO.1e.2's measured bounds: the worst acquire and
+        // present wait this target has paid. They are bounded by the finite
+        // acquire timeout and reported so a slow panel is visible on the wire.
+        double worstAcquireMs = 0.0;
+        double worstPresentMs = 0.0;
+        std::string error;            // sticky until a successful configure/present
     };
 
     // Live preview state (task 1.4; the owner since 6.18a2 is
@@ -255,9 +305,14 @@ public:
         // index, with its name empty when windowed.
         int monitor = -1;
         std::string monitorName;
+        // The inventory generation the display rows and the monitor name
+        // were read against (FO.5a.2). A stage configuration quoting an
+        // older generation is refused rather than guessed.
+        uint64_t displaysGeneration = 0;
         PreviewStatus preview;
         SceneStatus scene;
         MediaStatus media;
+        StageStatus stage;
     };
 
 
@@ -301,12 +356,43 @@ public:
     // hotplug shows up without any event plumbing yet, M6.1).
     std::vector<DisplayInfo> displays() const;
 
+    // The generation of the display snapshot `displays()` returns. Bumps on
+    // attach/remove/reorder/mode change, never on an identical re-enumeration.
+    uint64_t displaysGeneration() const;
+
     // Moves the audience output: -1 windowed, >=0 that display's index
     // (validated against the last snapshot). The GLFW call and the
     // swapchain rebuild happen on the render thread at the top of a frame,
     // exactly like layer toggles; *revisionOut reports the revision the
     // change is included in.
     bool selectMonitor(int index, uint64_t* revisionOut);
+
+    // --- stage output (stage delivery FO.5a.2/FO.5c.1) --------------------
+    //
+    // Accepts a whole stage configuration atomically: enablement, monitor
+    // identity, inventory generation and the stage column's layer mask. A
+    // disabled configuration is always accepted and tears the target down.
+    // An enabled one is refused, naming the reason, when the identity is
+    // absent from the current inventory, the inventory generation is stale,
+    // the identity collides with the audience's panel, or the layer mask is
+    // not a legal stage mask. Acceptance only RECORDS the request; the render
+    // thread creates/maps the window and publishes `active` after the first
+    // successful present.
+    bool configureStage(const StageConfiguration& configuration, StageStatus* statusOut,
+                        std::string* error);
+    // Files one Go's current/next bundle in the bounded stage store. No
+    // window, audience revision or media clock moves. Returns the bundle's
+    // own revision (the frontend presents it by that number).
+    bool prepareStage(const StageBundle& bundle, uint64_t* revisionOut, std::string* error);
+    // Presents a prepared stage bundle. `generation` must match the
+    // generation the bundle was prepared under; a cleared/disabled target
+    // invalidates older bundles. Applicability is checked again at draw.
+    bool presentStage(uint64_t revision, uint64_t generation, std::string* error);
+    // Clear All's stage half: invalidates pending bundles and clears current
+    // and next on every enabled stage. Generation-gated so an old deferred
+    // frame cannot repopulate it.
+    void clearStage(uint64_t generation);
+    StageStatus stageStatus() const;
 
     // --- preview (task 1.4; owner since 6.18a2 is PreviewProducer) ---
     //
@@ -725,6 +811,20 @@ private:
     // Start/stop the live camera hub for the scene's multimedia layer (ND.6).
     // The camera is never a PlaybackPipeline: newest wins, no clock or audio.
     void applyLiveBackground(const openshow::scene::Background& wanted);
+    // --- stage target (render thread) ---
+    // Applies a recorded configuration: creates/maps the selected monitor's
+    // window or tears the target down. Called between audience frames.
+    void applyPendingStageConfiguration();
+    bool createStageTargetLocked();   // creates window/surface/swapchain/renderer
+    bool createStageSwapchain();
+    void teardownStageTarget(const std::string& why, bool lost);
+    // Presents the retained stage bundle (or black) once. `videoImage` is the
+    // audience frame's sampled background media when one is in flight; a
+    // non-null *doneOut is a semaphore the caller must hand back through the
+    // video presenter, exactly like the audience's own doneVk.
+    bool presentStageFrame(SkImage* videoImage, VkSemaphore* doneOut);
+    bool stageTargetReady() const { return fStageWindow && fStageSwapchain && fStageScene; }
+    void stageFault(const std::string& why);
     uint64_t fDeferredSceneRevision = 0;  // render thread; suppress only this blocked command
     uint64_t fLandedFrameRevision = 0;    // complete commands actually staged for drawing
     // Transaction backup while media has switched but no frame has committed.
@@ -823,7 +923,52 @@ private:
     // The last ACCEPTED layer matrix (milestone FO). Guarded by fMutex.
     openshow::domain::OutputRouting fRouting;
     std::vector<DisplayInfo> fDisplays;
+    // Bumped only when the connected set really changed (FO.5a.2). Guarded
+    // by fMutex like fDisplays.
+    uint64_t fDisplayGeneration = 1;
     Status fStatus;
+
+    // Stage target state. Commands write the desired configuration/bundle
+    // under fMutex; the render thread owns the window, surface, swapchain and
+    // companion renderer and publishes the observed status back under the
+    // same lock. Nothing here is an audio, decoder or presentation-clock
+    // owner: the stage samples the audience's existing media lease.
+    static constexpr std::size_t kMaxStageBundles = 4;
+    struct StageBundleState {
+        ActiveScene current;
+        ActiveScene next;
+        bool overlap = false;
+        uint64_t generation = 0;
+        uint64_t epoch = 0;
+    };
+    std::map<uint64_t, StageBundleState> fStageBundles;
+    uint64_t fNextStageBundleId = 1;
+    StageConfiguration fStageConfig;       // newest accepted request
+    uint64_t fStageDesiredBundle = 0;      // 0 = black/nothing to draw
+    uint64_t fStageEpoch = 1;              // bumped by Clear All / disable
+    bool fStageConfigDirty = true;         // render thread applies before a frame
+    std::atomic<bool> fStageNeedsPresent{false};  // render/command thread marker
+    StageStatus fStage;
+    // Render-thread copies of the desired bundle, taken in the same critical
+    // section as the frame decision so a command landing after it belongs to
+    // the next stage frame.
+    ActiveScene fStageRenderCurrent;
+    ActiveScene fStageRenderNext;
+    bool fStageRenderOverlap = false;
+    uint64_t fStageRenderRevision = 0;
+    uint64_t fStageRenderGeneration = 0;
+    uint32_t fStageRenderLayers = 0;
+    bool fStageRenderEnabled = false;
+
+    // Render-thread-owned stage resources. Declared after the GPU members so
+    // destruction releases their surfaces before the context they live on;
+    // close() explicitly tears them down first.
+    std::unique_ptr<OutputWindow> fStageWindow;
+    VkSurfaceKHR fStageSurface = VK_NULL_HANDLE;
+    std::unique_ptr<Swapchain> fStageSwapchain;
+    std::unique_ptr<SceneRenderer> fStageScene;
+    uint64_t fStagePresentedInventory = 0;
+    int fStageConsecutiveFailures = 0;
 
     // The prepare-time file work (task 6.9a, review R10): still decodes and
     // the video probe leave the RPC thread for this bounded, cancellable

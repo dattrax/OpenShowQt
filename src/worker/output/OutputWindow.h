@@ -60,12 +60,14 @@ public:
     // Initialises GLFW once per process (Wayland first, X11 fallback).
     // Public so callers can enumerate monitors before opening a window.
     static bool initGlfw();
+    // Terminates the process-owned GLFW lifetime. The process owner calls
+    // this after every OutputWindow is closed; a window's close() never does.
+    static void shutdownGlfw();
 
 private:
     static void onFramebufferSize(GLFWwindow* window, int width, int height);
 
     GLFWwindow* fWindow = nullptr;
-    bool fOwnsGlfw = false;
     bool fResized = true;
     int fMonitor = -1;
     int fWidth = 1280;

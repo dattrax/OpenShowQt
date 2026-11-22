@@ -39,11 +39,19 @@ public:
     Swapchain& operator=(const Swapchain&) = delete;
 
     bool create(const CreateInfo& info);
-    void destroy();
+    // `deviceIdle` is the audience's rule (true: a device-wide idle before
+    // teardown). A secondary target passes false so retiring ITS swapchain
+    // does not wait on unrelated GPU work; the queue-scoped wait is the
+    // stage's bounded retirement path (FO.1e.2).
+    void destroy(bool deviceIdle = true);
 
     // Waits for the image and its previous frame to be free. Returns false on
     // VK_ERROR_OUT_OF_DATE_KHR / VK_SUBOPTIMAL_KHR; the caller recreates.
-    bool acquire(uint32_t* outImageIndex, VkResult* outResult = nullptr);
+    // `timeoutNs` bounds both waits (stage delivery FO.1e.2): the stage target
+    // passes a finite budget so a slow secondary panel cannot park the render
+    // thread, while the audience keeps the unbounded default it always had.
+    bool acquire(uint32_t* outImageIndex, VkResult* outResult = nullptr,
+                 uint64_t timeoutNs = UINT64_MAX);
 
     // Flushes Skia work for the image, transitioning it to
     // VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, then submits and presents. An

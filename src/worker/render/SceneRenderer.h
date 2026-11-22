@@ -202,6 +202,14 @@ public:
     void draw(const SceneFrame& frame, SkCanvas* canvas, int widthPx, int heightPx,
               const std::string& statusLine = {}, const SkImage* backgroundVideo = nullptr, bool alphaPreview = false);
 
+    // Stage delivery FO.5b.2: the next-cue overlay pass. Applies the same
+    // output-rule transform as draw(), but does NOT clear and draws ONLY the
+    // authored item stack (no background/aux/clock). The stage compositor
+    // calls draw() for the current cue and then this for the next slot, so
+    // the two are independent content layers on one retained bundle.
+    void drawOverlay(const SceneFrame& frame, SkCanvas* canvas, int widthPx, int heightPx,
+                     const std::string& statusLine = {});
+
     // Single-target convenience for the development harness and the CLI:
     // capture, draw and commit in one call, which is right only when this
     // call owns the frame. The session never uses it — its preview draws

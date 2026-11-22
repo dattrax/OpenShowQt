@@ -58,6 +58,15 @@ public:
     bool create(GLFWwindow* window, bool validation = false);
     // Offscreen: instance and device only; nothing can present.
     bool createHeadless(bool validation = false);
+    // Additional presentation surface on this instance/device (stage
+    // delivery FO.5a.1/FO.1e.1). Creates a VkSurfaceKHR for another GLFW
+    // window and proves the graphics queue can present to it. The caller
+    // owns the handle and releases it with destroySurface() before the
+    // process/device is destroyed and before the GLFW window is destroyed.
+    bool createSurface(GLFWwindow* window, VkSurfaceKHR* out, std::string* error = nullptr);
+    void destroySurface(VkSurfaceKHR surface);
+    // Whether the device's presentation queue supports this surface.
+    bool surfacePresentable(VkSurfaceKHR surface) const;
     void destroy();
 
     VkInstance instance() const { return fInstance; }

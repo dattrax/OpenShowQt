@@ -19,6 +19,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <limits>
 
 #include "openshow/domain/documents.h"
 #include "openshow/protocol/preview_wire.h"
@@ -475,6 +476,27 @@ void WorkerController::onRpcDisconnected() {
     fStandaloneRefusalPath.clear();
     fStandaloneAskPath.clear();
     fStandaloneAskId = 0;
+    // A stage output belongs to the dead worker. The saved selection and
+    // masks stay in settings, but the live session does not pretend a stage
+    // is still active; the next worker starts disabled (FO.5c.1).
+    fStageCapable = false;
+    fStageEnabled = false;
+    fStageActive = false;
+    fStageLost = false;
+    fStageMonitor = -1;
+    fStageMonitorName.clear();
+    fStageError.clear();
+    fStagePresented = 0;
+    fStageFrames = 0;
+    fStageNext = false;
+    fStageOverlap = false;
+    fStageBundleRevision = 0;
+    fStagePresentSent = false;
+    fStagePrepareRequestId = 0;
+    fStageConfigureRequestId = 0;
+    fStagePendingPresentSerial = 0;
+    fStageRetainedBundleJson.clear();
+    emit stageChanged();
     emit mediaChanged();
     emit stateChanged();
     if (!fShutdownRequested) {
@@ -603,6 +625,18 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             fLiveUserScanId = 0;
             emit liveChanged();
         }
+        if (pending.method == proto::kMethodStageConfigure && id == fStageConfigureRequestId) {
+            fStageError = reason;
+            emit stageChanged();
+        }
+        if (pending.method == proto::kMethodStagePrepare && id == fStagePrepareRequestId) {
+            fStageError = reason;
+            emit stageChanged();
+        }
+        if (pending.method == proto::kMethodStagePresent) {
+            fStageError = reason;
+            emit stageChanged();
+        }
         if (pending.method == proto::kMethodFontList) {
             // TS.4: a refused walk ends the walk. The picker shows the
             // state, the status line carries the worker's own sentence
@@ -643,10 +677,106 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                                 panel.at("height").to_number<std::int64_t>()))
                             .arg(static_cast<qint64>(
                                 panel.at("refreshHz").to_number<std::int64_t>())));
+            if (const auto identity = panel.find("identity");
+                identity != panel.end() && identity->value().is_string()) {
+                item.insert(QStringLiteral("identity"),
+                            QString::fromStdString(std::string(identity->value().as_string())));
+            }
+            if (const auto generation = panel.find("connectionGeneration");
+                generation != panel.end() && generation->value().is_number()) {
+                item.insert(QStringLiteral("connectionGeneration"),
+                            static_cast<qint64>(
+                                generation->value().to_number<std::uint64_t>()));
+            }
+            if (const auto x = panel.find("x"); x != panel.end() && x->value().is_number()) {
+                item.insert(QStringLiteral("x"),
+                            static_cast<qint64>(x->value().to_number<std::int64_t>()));
+            }
+            if (const auto y = panel.find("y"); y != panel.end() && y->value().is_number()) {
+                item.insert(QStringLiteral("y"),
+                            static_cast<qint64>(y->value().to_number<std::int64_t>()));
+            }
             displays.push_back(item);
         }
         fDisplays = displays;
         emit displaysChanged();
+        return;
+    }
+
+    if (pending.method == proto::kMethodStageConfigure ||
+        pending.method == proto::kMethodStagePrepare ||
+        pending.method == proto::kMethodStagePresent ||
+        pending.method == proto::kMethodStageClear) {
+        if (!payloadValue.is_object()) {
+            return;
+        }
+        const boost::json::object& answer = payloadValue.as_object();
+        if (const auto accepted = answer.find("accepted");
+            accepted != answer.end() && accepted->value().is_bool() &&
+            !accepted->value().as_bool()) {
+            if (const auto reason = answer.find("reason");
+                reason != answer.end() && reason->value().is_string()) {
+                fStageError = QString::fromStdString(std::string(reason->value().as_string()));
+                emit stageChanged();
+            }
+            return;
+        }
+        if (pending.method == proto::kMethodStagePrepare) {
+            if (id != fStagePrepareRequestId) {
+                return;  // a superseded Go's bundle
+            }
+            const auto revision = answer.find("revision");
+            if (revision != answer.end() && revision->value().is_number()) {
+                fStageBundleRevision =
+                    static_cast<qint64>(revision->value().to_number<std::uint64_t>());
+                maybePresentStage();
+            }
+        }
+        if (pending.method == proto::kMethodStageConfigure) {
+            if (const auto stage = answer.find("stage");
+                stage != answer.end() && stage->value().is_object()) {
+                const boost::json::object& row = stage->value().as_object();
+                const auto readBool = [&row](const char* key, bool fallback) {
+                    const auto found = row.find(key);
+                    return found != row.end() && found->value().is_bool()
+                               ? found->value().as_bool()
+                               : fallback;
+                };
+                const auto readInt = [&row](const char* key, qint64 fallback) {
+                    const auto found = row.find(key);
+                    if (found == row.end() || !found->value().is_number()) {
+                        return fallback;
+                    }
+                    const boost::json::value& value = found->value();
+                    if (value.is_int64()) {
+                        return static_cast<qint64>(value.as_int64());
+                    }
+                    if (value.is_uint64()) {
+                        return static_cast<qint64>(value.as_uint64());
+                    }
+                    return static_cast<qint64>(value.as_double());
+                };
+                fStageEnabled = readBool("enabled", fStageEnabled);
+                fStageActive = readBool("active", fStageActive);
+                fStageLost = readBool("lost", fStageLost);
+                fStageMonitor = readInt("monitor", fStageMonitor);
+                fStagePresented = readInt("presented", fStagePresented);
+                fStageFrames = readInt("frames", fStageFrames);
+                fStageNext = readBool("next", fStageNext);
+                fStageOverlap = readBool("overlap", fStageOverlap);
+                if (const auto error = row.find("error");
+                    error != row.end() && error->value().is_string()) {
+                    fStageError =
+                        QString::fromStdString(std::string(error->value().as_string()));
+                }
+                if (const auto name = row.find("monitorName");
+                    name != row.end() && name->value().is_string()) {
+                    fStageMonitorName =
+                        QString::fromStdString(std::string(name->value().as_string()));
+                }
+                emit stageChanged();
+            }
+        }
         return;
     }
 
@@ -706,6 +836,7 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         bool liveCapable = false;
         bool transitionOptionsCapable = false;
         bool outputRoutingCapable = false;
+        bool stageCapable = false;
         if (payload.contains("capabilities") && payload.at("capabilities").is_array()) {
             for (const auto& capability : payload.at("capabilities").as_array()) {
                 if (!capability.is_string()) {
@@ -779,6 +910,12 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                     // matrix (milestone FO). Without it the frontend keeps
                     // the audience-only path and sends no routing.
                     outputRoutingCapable = true;
+                } else if (capability.as_string() == proto::kCapabilityStageOutput) {
+                    // Minor 23: the worker can drive a second presentation
+                    // window. Only a hello naming this may be sent the stage
+                    // methods, and only then does the matrix offer Stage
+                    // activation.
+                    stageCapable = true;
                 } else if (capability.as_string() == proto::kCapabilityTransitionOptions) {
                     // The worker takes its fade LENGTHS from the durations a
                     // present carries (task TR.1). Its absence is the common
@@ -805,6 +942,10 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         if (fOutputRoutingCapable != outputRoutingCapable) {
             fOutputRoutingCapable = outputRoutingCapable;
             emit outputRoutingChanged();
+        }
+        if (fStageCapable != stageCapable) {
+            fStageCapable = stageCapable;
+            emit stageChanged();
         }
         fFontListCapable = fontListCapable;
         fFontListState = fontListCapable ? QStringLiteral("idle")
@@ -1351,6 +1492,80 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         // whether a restore is now on air, and what the live indicators
         // describe — the model's answers, re-exported as sceneChanged.
         fPresent->updateFromStatus(payload);
+        // Display inventory (FO.5a.2): a changed generation means the
+        // connected set moved; re-read the rows so a stale stage selection is
+        // visibly stale rather than quietly re-pointed.
+        if (const auto generation = payload.find("displaysGeneration");
+            generation != payload.end() && generation->value().is_number()) {
+            const qint64 read =
+                static_cast<qint64>(generation->value().to_number<std::uint64_t>());
+            if (read != fDisplayGeneration) {
+                fDisplayGeneration = read;
+                sendRequest("output.displays", {});
+                emit displaysChanged();
+            }
+        }
+        // Stage lifecycle (minor 23): the worker's own presented truth. A
+        // stale/failed stage never changes the audience's scene block above.
+        if (const auto stageEntry = payload.find("stage");
+            stageEntry != payload.end() && stageEntry->value().is_object()) {
+            const boost::json::object& stage = stageEntry->value().as_object();
+            const auto readBool = [&stage](const char* key, bool fallback) {
+                const auto found = stage.find(key);
+                return found != stage.end() && found->value().is_bool()
+                           ? found->value().as_bool()
+                           : fallback;
+            };
+            const auto readInt = [&stage](const char* key, qint64 fallback) {
+                const auto found = stage.find(key);
+                if (found == stage.end() || !found->value().is_number()) {
+                    return fallback;
+                }
+                const boost::json::value& value = found->value();
+                if (value.is_int64()) {
+                    return static_cast<qint64>(value.as_int64());
+                }
+                if (value.is_uint64()) {
+                    return static_cast<qint64>(value.as_uint64());
+                }
+                return static_cast<qint64>(value.as_double());
+            };
+            const auto readText = [&stage](const char* key, const QString& fallback) {
+                const auto found = stage.find(key);
+                return found != stage.end() && found->value().is_string()
+                           ? QString::fromStdString(std::string(found->value().as_string()))
+                           : fallback;
+            };
+            const bool enabled = readBool("enabled", fStageEnabled);
+            const bool active = readBool("active", fStageActive);
+            const bool lost = readBool("lost", fStageLost);
+            const qint64 monitor = readInt("monitor", fStageMonitor);
+            const qint64 presented = readInt("presented", fStagePresented);
+            const qint64 frames = readInt("frames", fStageFrames);
+            const bool next = readBool("next", fStageNext);
+            const bool overlap = readBool("overlap", fStageOverlap);
+            const QString error = readText("error", fStageError);
+            const QString monitorName = readText("monitorName", fStageMonitorName);
+            if (enabled != fStageEnabled || active != fStageActive || lost != fStageLost ||
+                monitor != fStageMonitor || presented != fStagePresented ||
+                frames != fStageFrames || next != fStageNext || overlap != fStageOverlap ||
+                error != fStageError || monitorName != fStageMonitorName) {
+                fStageEnabled = enabled;
+                fStageActive = active;
+                fStageLost = lost;
+                fStageMonitor = monitor;
+                fStagePresented = presented;
+                fStageFrames = frames;
+                fStageNext = next;
+                fStageOverlap = overlap;
+                fStageError = error;
+                fStageMonitorName = monitorName;
+                emit stageChanged();
+            }
+        }
+        // The stage bundle is eligible only once its cue is LIVE: status is
+        // where the audience's acknowledgement reaches this side.
+        maybePresentStage();
         // The preview block (task 6.19a2): the worker's own counters, and the
         // one place a target the worker stood down on its own is noticed and
         // asked for again. Owned end to end by the consumer.
@@ -1975,10 +2190,15 @@ void WorkerController::clearBackground() {
 }
 
 void WorkerController::clearAll() {
+    // Clear All is the one audience clear with stage scope (FO.5b.2): the
+    // current and next regions plus the optional visual layers go on every
+    // enabled target. Per-layer clears below keep their audience-only scope.
+    clearStageOutput();
     fPresent->clearAll();
 }
 
 void WorkerController::restoreOutput() {
+    restoreStageOutput();
     fPresent->restoreOutput();
 }
 
@@ -2006,6 +2226,182 @@ void WorkerController::selectDisplay(qint64 index) {
     }
     sendRequest("output.select",
                 boost::json::object{{"monitor", static_cast<std::int64_t>(index)}});
+}
+
+void WorkerController::configureStage(bool enabled, qint64 monitorIndex,
+                                      const QVariantList& layers) {
+    fStageError.clear();
+    if (!fConnected || !fHandshakeDone) {
+        fStageError = QStringLiteral("worker not connected");
+        emit stageChanged();
+        return;
+    }
+    if (!fStageCapable) {
+        fStageError = QStringLiteral("this worker does not drive a stage output");
+        emit stageChanged();
+        return;
+    }
+    QVariantMap monitor;
+    QString identity;
+    if (enabled) {
+        for (const QVariant& row : fDisplays) {
+            const QVariantMap display = row.toMap();
+            if (display.value(QStringLiteral("index")).toLongLong() == monitorIndex) {
+                identity = display.value(QStringLiteral("identity")).toString();
+                break;
+            }
+        }
+        if (identity.isEmpty()) {
+            fStageError = QStringLiteral("choose an attached display for the stage");
+            emit stageChanged();
+            return;
+        }
+        monitor.insert(QStringLiteral("index"), monitorIndex);
+        monitor.insert(QStringLiteral("identity"), identity);
+        monitor.insert(QStringLiteral("inventory"), fDisplayGeneration);
+    }
+    ++fStageGeneration;
+    boost::json::array mask;
+    for (const QVariant& layer : layers) {
+        const QString name = layer.toString();
+        if (name == QStringLiteral("notes")) {
+            // Notes have no production data source yet: accepted by the
+            // routing contract but never offered as a live stage layer.
+            continue;
+        }
+        mask.push_back(boost::json::value(name.toStdString()));
+    }
+    boost::json::object params{{"enabled", enabled},
+                               {"layers", std::move(mask)},
+                               {"generation", fStageGeneration}};
+    if (enabled) {
+        params["monitor"] = boost::json::object{{"index", monitorIndex},
+                                                {"identity", identity.toStdString()},
+                                                {"inventory", fDisplayGeneration}};
+    }
+    fStageEnabled = enabled;  // pending; status publishes the observed answer
+    emit stageChanged();
+    fStageConfigureRequestId = sendRequest(proto::kMethodStageConfigure, std::move(params));
+    if (enabled && !fStageRetainedBundleJson.isEmpty()) {
+        // Enabling during a live cue draws that cue's retained bundle
+        // (FO.5c.1). The disable invalidated the worker's old bundle epoch,
+        // so file it again rather than presenting a stale revision.
+        refileStageBundle(false);
+    }
+}
+
+void WorkerController::presentCueWithStage(const QString& cueKey, const QString& sceneJson,
+                                           const QString& bundleJson) {
+    if (!fStageCapable || bundleJson.isEmpty()) {
+        if (fStageCapable) {
+            // A direct/browsed go with no Stage-compilable sequence must not
+            // leave the previous cue's words standing on the stage. Clear its
+            // current/next regions; the retained bundle is kept for Restore.
+            clearStageOutput();
+        }
+        fPresent->presentCueJson(cueKey, sceneJson);
+        return;
+    }
+    ++fStageGoSerial;
+    const qint64 serial = fStageGoSerial;
+    fStageRetainedBundleJson = bundleJson;
+    fStagePendingCueKey = cueKey;
+    fStagePendingPresentSerial = serial;
+    fStageEligibleAfterRevision = fPresent->sceneActive();
+    fStagePresentSent = false;
+    fStageBundleRevision = 0;
+    fStageBundleGeneration = fStageGeneration;
+    // File the stage bundle before/alongside the audience Go. It is not
+    // eligible until that Go's cue becomes LIVE; the status poll below sends
+    // the present.
+    boost::json::value parsed;
+    try {
+        parsed = boost::json::parse(bundleJson.toStdString());
+    } catch (const std::exception& error) {
+        fStageError = QStringLiteral("stage bundle is not JSON: %1")
+                          .arg(QString::fromUtf8(error.what()));
+        emit stageChanged();
+        fPresent->presentCueJson(cueKey, sceneJson);
+        return;
+    }
+    if (!parsed.is_object()) {
+        fPresent->presentCueJson(cueKey, sceneJson);
+        return;
+    }
+    fStagePreparedSerial = serial;
+    fStagePrepareRequestId =
+        sendRequest(proto::kMethodStagePrepare,
+                    boost::json::object{{"bundle", parsed.as_object()},
+                                        {"generation", fStageBundleGeneration}});
+    // The audience Go is the same one ShowPage always sent. Stage failure is
+    // reported on the stage lane and never withholds the audience cue.
+    fPresent->presentCueJson(cueKey, sceneJson);
+}
+
+void WorkerController::clearStageOutput() {
+    if (!fConnected || !fHandshakeDone || !fStageCapable) {
+        return;
+    }
+    fStagePresentSent = false;
+    fStageBundleRevision = 0;
+    fStagePendingPresentSerial = 0;
+    sendRequest(proto::kMethodStageClear,
+                boost::json::object{{"generation", ++fStageGeneration}});
+}
+
+void WorkerController::restoreStageOutput() {
+    refileStageBundle(true);
+}
+
+void WorkerController::refileStageBundle(bool waitForAudience) {
+    if (!fConnected || !fHandshakeDone || !fStageCapable ||
+        fStageRetainedBundleJson.isEmpty()) {
+        return;
+    }
+    boost::json::value parsed;
+    try {
+        parsed = boost::json::parse(fStageRetainedBundleJson.toStdString());
+    } catch (const std::exception&) {
+        return;
+    }
+    if (!parsed.is_object()) {
+        return;
+    }
+    fStageBundleRevision = 0;
+    fStageBundleGeneration = ++fStageGeneration;
+    fStagePreparedSerial = fStageGoSerial;
+    fStagePendingPresentSerial = 0;
+    fStageEligibleAfterRevision =
+        waitForAudience ? fPresent->sceneActive() : std::numeric_limits<qint64>::min();
+    fStagePresentSent = false;
+    fStagePrepareRequestId =
+        sendRequest(proto::kMethodStagePrepare,
+                    boost::json::object{{"bundle", parsed.as_object()},
+                                        {"generation", fStageBundleGeneration}});
+}
+
+void WorkerController::maybePresentStage() {
+    if (!fStageCapable || fStageBundleRevision <= 0 || fStagePresentSent) {
+        return;
+    }
+    // The corresponding audience frame must have COMMITTED: a newer published
+    // revision than the one visible when the Go was sent. A repeated Go on
+    // the same cue key therefore cannot borrow the previous presentation's
+    // acknowledgement.
+    if (fPresent->sceneActive() <= fStageEligibleAfterRevision) {
+        return;
+    }
+    if (fStagePendingPresentSerial != 0) {
+        // A Go's bundle waits for THAT cue to be the acknowledged live cue.
+        // A pending or superseded go must not move the stage early.
+        if (fPresent->liveCueKey() != fStagePendingCueKey) {
+            return;
+        }
+    }
+    fStagePresentSent = true;
+    sendRequest(proto::kMethodStagePresent,
+                boost::json::object{{"revision", fStageBundleRevision},
+                                    {"generation", fStageBundleGeneration}});
 }
 
 // --- media transport (task 6.15a, review R15) ---

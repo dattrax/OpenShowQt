@@ -14,6 +14,7 @@ const char* const kShowThumbLevelKey = "showThumbLevel";
 const char* const kOutputRoutingKey = "outputRouting";
 const char* const kAudienceMonitorKey = "output.monitor.audience";
 const char* const kStageMonitorKey = "output.monitor.stage";
+const char* const kStageMonitorIdentityKey = "output.monitor.stage.identity";
 const char* const kBroadcastSourceKey = "output.source.broadcast";
 
 std::filesystem::path defaultSettingsPath() {
@@ -40,6 +41,8 @@ AppSettings::AppSettings(QObject* parent, std::filesystem::path settingsPath)
                          kMaxThumbLevel)),
       fAudienceMonitor(fSettings.value(QLatin1String(kAudienceMonitorKey), -1).toInt()),
       fStageMonitor(fSettings.value(QLatin1String(kStageMonitorKey), -1).toInt()),
+      fStageMonitorIdentity(
+          fSettings.value(QLatin1String(kStageMonitorIdentityKey)).toString()),
       fBroadcastSource(fSettings.value(QLatin1String(kBroadcastSourceKey),
                                       QStringLiteral("OpenShow"))
                            .toString()) {
@@ -152,6 +155,16 @@ void AppSettings::setStageMonitor(int index) {
     }
     fStageMonitor = index;
     fSettings.setValue(QLatin1String(kStageMonitorKey), index);
+    fSettings.sync();
+    emit settingsChanged();
+}
+
+void AppSettings::setStageMonitorIdentity(const QString& identity) {
+    if (fStageMonitorIdentity == identity) {
+        return;
+    }
+    fStageMonitorIdentity = identity;
+    fSettings.setValue(QLatin1String(kStageMonitorIdentityKey), identity);
     fSettings.sync();
     emit settingsChanged();
 }

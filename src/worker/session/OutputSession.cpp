@@ -192,6 +192,12 @@ void OutputSession::close() {
     // below. Owner since task 6.18b: session/BackgroundTransport.h states
     // the shutdown rules; it is idempotent, like this close() is.
     fTransport.shutdown();
+    if (fStageWindow || fStageSwapchain || fStageScene) {
+        // The stage goes down before the context and renderer it draws with.
+        // Target-local teardown: the audience's window, device and audio are
+        // untouched.
+        teardownStageTarget("", false);
+    }
     if (fSwapchain) {
         fSwapchain->destroy();
         fSwapchain.reset();
@@ -214,6 +220,10 @@ void OutputSession::close() {
         fWindow->close();
         fWindow.reset();
     }
+    // The process owns GLFW (stage delivery FO.5a.1): individual windows
+    // never terminate it. Every window is gone by this point, so this is the
+    // one final termination — the ordering the plan requires.
+    OutputWindow::shutdownGlfw();
 }
 
 bool OutputSession::createSwapchain() {
@@ -266,20 +276,27 @@ bool OutputSession::applyOutputRouting(const openshow::domain::OutputRouting& ro
     }
     // A destination this worker cannot drive is refused by name rather than
     // acknowledged and ignored: the operator's matrix must never claim that
-    // words reached a screen or a stream this build does not own.
-    for (const OutputTarget target : {OutputTarget::Stage, OutputTarget::Broadcast}) {
-        if (!routing.isEnabled(target)) {
-            continue;
-        }
+    // words reached a stream this build does not own. The stage HDMI
+    // destination IS driveable since minor 23; NDI is not.
+    if (routing.isEnabled(OutputTarget::Broadcast)) {
         if (error != nullptr) {
-            *error = target == OutputTarget::Stage
-                         ? "the stage HDMI destination is not available in this worker yet"
-                         : "the NDI sender is not available in this worker yet";
+            *error = "the NDI sender is not available in this worker yet";
         }
         return false;
     }
     std::lock_guard<std::mutex> lock(fMutex);
     fRouting = routing;
+    if (fStageConfig.enabled) {
+        // The stage column is a live target's mask: apply it at the next
+        // stage frame without touching the audience column.
+        const uint32_t stageMask = routing.mask(OutputTarget::Stage);
+        if (stageMask != fStageConfig.layers) {
+            fStageConfig.layers = stageMask;
+            fStageRenderLayers = stageMask;
+            fStageConfigDirty = true;
+            fStageNeedsPresent = true;
+        }
+    }
     // The audience column is this worker's own window: its mask applies at
     // the next frame boundary through the store's ordinary toggle path, so
     // the disable masks stay one implementation. `enabled` is the
@@ -315,6 +332,13 @@ bool OutputSession::selectMonitor(int index, uint64_t* revisionOut) {
     bool accepted = false;
     {
         std::lock_guard<std::mutex> lock(fMutex);
+        // Collision in the other direction (FO.5c.1): the audience may not
+        // move onto the panel the stage owns. Refused before anything moves.
+        if (index >= 0 && index < static_cast<int>(fDisplays.size()) &&
+            fStageConfig.enabled &&
+            fDisplays[static_cast<std::size_t>(index)].identity == fStageConfig.identity) {
+            return false;
+        }
         // The range rule — -1 windowed, a panel index that exists in the
         // snapshot GLFW refreshed — lives with the desired destination it
         // validates against (task 6.18a).
@@ -330,6 +354,208 @@ bool OutputSession::selectMonitor(int index, uint64_t* revisionOut) {
 std::vector<OutputSession::DisplayInfo> OutputSession::displays() const {
     std::lock_guard<std::mutex> lock(fMutex);
     return fDisplays;
+}
+
+uint64_t OutputSession::displaysGeneration() const {
+    std::lock_guard<std::mutex> lock(fMutex);
+    return fDisplayGeneration;
+}
+
+bool OutputSession::configureStage(const StageConfiguration& configuration, StageStatus* statusOut,
+                                   std::string* error) {
+    StageConfiguration accepted = configuration;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (accepted.enabled) {
+            std::string why;
+            if (!openshow::domain::validRoutingMask(openshow::domain::OutputTarget::Stage,
+                                                    accepted.layers, &why)) {
+                if (error != nullptr) {
+                    *error = "stage routing mask: " + why;
+                }
+                return false;
+            }
+            if ((accepted.layers & openshow::domain::routingLayerBit(
+                                       openshow::domain::RoutingLayer::Notes)) != 0) {
+                if (error != nullptr) {
+                    *error = "speaker notes have no stage data source yet";
+                }
+                return false;
+            }
+            if (accepted.identity.empty()) {
+                if (error != nullptr) {
+                    *error = "stage cannot be enabled without a chosen display";
+                }
+                return false;
+            }
+            if (accepted.inventoryGeneration != 0 &&
+                accepted.inventoryGeneration != fDisplayGeneration) {
+                if (error != nullptr) {
+                    *error = "the display list changed after this stage selection; "
+                             "choose the stage display again";
+                }
+                return false;
+            }
+            const int index = displayIndexForIdentity(fDisplays, accepted.identity);
+            if (index < 0) {
+                if (error != nullptr) {
+                    *error = "the selected stage display is not attached";
+                }
+                return false;
+            }
+            // The identity is authoritative; an index that disagrees with it
+            // is a stale client-side enumeration and is refused rather than
+            // silently reinterpreted as another panel.
+            if (accepted.monitorIndex >= 0 && accepted.monitorIndex != index) {
+                if (error != nullptr) {
+                    *error = "the stage display index no longer names this display";
+                }
+                return false;
+            }
+            accepted.monitorIndex = index;
+            // Collision in this direction: the audience already owns the
+            // panel the stage was asked to use. The reverse direction is
+            // checked by selectMonitor().
+            const SceneStore::Published published = fStore.published();
+            const int audience = published.monitor;
+            if (audience >= 0 && audience < static_cast<int>(fDisplays.size()) &&
+                fDisplays[static_cast<std::size_t>(audience)].identity == accepted.identity) {
+                if (error != nullptr) {
+                    *error = "the stage display is already the audience display";
+                }
+                return false;
+            }
+            if (fStageConfig.enabled == false) {
+                // Enabling during a live cue keeps the retained bundle: the
+                // render thread draws it as soon as the target is up. Only a
+                // disable/clear invalidates bundles.
+            }
+        } else {
+            // A disabled configuration is always accepted and invalidates
+            // any bundle the target still held.
+            ++fStageEpoch;
+            fStageDesiredBundle = 0;
+            fStageRenderCurrent.reset();
+            fStageRenderNext.reset();
+            fStageRenderRevision = 0;
+        }
+        fStageConfig = accepted;
+        fStageConfigDirty = true;
+        fStage.enabled = accepted.enabled;
+        fStage.generation = accepted.generation;
+        fStage.monitor = accepted.monitorIndex;
+        fStage.identity = accepted.identity;
+        if (accepted.enabled) {
+            fStage.error.clear();
+        } else {
+            fStage.presented = 0;
+            fStage.next = false;
+            fStage.overlap = false;
+            fStage.active = false;
+            fStage.lost = false;
+        }
+        if (statusOut != nullptr) {
+            *statusOut = fStage;
+        }
+    }
+    wakeRenderThread();
+    return true;
+}
+
+bool OutputSession::prepareStage(const StageBundle& bundle, uint64_t* revisionOut,
+                                 std::string* error) {
+    if (bundle.current == nullptr) {
+        if (error != nullptr) {
+            *error = "stage.prepare requires a current scene";
+        }
+        return false;
+    }
+    StageBundleState state;
+    state.current = std::make_shared<const openshow::scene::Scene>(*bundle.current);
+    if (bundle.next != nullptr) {
+        state.next = std::make_shared<const openshow::scene::Scene>(*bundle.next);
+    }
+    state.overlap = bundle.overlap;
+    state.generation = bundle.generation;
+    std::lock_guard<std::mutex> lock(fMutex);
+    state.epoch = fStageEpoch;
+    const uint64_t revision = fNextStageBundleId++;
+    fStageBundles.emplace(revision, std::move(state));
+    // Bounded: the oldest bundle that is not the desired one is evicted. The
+    // stage has no store of its own beyond the handful a rapid Go burst can
+    // still reach.
+    while (fStageBundles.size() > kMaxStageBundles) {
+        auto victim = fStageBundles.begin();
+        if (victim->first == fStageDesiredBundle) {
+            ++victim;
+            if (victim == fStageBundles.end()) {
+                break;
+            }
+        }
+        fStageBundles.erase(victim);
+    }
+    if (revisionOut != nullptr) {
+        *revisionOut = revision;
+    }
+    return true;
+}
+
+bool OutputSession::presentStage(uint64_t revision, uint64_t generation, std::string* error) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    if (revision == 0) {
+        fStageDesiredBundle = 0;
+        fStageNeedsPresent = true;
+        wakeRenderThread();
+        return true;
+    }
+    const auto found = fStageBundles.find(revision);
+    if (found == fStageBundles.end()) {
+        if (error != nullptr) {
+            *error = "stage.present names an unknown or retired stage bundle";
+        }
+        return false;
+    }
+    if (found->second.epoch != fStageEpoch) {
+        if (error != nullptr) {
+            *error = "stage.present names a bundle from before the last clear";
+        }
+        return false;
+    }
+    if (generation != 0 && found->second.generation != 0 &&
+        found->second.generation != generation) {
+        if (error != nullptr) {
+            *error = "stage.present does not match the bundle's generation";
+        }
+        return false;
+    }
+    fStageDesiredBundle = revision;
+    fStageNeedsPresent = true;
+    wakeRenderThread();
+    return true;
+}
+
+void OutputSession::clearStage(uint64_t generation) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    ++fStageEpoch;
+    fStageDesiredBundle = 0;
+    fStageRenderCurrent.reset();
+    fStageRenderNext.reset();
+    fStageRenderRevision = 0;
+    fStageRenderOverlap = false;
+    fStageNeedsPresent = true;
+    fStage.presented = 0;
+    fStage.presentedGeneration = generation;
+    fStage.next = false;
+    fStage.overlap = false;
+    fStage.error.clear();
+    if (fStage.active) {
+        wakeRenderThread();
+    }
+}
+
+OutputSession::StageStatus OutputSession::stageStatus() const {
+    std::lock_guard<std::mutex> lock(fMutex);
+    return fStage;
 }
 
 bool OutputSession::prepareScene(const openshow::scene::Scene& scene, uint64_t jobId,
@@ -1299,6 +1525,7 @@ void OutputSession::refreshDisplaySnapshot() {
             info.index = i;
             const char* name = glfwGetMonitorName(monitors[i]);
             info.name = name ? name : "monitor";
+            glfwGetMonitorPos(monitors[i], &info.x, &info.y);
             const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
             if (mode) {
                 info.width = mode->width;
@@ -1309,7 +1536,31 @@ void OutputSession::refreshDisplaySnapshot() {
         }
     }
     std::lock_guard<std::mutex> lock(fMutex);
+    const bool changed = !sameDisplayInventory(fDisplays, snapshot);
+    if (changed) {
+        ++fDisplayGeneration;
+        // Stage hotplug (FO.5a.2/FO.5c.1): losing the selected panel clears
+        // session enablement immediately, before another render/event pass
+        // can remap the window. The render thread retires the resources; no
+        // fallback display is ever chosen.
+        if (fStageConfig.enabled && !fStageConfig.identity.empty() &&
+            !displayIdentityPresent(snapshot, fStageConfig.identity)) {
+            fStage.error = "the selected stage display was disconnected";
+            fStage.lost = true;
+            fStage.active = false;
+            fStage.enabled = false;
+            fStageConfig.enabled = false;
+            fStageConfigDirty = true;
+            ++fStageEpoch;
+            fStageDesiredBundle = 0;
+            fStageRenderCurrent.reset();
+            fStageRenderNext.reset();
+            fStageRenderRevision = 0;
+        }
+    }
+    stampDisplayIdentities(&snapshot, fDisplays, fDisplayGeneration);
     fDisplays = std::move(snapshot);
+    fStatus.displaysGeneration = fDisplayGeneration;
 }
 
 OutputSession::Status OutputSession::status() const {
@@ -1357,6 +1608,9 @@ OutputSession::Status OutputSession::status() const {
     // reading of its owner, never a session-side mirror that could be
     // advanced out of step.
     snapshot.preview = fPreview.status();
+    // The stage target (stage delivery): its own observed state, never
+    // borrowed from the audience's published revision.
+    snapshot.stage = fStage;
     return snapshot;
 }
 
@@ -1424,6 +1678,373 @@ void OutputSession::applyPendingDisplayChange(const FrameSnapshot& snapshot) {
     fWindow->resetFramebufferResize();  // setMonitor's resize is done here
     // monitor/monitorName join the other applied fields in the frame's
     // commit block: a moved window is on air when its frame presents.
+}
+
+bool OutputSession::createStageSwapchain() {
+    if (fStageSurface == VK_NULL_HANDLE || !fStageWindow || !fVk || !fContext) {
+        return false;
+    }
+    Swapchain::CreateInfo info;
+    info.device = fVk->device();
+    info.physicalDevice = fVk->physicalDevice();
+    info.surface = fStageSurface;
+    info.queue = fVk->queue();
+    info.presentQueueIndex = fVk->queueIndex();
+    info.context = fContext.get();
+    info.imageCount = 2;  // a secondary panel needs fewer queued frames
+    if (!fStageWindow->framebufferSize(&info.width, &info.height)) {
+        info.width = 1920;
+        info.height = 1080;
+    }
+    fStageSwapchain = std::make_unique<Swapchain>();
+    if (!fStageSwapchain->create(info)) {
+        fStageSwapchain.reset();
+        return false;
+    }
+    return true;
+}
+
+bool OutputSession::createStageTargetLocked() {
+    StageConfiguration config;
+    std::vector<DisplayInfo> displays;
+    int audience = -1;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        config = fStageConfig;
+        displays = fDisplays;
+        audience = fStore.published().monitor;
+    }
+    if (!config.enabled) {
+        return false;
+    }
+    if (config.identity.empty()) {
+        stageFault("stage cannot be enabled without a chosen display");
+        return false;
+    }
+    const int index = displayIndexForIdentity(displays, config.identity);
+    if (index < 0) {
+        stageFault("the selected stage display is no longer attached");
+        return false;
+    }
+    // Collision is re-checked at execution, not only at acceptance: the
+    // audience may have moved onto this panel since the command.
+    if (audience >= 0 && audience < static_cast<int>(displays.size()) &&
+        displays[static_cast<std::size_t>(audience)].identity == config.identity) {
+        stageFault("the stage display is already the audience display");
+        return false;
+    }
+
+    if (!fStageWindow) {
+        fStageWindow = std::make_unique<OutputWindow>();
+        OutputWindow::Options options;
+        options.title = "OpenShowQt stage";
+        options.monitor = index;
+        if (!fStageWindow->open(options)) {
+            fStageWindow.reset();
+            stageFault("could not create the stage window on the selected display");
+            return false;
+        }
+    } else if (fStageWindow->monitor() != index) {
+        if (!fStageWindow->setMonitor(index, 300)) {
+            stageFault("could not move the stage window to the selected display");
+            return false;
+        }
+        if (fStageSwapchain) {
+            fStageSwapchain->destroy(false);
+            fStageSwapchain.reset();
+        }
+    }
+    if (fStageSurface == VK_NULL_HANDLE) {
+        std::string surfaceError;
+        if (!fVk->createSurface(fStageWindow->handle(), &fStageSurface, &surfaceError)) {
+            stageFault(surfaceError);
+            return false;
+        }
+    }
+    if (!fStageScene) {
+        std::string buildError;
+        // A companion shares the audience's text services but owns its own
+        // layout and decoded-image caches: the stage's churn can never evict
+        // the audience's layouts (R16 isolation).
+        fStageScene = SceneRenderer::createCompanion(*fScene, 32 * 1024 * 1024, &buildError);
+        if (!fStageScene) {
+            stageFault("could not build the stage compositor: " + buildError);
+            return false;
+        }
+    }
+    if (!fStageSwapchain && !createStageSwapchain()) {
+        stageFault("could not create the stage swapchain");
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        fStage.active = true;
+        fStage.enabled = true;
+        fStage.lost = false;
+        fStage.monitor = index;
+        fStage.identity = config.identity;
+        fStage.generation = config.generation;
+        fStage.monitorName = fDisplays[static_cast<std::size_t>(index)].name;
+        fStage.width = fStageSwapchain ? fStageSwapchain->width() : 0;
+        fStage.height = fStageSwapchain ? fStageSwapchain->height() : 0;
+        fStage.error.clear();
+        fStageRenderLayers = config.layers;
+        fStagePresentedInventory = fDisplayGeneration;
+    }
+    if (fStageScene) {
+        using openshow::domain::RoutingLayer;
+        using openshow::domain::routingLayerBit;
+        fStageScene->setLayerEnabled(LayerId::kBackground,
+                                     (config.layers & routingLayerBit(RoutingLayer::Background)) != 0);
+        fStageScene->setLayerEnabled(LayerId::kImages,
+                                     (config.layers & routingLayerBit(RoutingLayer::Images)) != 0);
+        fStageScene->setLayerEnabled(LayerId::kWords,
+                                     (config.layers & routingLayerBit(RoutingLayer::Words)) != 0);
+    }
+    fStageNeedsPresent = true;
+    std::fprintf(stderr, "openshow-worker: stage output active on monitor %d (%s)\n", index,
+                 displays[static_cast<std::size_t>(index)].name.c_str());
+    return true;
+}
+
+void OutputSession::applyPendingStageConfiguration() {
+    StageConfiguration config;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (!fStageConfigDirty) {
+            return;
+        }
+        fStageConfigDirty = false;
+        config = fStageConfig;
+    }
+    if (!config.enabled) {
+        if (fStageWindow) {
+            teardownStageTarget("", false);
+        }
+        std::lock_guard<std::mutex> lock(fMutex);
+        fStage.active = false;
+        fStage.enabled = false;
+        fStage.presented = 0;
+        return;
+    }
+    createStageTargetLocked();
+}
+
+void OutputSession::teardownStageTarget(const std::string& why, bool lost) {
+    if (fStageSwapchain) {
+        // Queue-scoped, not device-wide: retiring the stage must not wait on
+        // unrelated audience work (FO.1e.2). The stage's final present is
+        // already queued before this is called.
+        fStageSwapchain->destroy(false);
+        fStageSwapchain.reset();
+    }
+    fStageScene.reset();
+    if (fStageSurface != VK_NULL_HANDLE && fVk) {
+        fVk->destroySurface(fStageSurface);
+        fStageSurface = VK_NULL_HANDLE;
+    }
+    if (fStageWindow) {
+        // Closing the stage window destroys ONLY this window; the process's
+        // GLFW lifetime and the audience window stay alive (FO.5a.1).
+        fStageWindow->close();
+        fStageWindow.reset();
+    }
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        fStage.active = false;
+        fStage.width = 0;
+        fStage.height = 0;
+        if (lost) {
+            fStage.lost = true;
+            fStage.enabled = false;
+            fStageConfig.enabled = false;
+            ++fStageEpoch;
+            fStageDesiredBundle = 0;
+            fStageRenderCurrent.reset();
+            fStageRenderNext.reset();
+            fStageRenderRevision = 0;
+        }
+        if (!why.empty()) {
+            fStage.error = why;
+        }
+    }
+    fStageConsecutiveFailures = 0;
+}
+
+void OutputSession::stageFault(const std::string& why) {
+    std::fprintf(stderr, "openshow-worker: stage fault: %s\n", why.c_str());
+    std::lock_guard<std::mutex> lock(fMutex);
+    fStage.error = why;
+    fStage.active = false;
+    fStage.lost = true;
+    fStage.enabled = false;
+    fStageConfig.enabled = false;
+    fStageConfigDirty = true;  // the render thread retires the target
+    ++fStageEpoch;
+    fStageDesiredBundle = 0;
+    fStageRenderCurrent.reset();
+    fStageRenderNext.reset();
+    fStageRenderRevision = 0;
+}
+
+bool OutputSession::presentStageFrame(SkImage* videoImage, VkSemaphore* doneOut) {
+    if (doneOut != nullptr) {
+        *doneOut = VK_NULL_HANDLE;
+    }
+    if (!stageTargetReady() || !fStageWindow) {
+        return false;
+    }
+    if (fStageWindow->shouldClose()) {
+        stageFault("the stage window was closed");
+        return false;
+    }
+    // Resize: rebuild this target's swapchain alone.
+    int width = 0;
+    int height = 0;
+    if (fStageWindow->framebufferSize(&width, &height) &&
+        (fStageWindow->framebufferResized() || width != fStageSwapchain->width() ||
+         height != fStageSwapchain->height())) {
+        fStageSwapchain->destroy(false);
+        fStageSwapchain.reset();
+        if (!createStageSwapchain()) {
+            stageFault("could not recreate the stage swapchain");
+            return false;
+        }
+        fStageWindow->resetFramebufferResize();
+    }
+
+    uint32_t imageIndex = 0;
+    VkResult result = VK_SUCCESS;
+    // A finite wait: a slow secondary panel drops the frame and retries
+    // rather than parking the audience's render thread (FO.1e.2).
+    const auto acquireStarted = std::chrono::steady_clock::now();
+    if (!fStageSwapchain->acquire(&imageIndex, &result, 16'000'000ULL)) {
+        if (result == VK_TIMEOUT) {
+            return false;  // routine backpressure
+        }
+        ++fStageConsecutiveFailures;
+        {
+            std::lock_guard<std::mutex> lock(fMutex);
+            ++fStage.presentFailures;
+            fStage.error = "stage acquire failed";
+        }
+        fStageSwapchain->destroy(false);
+        fStageSwapchain.reset();
+        if (fStageConsecutiveFailures >= 3) {
+            stageFault("the stage surface repeatedly failed to acquire");
+        } else {
+            createStageSwapchain();
+        }
+        return false;
+    }
+    const double acquireMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                  acquireStarted)
+            .count();
+    SkSurface* surface = fStageSwapchain->surface(imageIndex);
+    if (!surface) {
+        ++fStageConsecutiveFailures;
+        fStageSwapchain->destroy(false);
+        fStageSwapchain.reset();
+        if (fStageConsecutiveFailures >= 3) {
+            stageFault("the stage swapchain has no drawable surface");
+        } else {
+            createStageSwapchain();
+        }
+        return false;
+    }
+
+    const double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - fStartTime).count();
+    SceneFrame frame;
+    frame.scene = fStageRenderCurrent;
+    frame.timeSeconds = elapsed;
+    frame.wallClock = std::time(nullptr);
+    frame.revision = fStageRenderRevision;
+    // Current cue's routed layers. Background off still leaves the opaque
+    // black clear; images/words remove only their authored kinds.
+    using openshow::domain::RoutingLayer;
+    using openshow::domain::routingLayerBit;
+    const uint32_t mask = fStageRenderLayers;
+    fStageScene->setLayerEnabled(
+        LayerId::kBackground, (mask & routingLayerBit(RoutingLayer::Background)) != 0);
+    fStageScene->setLayerEnabled(LayerId::kImages,
+                                 (mask & routingLayerBit(RoutingLayer::Images)) != 0);
+    fStageScene->setLayerEnabled(LayerId::kWords,
+                                 (mask & routingLayerBit(RoutingLayer::Words)) != 0);
+    fStageScene->draw(frame, surface->getCanvas(), fStageSwapchain->width(),
+                      fStageSwapchain->height(), {}, videoImage);
+    // The next cue is its own layer pass: only when the stage's Next bit is
+    // on and the retained bundle carried next text.
+    const bool drawNext = fStageRenderNext != nullptr &&
+                          (mask & routingLayerBit(RoutingLayer::Next)) != 0;
+    if (drawNext) {
+        SceneFrame nextFrame;
+        nextFrame.scene = fStageRenderNext;
+        nextFrame.timeSeconds = elapsed;
+        nextFrame.wallClock = std::time(nullptr);
+        nextFrame.revision = fStageRenderRevision;
+        fStageScene->drawOverlay(nextFrame, surface->getCanvas(), fStageSwapchain->width(),
+                                 fStageSwapchain->height(), {});
+    }
+
+    VkSemaphore done = VK_NULL_HANDLE;
+    if (videoImage != nullptr) {
+        VkSemaphoreCreateInfo semaphoreInfo = {};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (vkCreateSemaphore(fVk->device(), &semaphoreInfo, nullptr, &done) != VK_SUCCESS) {
+            done = VK_NULL_HANDLE;
+        }
+    }
+    const auto presentStarted = std::chrono::steady_clock::now();
+    const bool presented =
+        fStageSwapchain->flushAndPresent(surface, imageIndex, &result, done);
+    const double presentMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                  presentStarted)
+            .count();
+    if (!presented) {
+        // flushAndPresent flushed before failing, so an attached semaphore is
+        // still signalled; hand it to the presenter rather than destroying a
+        // pending signal.
+        if (done != VK_NULL_HANDLE && doneOut != nullptr) {
+            *doneOut = done;
+        }
+        ++fStageConsecutiveFailures;
+        {
+            std::lock_guard<std::mutex> lock(fMutex);
+            ++fStage.presentFailures;
+            fStage.error = "stage present failed";
+        }
+        fStageSwapchain->destroy(false);
+        fStageSwapchain.reset();
+        if (fStageConsecutiveFailures >= 3) {
+            stageFault("the stage surface repeatedly failed to present");
+        } else {
+            createStageSwapchain();
+        }
+        return false;
+    }
+    fStageConsecutiveFailures = 0;
+    if (done != VK_NULL_HANDLE && doneOut != nullptr) {
+        *doneOut = done;
+    }
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        fStage.active = true;
+        fStage.presented = fStageRenderRevision;
+        fStage.presentedGeneration = fStageRenderGeneration;
+        fStage.next = drawNext;
+        fStage.overlap = fStageRenderOverlap;
+        fStage.width = fStageSwapchain->width();
+        fStage.height = fStageSwapchain->height();
+        fStage.worstAcquireMs = std::max(fStage.worstAcquireMs, acquireMs);
+        fStage.worstPresentMs = std::max(fStage.worstPresentMs, presentMs);
+        ++fStage.frames;
+        fStage.error.clear();
+    }
+    fStageNeedsPresent = false;
+    return true;
 }
 
 void OutputSession::applyLiveBackground(const openshow::scene::Background& wanted) {
@@ -1971,6 +2592,33 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
     // a clock the audience's 800 ms does not own.
     fPreview.drawTargets(previewHandoff(fComposedFrame, videoImage));
 
+    // Stage target (stage delivery FO.1e.2/FO.5c.1): after the audience and
+    // the preview, on spare budget. It draws only when a command made it
+    // dirty or the cue's routed background is video/camera, so a static
+    // stage costs nothing at the audience's cadence. A failure here has
+    // already been recorded against the stage alone; the audience frame's
+    // bookkeeping below is untouched.
+    if (fStageRenderEnabled && stageTargetReady()) {
+        using openshow::domain::RoutingLayer;
+        using openshow::domain::routingLayerBit;
+        const bool stageWantsVideo =
+            videoImage != nullptr && fStageRenderCurrent != nullptr &&
+            (fStageRenderCurrent->background.isVideo ||
+             fStageRenderCurrent->background.isCamera) &&
+            (fStageRenderLayers & routingLayerBit(RoutingLayer::Background)) != 0;
+        if (fStageNeedsPresent || stageWantsVideo) {
+            VkSemaphore stageDone = VK_NULL_HANDLE;
+            presentStageFrame(stageWantsVideo ? videoImage : nullptr, &stageDone);
+            if (stageDone != VK_NULL_HANDLE) {
+                if (liveSlot >= 0 && fLive) {
+                    fLive->presented(liveSlot, stageDone);
+                } else if (videoPresenter) {
+                    videoPresenter->onPresented(videoToken, stageDone);
+                }
+            }
+        }
+    }
+
     // The present's sampling obligation is handed back last:
     // The mirror's readback is CPU-synchronous, so by now
     // every sampling of the slot this frame queued — output and preview —
@@ -2066,6 +2714,18 @@ void OutputSession::housekeep() {
     // Cheap re-enumeration so a hotplug reaches output.displays without
     // GLFW monitor callbacks (the dedicated hotplug story is M6.1).
     refreshDisplaySnapshot();
+
+    // Stage delivery (FO.1e.2): a late compositor configure or a window
+    // resize on the stage schedules exactly one redraw of that target. It
+    // never recreates the audience's swapchain.
+    if (fStageSwapchain) {
+        int stageWidth = 0;
+        int stageHeight = 0;
+        if (fStageSwapchain->extentOutOfDate(&stageWidth, &stageHeight) ||
+            (fStageWindow && fStageWindow->framebufferResized())) {
+            fStageNeedsPresent = true;
+        }
+    }
 }
 
 unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* abort) {
@@ -2093,9 +2753,14 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
         // Controls and retirement reaping precede the scene decision. The
         // session retries a blocked scene only when its transport can join it.
         fTransport.applyTransportOps();
+        // Stage configuration is applied between frames, never mid-draw: a
+        // window creation/move is the only expensive path and it belongs to
+        // an explicit enable or route change (FO.5c.1).
+        applyPendingStageConfiguration();
 
         bool presentNow = false;
         bool previewDue = false;
+        bool stageDue = false;
         FrameSnapshot snapshot;
         auto wakeAt = hardDeadline;
         {
@@ -2161,6 +2826,27 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             // frame() draws exactly it and its successful present credits
             // exactly its revision.
             snapshot = std::move(decision.snapshot);
+            // The stage's own snapshot (FO.5b.2): desired bundle and the
+            // accepted configuration captured in the same critical section
+            // as the audience decision. Commands arriving after this belong
+            // to the next stage frame.
+            fStageRenderEnabled = fStageConfig.enabled;
+            fStageRenderLayers = fStageConfig.layers;
+            fStageRenderCurrent.reset();
+            fStageRenderNext.reset();
+            fStageRenderRevision = 0;
+            fStageRenderOverlap = false;
+            if (fStageDesiredBundle != 0) {
+                const auto found = fStageBundles.find(fStageDesiredBundle);
+                if (found != fStageBundles.end() && found->second.epoch == fStageEpoch) {
+                    fStageRenderCurrent = found->second.current;
+                    fStageRenderNext = found->second.next;
+                    fStageRenderOverlap = found->second.overlap;
+                    fStageRenderRevision = found->first;
+                    fStageRenderGeneration = found->second.generation;
+                }
+            }
+            stageDue = fStageNeedsPresent && fStageRenderEnabled;
             if (!presentNow) {
                 // Either preview target can owe a frame: the MIRROR when the
                 // audience's last presented frame has not reached the stream
@@ -2246,6 +2932,44 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             // show is exactly when the operator edits, so the target cannot
             // wait for the audience to produce a frame of its own.
             fPreview.drawTargets(previewHandoff(fPresentedFrame, held));
+            continue;
+        }
+        if (stageDue) {
+            // A stage-only present (FO.5c.1): a bundle/route/resize change
+            // while the audience is idle. It draws the retained stage bundle
+            // and never advances the audience's fade, revision or media.
+            std::lock_guard queueLock(graphicsQueueMutex());
+            using openshow::domain::RoutingLayer;
+            using openshow::domain::routingLayerBit;
+            const bool wantsVideo =
+                fStageRenderCurrent != nullptr &&
+                (fStageRenderCurrent->background.isVideo ||
+                 fStageRenderCurrent->background.isCamera) &&
+                (fStageRenderLayers & routingLayerBit(RoutingLayer::Background)) != 0;
+            SkImage* heldImage = nullptr;
+            std::optional<VideoSubmission> heldSubmission;
+            VideoPresenter* presenter = fTransport.presenter();
+            if (wantsVideo) {
+                heldSubmission = fTransport.heldVideo();
+                if (heldSubmission && presenter) {
+                    heldImage = presenter->acquireImage(heldSubmission->token,
+                                                        heldSubmission->sequence);
+                }
+            }
+            if (heldImage != nullptr || !wantsVideo) {
+                VkSemaphore stageDone = VK_NULL_HANDLE;
+                if (!presentStageFrame(heldImage, &stageDone)) {
+                    // Bounded retry: an acquire timeout or a not-yet-ready
+                    // target wakes after a short wait instead of spinning.
+                    glfwWaitEventsTimeout(0.005);
+                }
+                if (stageDone != VK_NULL_HANDLE && heldSubmission && presenter) {
+                    presenter->onPresented(heldSubmission->token, stageDone);
+                }
+            }
+            // A wanted-but-unavailable media frame leaves fStageNeedsPresent
+            // set, so the loop sleeps and retries when the transport wakes it
+            // rather than spinning here.
             continue;
         }
         const auto waitUntil = std::min(nextHousekeeping, wakeAt);

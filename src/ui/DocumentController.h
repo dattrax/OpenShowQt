@@ -786,6 +786,16 @@ public:
     // Scene JSON for one slide of the current song (per-slide Present
     // buttons); "" on failure.
     Q_INVOKABLE QString sceneJsonForSlide(const QString& slideId);
+    // Stage delivery FO.5b.1: the retained stage bundle for one Go. `showId`
+    // and `slideId` name the CURRENT cue; `nextShowId`/`nextSlideId` name the
+    // immediate next cue in the presentation sequence, or are empty for the
+    // last cue / a direct presentation with no sequence. Both are compiled on
+    // the Stage role (FO.1c), the next cue is transformed into the v1 next
+    // slot at 55% size, and overlap with a custom current box is reported.
+    // Returns "" when the current cue does not compile.
+    Q_INVOKABLE QString stageBundleJson(const QString& showId, const QString& slideId,
+                                        const QString& nextShowId,
+                                        const QString& nextSlideId) const;
     // TC.5 diagnostics: what the derived picture overlay currently holds and
     // how often it has written the manifest. Never authoring state.
     Q_INVOKABLE int thumbnailCacheEntries() const;

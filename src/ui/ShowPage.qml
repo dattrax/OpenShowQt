@@ -130,7 +130,19 @@ Rectangle {
         const row = showPage.cueRows[at]
         showPage.cueIndex = at
         const json = row.scene || docs.sceneJsonForSlide(row.slideId)
-        if (json !== "") worker.presentCueJson(row.cueKey, json)
+        if (json === "") return
+        // Stage delivery FO.5b.1: the stage bundle is the CURRENT cue
+        // compiled on the Stage role plus the immediate NEXT row's cue (the
+        // same presentation sequence this grid walks). The controller files
+        // it alongside the audience go and presents it only once that cue is
+        // LIVE. Last row -> no next region; a direct/browsed go keeps only
+        // its own cue.
+        const next = at + 1 < showPage.cueRows.length ? showPage.cueRows[at + 1] : null
+        const bundle = worker.stageCapable
+            ? docs.stageBundleJson(row.showId, row.slideId,
+                                   next ? next.showId : "", next ? next.slideId : "")
+            : ""
+        worker.presentCueWithStage(row.cueKey, json, bundle)
     }
     function stepCue(delta) {
         if (showPage.cueRows.length === 0) return

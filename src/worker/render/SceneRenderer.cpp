@@ -59,6 +59,9 @@ public:
     LayerId id() const override { return LayerId::kBackground; }
 
     void draw(const FrameContext& ctx) override {
+        if (ctx.overlayOnly) {
+            return;  // stage next-cue pass: the current background stays
+        }
         const SceneFrame& frame = *ctx.frame;
         if (frame.scene) {
             // Video is never dissolved, and TR.2's durations do not change
@@ -126,6 +129,9 @@ public:
     LayerId id() const override { return LayerId::kImages; }
 
     void draw(const FrameContext& ctx) override {
+        if (ctx.overlayOnly) {
+            return;
+        }
         const sk_sp<SkImage>& photo = fDemo->photo;
         if (ctx.frame->scene || !photo) {
             return;
@@ -275,6 +281,9 @@ public:
     LayerId id() const override { return LayerId::kAux; }
 
     void draw(const FrameContext& ctx) override {
+        if (ctx.overlayOnly) {
+            return;
+        }
         SkPaint badge;
         badge.setColor(SkColorSetARGB(0x40, 0x6A, 0x4D, 0xD9));
         badge.setAntiAlias(true);
@@ -315,6 +324,9 @@ public:
     LayerId id() const override { return LayerId::kClock; }
 
     void draw(const FrameContext& ctx) override {
+        if (ctx.overlayOnly) {
+            return;
+        }
         char clock[16] = "";
         std::tm local{};
         if (localtime_r(&ctx.frame->wallClock, &local) != nullptr) {
@@ -522,6 +534,27 @@ void SceneRenderer::draw(const SceneFrame& frame, SkCanvas* canvas, int widthPx,
     const FrameContext ctx{canvas, &frame, statusLine.c_str(), backgroundVideo,
                            fLayers.enabledMask()};
     fLayers.draw(ctx);
+}
+
+void SceneRenderer::drawOverlay(const SceneFrame& frame, SkCanvas* canvas, int widthPx,
+                                int heightPx, const std::string& statusLine) {
+    // Save the caller's matrix (draw() leaves the output-rule transform on
+    // the canvas) and restore it afterwards, so the stage's current pass and
+    // its next pass compose on the same canvas without compounding scales.
+    canvas->save();
+    canvas->resetMatrix();
+    const float scale =
+        std::min(static_cast<float>(widthPx) / kCanvasWidth,
+                 static_cast<float>(heightPx) / kCanvasHeight);
+    canvas->translate((static_cast<float>(widthPx) - kCanvasWidth * scale) * 0.5f,
+                      (static_cast<float>(heightPx) - kCanvasHeight * scale) * 0.5f);
+    canvas->scale(scale, scale);
+    // ~0 draws both kinds of authored item regardless of the current cue's
+    // routing; the stage's Next bit is the gate for entering this pass at
+    // all, and the overlay scene carries only the next cue's primary text.
+    const FrameContext ctx{canvas, &frame, statusLine.c_str(), nullptr, ~0u, true};
+    fLayers.draw(ctx);
+    canvas->restore();
 }
 
 void SceneRenderer::drawLive(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,

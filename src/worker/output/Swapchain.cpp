@@ -208,7 +208,7 @@ bool Swapchain::create(const CreateInfo& info) {
     return true;
 }
 
-void Swapchain::destroy() {
+void Swapchain::destroy(bool deviceIdle) {
     // The same ordering as every other teardown on this device (task 6.22b,
     // review A2): vkDeviceWaitIdle needs the device's queues externally
     // synchronised, and a resize can reap the swapchain while a video
@@ -216,7 +216,16 @@ void Swapchain::destroy() {
     // recursive guard, so the presenting path is unchanged.
     const std::lock_guard queueLock(graphicsQueueMutex());
     if (fDevice != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(fDevice);
+        if (deviceIdle) {
+            vkDeviceWaitIdle(fDevice);
+        } else if (fQueue != VK_NULL_HANDLE) {
+            // Queue-scoped retirement: the stage's present must have
+            // completed before its swapchain dies, but the audience's other
+            // work on the same queue need not be torn down with it. Still
+            // bounded by the driver's FIFO completion, and only on an
+            // explicit stage resize/disable — never per frame.
+            vkQueueWaitIdle(fQueue);
+        }
     }
     for (Image& image : fImages) {
         image.destroy(fDevice);
@@ -262,8 +271,8 @@ bool Swapchain::extentOutOfDate(int* outWidth, int* outHeight) const {
     return static_cast<int>(width) != fWidth || static_cast<int>(height) != fHeight;
 }
 
-bool Swapchain::acquire(uint32_t* outImageIndex, VkResult* outResult) {
-    const VkResult err = vkAcquireNextImageKHR(fDevice, fSwapchain, UINT64_MAX, VK_NULL_HANDLE,
+bool Swapchain::acquire(uint32_t* outImageIndex, VkResult* outResult, uint64_t timeoutNs) {
+    const VkResult err = vkAcquireNextImageKHR(fDevice, fSwapchain, timeoutNs, VK_NULL_HANDLE,
                                                fAcquireFence, outImageIndex);
     if (outResult) {
         *outResult = err;
@@ -271,16 +280,33 @@ bool Swapchain::acquire(uint32_t* outImageIndex, VkResult* outResult) {
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
         return false;
     }
+    if (err == VK_TIMEOUT) {
+        return false;  // bounded backpressure, not a failed target
+    }
     if (err != VK_SUCCESS) {
         std::fprintf(stderr, "openshow-worker: vkAcquireNextImageKHR failed: %d\n", err);
         return false;
     }
 
-    vkWaitForFences(fDevice, 1, &fAcquireFence, VK_TRUE, UINT64_MAX);
+    const VkResult acquired =
+        vkWaitForFences(fDevice, 1, &fAcquireFence, VK_TRUE, timeoutNs);
+    if (acquired == VK_TIMEOUT) {
+        if (outResult) {
+            *outResult = VK_TIMEOUT;
+        }
+        return false;
+    }
     vkResetFences(fDevice, 1, &fAcquireFence);
 
     Image& image = fImages[*outImageIndex];
-    vkWaitForFences(fDevice, 1, &image.fFrameFence, VK_TRUE, UINT64_MAX);
+    const VkResult free =
+        vkWaitForFences(fDevice, 1, &image.fFrameFence, VK_TRUE, timeoutNs);
+    if (free == VK_TIMEOUT) {
+        if (outResult) {
+            *outResult = VK_TIMEOUT;
+        }
+        return false;
+    }
     vkResetFences(fDevice, 1, &image.fFrameFence);
     return true;
 }

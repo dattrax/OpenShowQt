@@ -43,6 +43,14 @@ OutputWindow::~OutputWindow() {
     close();
 }
 
+void OutputWindow::shutdownGlfw() {
+    if (!gGlfwInitialised) {
+        return;
+    }
+    glfwTerminate();
+    gGlfwInitialised = false;
+}
+
 bool OutputWindow::open(const Options& options) {
     if (!initGlfw()) {
         return false;
@@ -66,23 +74,29 @@ bool OutputWindow::open(const Options& options) {
         std::fprintf(stderr, "openshow-worker: glfwCreateWindow failed\n");
         return false;
     }
-    fOwnsGlfw = true;
     glfwSetWindowUserPointer(fWindow, this);
     glfwSetFramebufferSizeCallback(fWindow, &OutputWindow::onFramebufferSize);
 
-    // Map the window first: GLFW's Wayland backend forwards the fullscreen
-    // state when the surface maps, and KWin then configures it for the
-    // monitor mode.
-    glfwShowWindow(fWindow);
+    // Map straight onto the selected panel. The window was created hidden
+    // and glfwSetWindowMonitor() places it while hidden, so it is never
+    // briefly shown on the operator's display and then moved — the
+    // show-then-fullscreen sequence the stage delivery plan requires this
+    // path to abandon. On Wayland the fullscreen state travels with the
+    // first map, which is why the monitor is set before glfwShowWindow.
     if (options.monitor >= 0) {
-        // Let the compositor's configure arrive before the caller creates
-        // the Vulkan surface, up to ~600 ms; the render loop's extent check
-        // catches the late case regardless.
+        glfwShowWindow(fWindow);
+        // Map first, then request fullscreen on the TARGET panel. GLFW's
+        // Wayland backend applies the toplevel state when the surface maps;
+        // setting the monitor while hidden leaves the new toplevel at its
+        // creation size on current KWin. The window is assigned to its target
+        // in the same event turn as the map, and the compositor never puts it
+        // on the operator's display in between.
         if (!setMonitor(options.monitor, 600)) {
             close();
             return false;
         }
     } else {
+        glfwShowWindow(fWindow);
         // Give the initial configure a short head start (~150 ms).
         for (int i = 0; i < 15; ++i) {
             glfwWaitEventsTimeout(0.01);
@@ -158,11 +172,10 @@ void OutputWindow::close() {
         glfwDestroyWindow(fWindow);
         fWindow = nullptr;
     }
-    if (fOwnsGlfw) {
-        glfwTerminate();
-        fOwnsGlfw = false;
-        gGlfwInitialised = false;
-    }
+    // GLFW's lifetime belongs to the PROCESS, not this window (stage
+    // delivery FO.5a.1/FO.1e.1): closing the audience or the stage must not
+    // terminate the other one's event source. shutdownGlfw() is called once
+    // by the process owner after every window is gone.
 }
 
 bool OutputWindow::shouldClose() const {
@@ -219,8 +232,7 @@ bool OutputWindow::printMonitors() {
             std::printf("      (uneven scale y=%.3f)\n", ys);
         }
     }
-    glfwTerminate();
-    gGlfwInitialised = false;
+    shutdownGlfw();
     return true;
 }
 

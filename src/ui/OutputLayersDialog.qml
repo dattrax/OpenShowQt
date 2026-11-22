@@ -22,6 +22,7 @@ Dialog {
     objectName: "outputLayersDialog"
 
     property var draft: ({})
+    property string localError: ""
     readonly property var targets: [
         {key: "audience", label: "Audience HDMI", route: "monitor"},
         {key: "stage", label: "Stage HDMI", route: "monitor"},
@@ -58,7 +59,37 @@ Dialog {
         return layersDialog.column(key).layers.indexOf(layer) >= 0
     }
     function cellEditable(key, layer) {
-        return key === "stage" || layer !== "next" && layer !== "notes"
+        if (layer === "notes")
+            return false  // no production notes source yet
+        if (key === "stage")
+            return true
+        return layer !== "next"
+    }
+    function columnEditable(key) {
+        if (key === "stage")
+            return worker.stageCapable === true
+        return false
+    }
+    function columnStatus(key) {
+        if (key === "audience")
+            return worker.outputLive ? "Available" : "Waiting for worker"
+        if (key === "stage") {
+            if (!worker.stageCapable)
+                return "Unavailable"
+            if (worker.stageError !== "")
+                return worker.stageError
+            if (worker.stageActive)
+                return "On air \u2014 " + (worker.stageMonitorName || "stage display")
+            return worker.stageEnabled ? "Starting\u2026" : "Available"
+        }
+        return "Unavailable"
+    }
+    function toggleColumn(key, on) {
+        layersDialog.mutate(function (next) {
+            if (next[key] === undefined)
+                next[key] = {enabled: false, layers: []}
+            next[key].enabled = on
+        })
     }
     function mutate(change) {
         const next = JSON.parse(JSON.stringify(layersDialog.draft))
@@ -87,11 +118,28 @@ Dialog {
                 saved.audience.layers = ["background", "images", "words"].filter(
                     layer => worker.layers[layer] === true)
         }
+        // Stage enablement is SESSION state (FO.0 §4.3): the draft starts from
+        // the worker's observed answer, never from a saved `enabled` flag, so
+        // reopening the dialog or restarting cannot put the stage on air.
+        if (saved.stage === undefined)
+            saved.stage = {enabled: false, layers: ["words", "next"]}
+        saved.stage.enabled = worker.stageEnabled
         layersDialog.draft = saved
         audienceMonitor.currentIndex = indexOfMonitor(worker.outputLive
                                                       ? worker.currentMonitor
                                                       : appSettings.audienceMonitor)
         stageMonitor.currentIndex = indexOfMonitor(appSettings.stageMonitor)
+        // FO.5a.2: a saved index is a preference, not an identity. If the
+        // panel that index named has been replaced/reordered, do not quietly
+        // point Stage at whatever now occupies it.
+        if (appSettings.stageMonitor >= 0 && appSettings.stageMonitorIdentity !== "") {
+            const row = worker.displays.find(d => d.index === appSettings.stageMonitor)
+            if (!row || row.identity !== appSettings.stageMonitorIdentity) {
+                stageMonitor.currentIndex = 0
+                layersDialog.localError =
+                    "The saved stage display is not attached; choose its display again."
+            }
+        }
         sourceField.text = appSettings.broadcastSource
     }
     function indexOfMonitor(index) {
@@ -106,17 +154,32 @@ Dialog {
         return at >= 0 && at < rows.length ? rows[at].index : fallback
     }
     function apply() {
+        layersDialog.localError = ""
         const json = JSON.stringify(layersDialog.draft)
         if (!appSettings.applyOutputRouting(json))
             return  // the refusal stays visible; the last accepted matrix is kept
         appSettings.audienceMonitor = monitorIndexAt(audienceMonitor.currentIndex, -1)
         appSettings.stageMonitor = monitorIndexAt(stageMonitor.currentIndex, -1)
+        const stageRow = worker.displays.find(d => d.index === appSettings.stageMonitor)
+        appSettings.stageMonitorIdentity = stageRow ? stageRow.identity : ""
         appSettings.broadcastSource = sourceField.text
+        const stageOn = layersDialog.column("stage").enabled === true
+        if (stageOn && appSettings.stageMonitor < 0) {
+            layersDialog.localError = "Choose an attached display before enabling Stage."
+            return
+        }
+        if (stageOn && !worker.stageCapable) {
+            layersDialog.localError = "This worker does not drive a Stage HDMI output."
+            return
+        }
         if (worker.outputLive) {
             worker.applyOutputRouting(json)
             if (appSettings.audienceMonitor !== worker.currentMonitor)
                 worker.selectDisplay(appSettings.audienceMonitor)
         }
+        if (worker.stageCapable)
+            worker.configureStage(stageOn, appSettings.stageMonitor,
+                                  layersDialog.column("stage").layers)
         layersDialog.close()
     }
 
@@ -166,12 +229,14 @@ Dialog {
                         }
                         CheckBox {
                             objectName: "outputColumnEnable-" + modelData.key
-                            Accessible.name: modelData.label + (modelData.key === "audience"
-                                                               ? " available" : " unavailable")
-                            text: modelData.key === "audience" ? "Available" : "Unavailable"
+                            Accessible.name: modelData.label + (columnEditable(modelData.key)
+                                                               ? " enable"
+                                                               : " unavailable")
+                            text: columnStatus(modelData.key)
                             font.pixelSize: 11
-                            enabled: false
+                            enabled: columnEditable(modelData.key)
                             checked: layersDialog.column(modelData.key).enabled === true
+                            onToggled: layersDialog.toggleColumn(modelData.key, checked)
                         }
                     }
                 }
@@ -279,9 +344,41 @@ Dialog {
                 color: "#d9a441"
                 font.pixelSize: 11
                 objectName: "outputDestinationsUnavailable"
-                text: "Stage HDMI and NDI output are not implemented in this build. Connecting "
-                      + "another display does not enable Stage HDMI. Their saved layers and routes "
-                      + "will be used when those outputs are implemented."
+                text: worker.stageCapable
+                      ? "Stage HDMI is available on the worker. Enabling it opens a second "
+                        + "borderless output on the chosen display. NDI output is not implemented "
+                        + "in this build; its saved layers and source name are kept for later."
+                      : "Stage HDMI and NDI output are not available on this worker. Connecting "
+                        + "another display does not enable Stage HDMI by itself. Their saved layers "
+                        + "and routes will be used when those outputs are available."
+            }
+            Text {
+                objectName: "outputStageStatus"
+                width: parent.width
+                visible: worker.stageCapable === true
+                wrapMode: Text.WordWrap
+                color: (worker.stageError || "") !== "" ? "#e08080" : "#9fbf9f"
+                font.pixelSize: 11
+                text: {
+                    if ((worker.stageError || "") !== "")
+                        return "Stage: " + worker.stageError
+                    if (!worker.stageEnabled)
+                        return "Stage: disabled"
+                    if (!worker.stageActive)
+                        return "Stage: starting on " + (worker.stageMonitorName || "the chosen display")
+                    return "Stage: on air at " + worker.stageFrames + " frames"
+                           + (worker.stageNext ? ", next cue shown" : ", no next cue")
+                           + (worker.stageOverlap ? " \u2014 current box overlaps the next slot" : "")
+                }
+            }
+            Text {
+                objectName: "outputStageLocalError"
+                width: parent.width
+                visible: layersDialog.localError !== ""
+                wrapMode: Text.WordWrap
+                color: "#e08080"
+                font.pixelSize: 11
+                text: layersDialog.localError
             }
             Text {
                 objectName: "outputRoutingStatus"

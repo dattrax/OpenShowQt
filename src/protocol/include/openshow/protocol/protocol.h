@@ -224,8 +224,54 @@ namespace openshow::protocol {
 // state, never service state, and a worker that does not know the method
 // keeps the audience-only path — a frontend never sends routing to a hello
 // without the capability.
+//
+// Minor 23 (stage HDMI delivery, tasks FO.1d.stage/FO.5c.1) adds the stage
+// destination methods and their capability `stage.output.v1`:
+//
+//   stage.configure {"enabled":bool,
+//                    "monitor":{"index":n,"identity":s,"inventory":g},
+//                    "layers":[...],"generation":g}
+//     The whole session answer in one atomic request. `identity` is the
+//     connection-scoped display identity from output.displays, `inventory`
+//     the displaysGeneration it was read against. An enabled configuration
+//     is refused, naming itself, when the identity is absent, the
+//     generation is stale, the panel collides with the audience's, or the
+//     mask is not a legal stage mask. Disabled always accepts, tears the
+//     target down and invalidates retained bundles. Acceptance records the
+//     request; output.status.stage.active turns true only after the first
+//     successful present.
+//
+//   stage.prepare {"bundle":{"current":<scene>,"next":<scene>?,"overlap":b},
+//                  "generation":g}
+//     Files one Go's stage bundle in a bounded store and returns
+//     {"revision":n,"accepted":true}. The scenes are the ordinary scene
+//     payload, validated by the same strict reader; nothing is presented,
+//     no audience revision moves and no media clock starts. `next` is the
+//     next cue's 55% overlay scene, already in the v1 next slot.
+//
+//   stage.present {"revision":n,"generation":g}
+//     Presents a prepared bundle on the stage target only. A bundle from
+//     before the last clear is refused by name. The audience's published
+//     revision never moves.
+//
+//   stage.clear {"generation":g}
+//     Clear All's stage half: invalidates pending bundles, clears current
+//     and next, and raises the internal epoch so an older deferred present
+//     cannot repopulate the target.
+//
+// output.status.stage reports the observed lifecycle: enabled/active/lost,
+// the monitor identity and extent, the presented bundle revision and
+// generation, whether next text was drawn, overlap, frame and failure
+// counters, and the last error. `presented` is the worker's own truth: a
+// stage may lag the audience, and its failure never changes what the
+// audience has.
+inline constexpr const char* kMethodStageConfigure = "stage.configure";
+inline constexpr const char* kMethodStagePrepare = "stage.prepare";
+inline constexpr const char* kMethodStagePresent = "stage.present";
+inline constexpr const char* kMethodStageClear = "stage.clear";
+inline constexpr const char* kCapabilityStageOutput = "stage.output.v1";
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 22;
+inline constexpr std::uint32_t kProtocolMinor = 23;
 
 // The capability that names a worker DRAWING the scene 4 style block.
 // Defined here so the frontend's pre-send gate and the worker's hello name

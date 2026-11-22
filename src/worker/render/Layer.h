@@ -123,6 +123,12 @@ struct FrameContext {
     // The all-ones default is every toggle up: a context built without the
     // stack (a dev path drawing one layer by hand) draws everything.
     uint32_t layerMask = ~0u;
+    // Stage delivery FO.5b.2: draw ONLY the authored item stack, without the
+    // background, aux or clock layers, and without clearing the canvas. The
+    // stage compositor draws the current cue first and then this pass for the
+    // next-cue overlay, so the next region is painted over the current
+    // picture rather than replacing it.
+    bool overlayOnly = false;
 };
 
 class RenderLayer {

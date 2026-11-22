@@ -448,6 +448,30 @@ boost::json::object standaloneStatus(const OutputSession::MediaStatus::Standalon
                                {"loops", standalone.loops}};
 }
 
+// The stage destination's observed block (minor 23). `enabled` is the
+// accepted session answer; `active`/`presented` are the worker's own truth
+// after a successful present. A stage may lag the audience and must say so.
+boost::json::object stageStatusJson(const OutputSession::StageStatus& stage) {
+    return boost::json::object{{"enabled", stage.enabled},
+                               {"active", stage.active},
+                               {"lost", stage.lost},
+                               {"monitor", stage.monitor},
+                               {"monitorName", stage.monitorName},
+                               {"identity", stage.identity},
+                               {"width", stage.width},
+                               {"height", stage.height},
+                               {"generation", stage.generation},
+                               {"presented", stage.presented},
+                               {"presentedGeneration", stage.presentedGeneration},
+                               {"next", stage.next},
+                               {"overlap", stage.overlap},
+                               {"frames", stage.frames},
+                               {"presentFailures", stage.presentFailures},
+                               {"worstAcquireMs", stage.worstAcquireMs},
+                               {"worstPresentMs", stage.worstPresentMs},
+                               {"error", stage.error}};
+}
+
 // The `output.status` result: the session snapshot encoded outside the
 // session's lock, which is what keeps that lock out of the socket's path.
 boost::json::object statusParams(const OutputSession::Status& status) {
@@ -513,6 +537,8 @@ boost::json::object statusParams(const OutputSession::Status& status) {
                                {"revision", status.revision},
                                {"monitor", status.monitor},
                                {"monitorName", status.monitorName},
+                               {"displaysGeneration", status.displaysGeneration},
+                               {"stage", stageStatusJson(status.stage)},
                                {"layers", layersObject(status.layerMask)},
                                {"preview", boost::json::object{{"running", preview.running},
                                                                 {"name", preview.name},
@@ -618,7 +644,12 @@ boost::json::value displaysResult(const std::vector<OutputSession::DisplayInfo>&
                                             {"name", display.name},
                                             {"width", display.width},
                                             {"height", display.height},
-                                            {"refreshHz", display.refreshHz}});
+                                            {"refreshHz", display.refreshHz},
+                                            {"x", display.x},
+                                            {"y", display.y},
+                                            {"identity", display.identity},
+                                            {"connectionGeneration",
+                                             display.connectionGeneration}});
     }
     return array;
 }
@@ -937,6 +968,235 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
         proto::appendFrame(proto::makeResult(id, boost::json::object{
                                                      {"accepted", true},
                                                      {"revision", revision},
+                                                     {"pending", true}}),
+                           outbound);
+    } else if (name == proto::kMethodStageConfigure) {
+        // Stage delivery (minor 23): one atomic configuration. Identity is
+        // authoritative; index and inventory generation are consistency
+        // checks, never a guess about which physical panel was meant.
+        if (!given.is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "stage.configure requires params"),
+                               outbound);
+            return;
+        }
+        const boost::json::object& args = given.as_object();
+        OutputSession::StageConfiguration configuration;
+        const auto enabled = args.find("enabled");
+        if (enabled == args.end() || !enabled->value().is_bool()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "stage.configure requires an \"enabled\" boolean"),
+                               outbound);
+            return;
+        }
+        configuration.enabled = enabled->value().as_bool();
+        const auto layers = args.find("layers");
+        if (layers == args.end() || !layers->value().is_array()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "stage.configure requires a \"layers\" array"),
+                               outbound);
+            return;
+        }
+        for (const boost::json::value& layerValue : layers->value().as_array()) {
+            if (!layerValue.is_string()) {
+                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                    "stage.configure layers must be names"),
+                                   outbound);
+                return;
+            }
+            openshow::domain::RoutingLayer layer;
+            // The routing contract's names are the only vocabulary here; an
+            // unknown name is refused rather than dropped.
+            if (!openshow::domain::routingLayerFromName(std::string(layerValue.as_string()),
+                                                        &layer) ||
+                !openshow::domain::routingLayerSupported(openshow::domain::OutputTarget::Stage,
+                                                         layer)) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "stage.configure: unknown or unsupported stage layer \"" +
+                                         proto::clippedForEcho(std::string(layerValue.as_string())) +
+                                         "\""),
+                    outbound);
+                return;
+            }
+            configuration.layers |= openshow::domain::routingLayerBit(layer);
+        }
+        if (const auto monitor = args.find("monitor"); monitor != args.end() &&
+                                                     !monitor->value().is_null()) {
+            if (!monitor->value().is_object()) {
+                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                    "stage.configure \"monitor\" must be an object"),
+                                   outbound);
+                return;
+            }
+            const boost::json::object& route = monitor->value().as_object();
+            std::int64_t index = -1;
+            if (!jsonIntInRange(route, "index", -1, std::numeric_limits<int>::max(), &index)) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "stage.configure monitor.index must be a display index"),
+                    outbound);
+                return;
+            }
+            configuration.monitorIndex = static_cast<int>(index);
+            const auto identity = route.find("identity");
+            if (identity != route.end() && identity->value().is_string()) {
+                configuration.identity = std::string(identity->value().as_string());
+            }
+            std::uint64_t inventory = 0;
+            if (jsonUint64(route, "inventory", &inventory)) {
+                configuration.inventoryGeneration = inventory;
+            }
+        }
+        if (std::uint64_t generation = 0; jsonUint64(args, "generation", &generation)) {
+            configuration.generation = generation;
+        }
+        OutputSession::StageStatus status;
+        std::string refusal;
+        if (!fSession.configureStage(configuration, &status, &refusal)) {
+            proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                         {"accepted", false},
+                                                         {"reason", refusal}}),
+                               outbound);
+            return;
+        }
+        proto::appendFrame(
+            proto::makeResult(id, boost::json::object{{"accepted", true},
+                                                      {"generation", configuration.generation},
+                                                      {"enabled", configuration.enabled},
+                                                      {"stage", stageStatusJson(status)}}),
+            outbound);
+    } else if (name == proto::kMethodStagePrepare) {
+        // A Go's retained current/next bundle. The scenes use the same strict
+        // reader as scene.prepare; nothing here reaches the audience store.
+        if (!given.is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "stage.prepare requires params"),
+                               outbound);
+            return;
+        }
+        const boost::json::object& args = given.as_object();
+        const auto bundleEntry = args.find("bundle");
+        if (bundleEntry == args.end() || !bundleEntry->value().is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "stage.prepare requires a \"bundle\" object"),
+                               outbound);
+            return;
+        }
+        const boost::json::object& bundleArgs = bundleEntry->value().as_object();
+        const auto currentEntry = bundleArgs.find("current");
+        if (currentEntry == bundleArgs.end() || !currentEntry->value().is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "stage.prepare bundle requires a current scene"),
+                               outbound);
+            return;
+        }
+        openshow::scene::Scene current;
+        openshow::scene::Scene next;
+        std::string sceneError;
+        if (!openshow::scene::fromJson(currentEntry->value(), &current, &sceneError)) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "stage.prepare current: " + sceneError),
+                               outbound);
+            return;
+        }
+        {
+            std::string textError;
+            if (!fSession.validateSceneText(current, &textError)) {
+                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                    "stage.prepare current: " + textError),
+                                   outbound);
+                return;
+            }
+        }
+        bool hasNext = false;
+        const auto nextEntry = bundleArgs.find("next");
+        if (nextEntry != bundleArgs.end() && !nextEntry->value().is_null()) {
+            if (!nextEntry->value().is_object()) {
+                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                    "stage.prepare bundle.next must be a scene"),
+                                   outbound);
+                return;
+            }
+            if (!openshow::scene::fromJson(nextEntry->value(), &next, &sceneError)) {
+                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                    "stage.prepare next: " + sceneError),
+                                   outbound);
+                return;
+            }
+            {
+                std::string textError;
+                if (!fSession.validateSceneText(next, &textError)) {
+                    proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                        "stage.prepare next: " + textError),
+                                       outbound);
+                    return;
+                }
+            }
+            hasNext = true;
+        }
+        OutputSession::StageBundle bundle;
+        bundle.current = &current;
+        bundle.next = hasNext ? &next : nullptr;
+        if (const auto overlap = bundleArgs.find("overlap");
+            overlap != bundleArgs.end() && overlap->value().is_bool()) {
+            bundle.overlap = overlap->value().as_bool();
+        }
+        if (std::uint64_t generation = 0; jsonUint64(args, "generation", &generation)) {
+            bundle.generation = generation;
+        }
+        std::uint64_t revision = 0;
+        std::string refusal;
+        if (!fSession.prepareStage(bundle, &revision, &refusal)) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "stage.prepare: " + refusal),
+                               outbound);
+            return;
+        }
+        proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                     {"accepted", true},
+                                                     {"revision", revision},
+                                                     {"generation", bundle.generation},
+                                                     {"next", hasNext},
+                                                     {"overlap", bundle.overlap}}),
+                           outbound);
+    } else if (name == proto::kMethodStagePresent) {
+        if (!given.is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "stage.present requires params"),
+                               outbound);
+            return;
+        }
+        std::uint64_t revision = 0;
+        if (!jsonUint64(given.as_object(), "revision", &revision)) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "stage.present requires a \"revision\""),
+                               outbound);
+            return;
+        }
+        std::uint64_t generation = 0;
+        jsonUint64(given.as_object(), "generation", &generation);
+        std::string refusal;
+        if (!fSession.presentStage(revision, generation, &refusal)) {
+            proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                         {"accepted", false},
+                                                         {"reason", refusal}}),
+                               outbound);
+            return;
+        }
+        proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                     {"accepted", true},
+                                                     {"revision", revision},
+                                                     {"pending", true}}),
+                           outbound);
+    } else if (name == proto::kMethodStageClear) {
+        std::uint64_t generation = 0;
+        if (given.is_object()) {
+            jsonUint64(given.as_object(), "generation", &generation);
+        }
+        fSession.clearStage(generation);
+        proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                     {"accepted", true},
                                                      {"pending", true}}),
                            outbound);
     } else if (name == "scene.prepare") {

@@ -249,6 +249,56 @@ public:
     bool outputRoutingCapable() const { return fOutputRoutingCapable; }
     QString outputRoutingStatus() const { return fOutputRoutingStatus; }
 
+    // --- Stage HDMI (stage delivery, FO.5c.1/FO.4b.stage) -----------------
+    // The worker's hello names stage.output.v1 when it can drive a second
+    // output window. The QML matrix offers Stage activation only then; the
+    // remaining properties are the worker's observed lifecycle, never the
+    // click that asked for it.
+    Q_PROPERTY(bool stageCapable READ stageCapable NOTIFY stageChanged)
+    Q_PROPERTY(bool stageEnabled READ stageEnabled NOTIFY stageChanged)
+    Q_PROPERTY(bool stageActive READ stageActive NOTIFY stageChanged)
+    Q_PROPERTY(bool stageLost READ stageLost NOTIFY stageChanged)
+    Q_PROPERTY(qint64 stageMonitor READ stageMonitor NOTIFY stageChanged)
+    Q_PROPERTY(QString stageMonitorName READ stageMonitorName NOTIFY stageChanged)
+    Q_PROPERTY(QString stageError READ stageError NOTIFY stageChanged)
+    Q_PROPERTY(qint64 stagePresented READ stagePresented NOTIFY stageChanged)
+    Q_PROPERTY(qint64 stageFrames READ stageFrames NOTIFY stageChanged)
+    Q_PROPERTY(bool stageNext READ stageNext NOTIFY stageChanged)
+    Q_PROPERTY(bool stageOverlap READ stageOverlap NOTIFY stageChanged)
+    Q_PROPERTY(qint64 displaysGeneration READ displaysGeneration NOTIFY displaysChanged)
+    bool stageCapable() const { return fStageCapable; }
+    bool stageEnabled() const { return fStageEnabled; }
+    bool stageActive() const { return fStageActive; }
+    bool stageLost() const { return fStageLost; }
+    qint64 stageMonitor() const { return fStageMonitor; }
+    QString stageMonitorName() const { return fStageMonitorName; }
+    QString stageError() const { return fStageError; }
+    qint64 stagePresented() const { return fStagePresented; }
+    qint64 stageFrames() const { return fStageFrames; }
+    bool stageNext() const { return fStageNext; }
+    bool stageOverlap() const { return fStageOverlap; }
+    qint64 displaysGeneration() const { return fDisplayGeneration; }
+
+    // Apply the dialog's Stage column and route. `monitorIndex` is a GLFW
+    // index from displays(); the controller sends its identity and the
+    // inventory generation it was read from, so the worker refuses a stale
+    // or replaced panel rather than mapping the wrong monitor. `layers` is
+    // the stage column's layer names. Enabling with no chosen display is
+    // refused locally, with the reason in stageError.
+    Q_INVOKABLE void configureStage(bool enabled, qint64 monitorIndex,
+                                    const QVariantList& layers);
+    // The stage half of a cue Go: `bundleJson` is DocumentController's
+    // current/next bundle. The audience Go is sent by the caller; the stage
+    // bundle is filed now and presented only once the same cue is LIVE, so
+    // the stage can lag but never run ahead of the audience.
+    Q_INVOKABLE void presentCueWithStage(const QString& cueKey, const QString& sceneJson,
+                                         const QString& bundleJson);
+    // Clear All's stage half. The retained bundle stays available to
+    // restoreStageOutput().
+    Q_INVOKABLE void clearStageOutput();
+    // Re-file and present the retained bundle after a restore.
+    Q_INVOKABLE void restoreStageOutput();
+
     // Scenes (task 2.4c): prepare a scene object (the JSON the frontend's
     // compiler emitted), present a prepared revision, or compile one of
     // the demo fixture's slides and present it in one step — the same
@@ -544,6 +594,7 @@ signals:
     void outputStatusChanged();
     void displaysChanged();
     void outputRoutingChanged();
+    void stageChanged();
     void previewChanged();
     // One slide's picture arrived (task 6.16b). Keyed, so a list delegate
     // repaints its own row and not the thirty around it; previewChanged still
@@ -682,6 +733,44 @@ private:
     QVariantMap fLayers;
     qint64 fCurrentMonitor = -1;
     QVariantList fDisplays;
+    qint64 fDisplayGeneration = 0;
+
+    // Stage output (stage delivery). The capability comes from hello; the
+    // observed fields come from output.status.stage. The retained bundle is
+    // the newest compiled current/next pair, kept for Clear All/Restore and
+    // for enabling Stage during a live cue. Generations are the frontend's
+    // own and are echoed in every stage request so a superseded answer is
+    // ignored.
+    bool fStageCapable = false;
+    bool fStageEnabled = false;
+    bool fStageActive = false;
+    bool fStageLost = false;
+    qint64 fStageMonitor = -1;
+    QString fStageMonitorName;
+    QString fStageError;
+    qint64 fStagePresented = 0;
+    qint64 fStageFrames = 0;
+    bool fStageNext = false;
+    bool fStageOverlap = false;
+    qint64 fStageGeneration = 0;          // newest configure generation sent
+    qint64 fStageBundleGeneration = 0;    // generation the bundle was filed under
+    qint64 fStageBundleRevision = 0;      // worker revision of the filed bundle
+    qint64 fStageGoSerial = 0;            // identifies the newest stage Go
+    qint64 fStagePreparedSerial = 0;      // go serial the prepared bundle belongs to
+    qint64 fStagePendingPresentSerial = 0;  // go serial waiting for audience LIVE
+    qint64 fStageEligibleAfterRevision = 0;  // audience revision at stage go time
+    QString fStagePendingCueKey;
+    QString fStageRetainedBundleJson;     // newest bundle, kept across a clear
+    bool fStagePresentSent = false;
+    qint64 fStagePrepareRequestId = 0;
+    qint64 fStageConfigureRequestId = 0;
+    // Presents the filed bundle once the audience cue it belongs to is LIVE.
+    void maybePresentStage();
+    // Files the retained bundle again (after a disable or a restore).
+    // `waitForAudience` false is the enable-during-live-cue case: the cue is
+    // already acknowledged, so eligibility is immediate. True is Restore: the
+    // stage waits for the restored audience revision.
+    void refileStageBundle(bool waitForAudience);
 
     openshow::domain::Documents fDemoDocuments = openshow::scene::demoDocuments();
 

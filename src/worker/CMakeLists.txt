@@ -93,6 +93,7 @@ target_include_directories(openshow-worker-live-render PUBLIC
 # SceneTransitionKind into the layer header bought: a component that owns scene
 # truth has no business depending on a GPU library to name a reveal.
 add_library(openshow-worker-session STATIC
+  output/DisplayInventory.cpp
   session/SceneStore.cpp
 )
 add_library(openshow::worker_session ALIAS openshow-worker-session)
