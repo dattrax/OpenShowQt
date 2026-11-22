@@ -321,6 +321,185 @@ bool contextFromJson(const boost::json::value& value, TextContext* out,
     return true;
 }
 
+boost::json::object profileJson(const OutputProfile& profile) {
+    boost::json::object out;
+    out.emplace("role", outputRoleName(profile.role));
+    out.emplace("content", profile.content);
+    if (profile.textColor.has_value()) {
+        out.emplace("textColor", *profile.textColor);
+    }
+    if (profile.fontFamily.has_value()) {
+        out.emplace("fontFamily", *profile.fontFamily);
+    }
+    if (profile.fontSize.has_value()) {
+        out.emplace("fontSize", *profile.fontSize);
+    }
+    if (profile.lineSpacing.has_value()) {
+        out.emplace("lineSpacing", *profile.lineSpacing);
+    }
+    if (profile.align.has_value()) {
+        out.emplace("align", *profile.align);
+    }
+    if (profile.box.has_value()) {
+        out.emplace("box", boxJson(*profile.box));
+    }
+    if (profile.inset.has_value()) {
+        out.emplace("inset", *profile.inset);
+    }
+    if (profile.verticalAlign.has_value()) {
+        out.emplace("verticalAlign", *profile.verticalAlign);
+    }
+    if (profile.allCaps.has_value()) {
+        out.emplace("allCaps", *profile.allCaps);
+    }
+    if (profile.fontWeight.has_value()) {
+        out.emplace("fontWeight", *profile.fontWeight);
+    }
+    if (profile.fontStyle.has_value()) {
+        out.emplace("fontStyle", *profile.fontStyle);
+    }
+    if (profile.fontUnderline.has_value()) {
+        out.emplace("fontUnderline", *profile.fontUnderline);
+    }
+    if (profile.fitMode.has_value()) {
+        out.emplace("fitMode", *profile.fitMode);
+    }
+    if (profile.minFontSize.has_value()) {
+        out.emplace("minFontSize", *profile.minFontSize);
+    }
+    if (profile.stroke.has_value()) {
+        out.emplace("stroke", strokeJson(*profile.stroke));
+    }
+    if (profile.shadow.has_value()) {
+        out.emplace("shadow", shadowJson(*profile.shadow));
+    }
+    return out;
+}
+
+bool profileFromJson(const boost::json::value& value, OutputProfile* out,
+                     const std::string& owner, std::string* error) {
+    if (!value.is_object()) {
+        fail(error, owner + " must be an object");
+        return false;
+    }
+    const boost::json::object& object = value.as_object();
+    if (!noUnknownKeys(object,
+                       {"role", "content", "textColor", "fontFamily", "fontSize",
+                        "lineSpacing", "align", "box", "inset", "verticalAlign",
+                        "allCaps", "fontWeight", "fontStyle", "fontUnderline",
+                        "fitMode", "minFontSize", "stroke", "shadow"},
+                       owner, error)) {
+        return false;
+    }
+    OutputProfile profile;
+    std::string role;
+    if (!wantString(object, "role", 16, &role, owner, error) ||
+        !outputRoleFromName(role, &profile.role)) {
+        fail(error, owner + " 'role' must be \"stage\" or \"broadcast\"");
+        return false;
+    }
+    if (!wantString(object, "content", kMaxOutputContentChars, &profile.content, owner,
+                    error)) {
+        return false;
+    }
+    const auto optionalString = [&](const char* name, std::size_t maxChars,
+                                    std::optional<std::string>* slot) {
+        const boost::json::value* member = field(object, name);
+        if (member == nullptr) {
+            return true;
+        }
+        if (!member->is_string()) {
+            fail(error, owner + " '" + name + "' must be a string");
+            return false;
+        }
+        std::string text(member->as_string());
+        if (text.size() > maxChars) {
+            fail(error, owner + " '" + name + "' is over " + std::to_string(maxChars) +
+                            " characters");
+            return false;
+        }
+        *slot = std::move(text);
+        return true;
+    };
+    const auto optionalNumber = [&](const char* name, std::optional<double>* slot) {
+        const boost::json::value* member = field(object, name);
+        if (member == nullptr) {
+            return true;
+        }
+        if (!member->is_number()) {
+            fail(error, owner + " '" + name + "' must be a number");
+            return false;
+        }
+        *slot = member->to_number<double>();
+        return true;
+    };
+    const auto optionalBool = [&](const char* name, std::optional<bool>* slot) {
+        const boost::json::value* member = field(object, name);
+        if (member == nullptr) {
+            return true;
+        }
+        if (!member->is_bool()) {
+            fail(error, owner + " '" + name + "' must be true or false");
+            return false;
+        }
+        *slot = member->as_bool();
+        return true;
+    };
+    if (!optionalString("textColor", 32, &profile.textColor) ||
+        !optionalString("fontFamily", kMaxThemeSnapshotFamilyChars, &profile.fontFamily) ||
+        !optionalNumber("fontSize", &profile.fontSize) ||
+        !optionalNumber("lineSpacing", &profile.lineSpacing) ||
+        !optionalString("align", 16, &profile.align) ||
+        !optionalNumber("inset", &profile.inset) ||
+        !optionalString("verticalAlign", 16, &profile.verticalAlign) ||
+        !optionalBool("allCaps", &profile.allCaps) ||
+        !optionalString("fontStyle", 16, &profile.fontStyle) ||
+        !optionalBool("fontUnderline", &profile.fontUnderline) ||
+        !optionalString("fitMode", 16, &profile.fitMode) ||
+        !optionalNumber("minFontSize", &profile.minFontSize)) {
+        return false;
+    }
+    {
+        const boost::json::value* weight = field(object, "fontWeight");
+        if (weight != nullptr) {
+            if (!weight->is_number() || weight->to_number<double>() !=
+                                            std::floor(weight->to_number<double>())) {
+                fail(error, owner + " 'fontWeight' must be a whole number");
+                return false;
+            }
+            profile.fontWeight = static_cast<int>(weight->to_number<double>());
+        }
+    }
+    if (const boost::json::value* box = field(object, "box"); box != nullptr) {
+        BoxRect rect;
+        if (!boxFromJson(*box, &rect, owner + " box", error)) {
+            return false;
+        }
+        profile.box = rect;
+    }
+    if (const boost::json::value* stroke = field(object, "stroke"); stroke != nullptr) {
+        TextStroke record;
+        if (!strokeFromJson(*stroke, &record, owner + " stroke", error)) {
+            return false;
+        }
+        profile.stroke = record;
+    }
+    if (const boost::json::value* shadow = field(object, "shadow"); shadow != nullptr) {
+        TextShadow record;
+        if (!shadowFromJson(*shadow, &record, owner + " shadow", error)) {
+            return false;
+        }
+        profile.shadow = record;
+    }
+    std::string why;
+    if (!Documents::validOutputProfile(profile, &why)) {
+        fail(error, owner + ": " + why);
+        return false;
+    }
+    *out = std::move(profile);
+    return true;
+}
+
 }  // namespace
 
 boost::json::object themeSnapshotToJson(const ThemeSnapshot& snapshot) {
@@ -349,6 +528,11 @@ boost::json::object themeSnapshotToJson(const ThemeSnapshot& snapshot) {
         contexts.push_back(contextJson(context));
     }
     out.emplace("contexts", std::move(contexts));
+    boost::json::array profiles;
+    for (const OutputProfile& profile : snapshot.profiles) {
+        profiles.push_back(profileJson(profile));
+    }
+    out.emplace("profiles", std::move(profiles));
     return out;
 }
 
@@ -368,7 +552,7 @@ bool themeSnapshotFromJson(const boost::json::value& value, ThemeSnapshot* out,
                        {"name", "textColor", "fontFamily", "fontSize", "align",
                         "lineSpacing", "fontWeight", "fontStyle", "fontUnderline",
                         "fitMode", "minFontSize", "verticalAlign", "allCaps", "stroke",
-                        "shadow", "placement", "transition", "contexts"},
+                        "shadow", "placement", "transition", "contexts", "profiles"},
                        owner, error)) {
         return false;
     }
@@ -422,6 +606,30 @@ bool themeSnapshotFromJson(const boost::json::value& value, ThemeSnapshot* out,
             return false;
         }
         snapshot.contexts.push_back(std::move(context));
+    }
+    // A remembered look's output profiles (milestone FO): absent in a
+    // snapshot written before FO, so those still load with none.
+    if (const boost::json::value* profiles = field(object, "profiles");
+        profiles != nullptr) {
+        if (!profiles->is_array()) {
+            fail(error, owner + " wants an array 'profiles'");
+            return false;
+        }
+        if (profiles->as_array().size() > kMaxThemeOutputProfiles) {
+            fail(error, owner + " carries more than " +
+                            std::to_string(kMaxThemeOutputProfiles) + " output profiles");
+            return false;
+        }
+        for (const boost::json::value& entry : profiles->as_array()) {
+            OutputProfile profile;
+            if (!profileFromJson(entry, &profile,
+                                 owner + " profile " +
+                                     std::to_string(snapshot.profiles.size()),
+                                 error)) {
+                return false;
+            }
+            snapshot.profiles.push_back(std::move(profile));
+        }
     }
     std::string why;
     if (!Documents::validThemeSnapshot(snapshot, &why)) {

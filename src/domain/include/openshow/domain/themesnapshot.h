@@ -64,6 +64,12 @@ struct ThemeSnapshot {
     // when this build does not know it, exactly as the theme record keeps
     // unknown names for the importers still to come.
     std::vector<TextContext> contexts;
+    // Output profiles (milestone FO): the theme's authored stage/broadcast
+    // overrides, copied verbatim. They are sparse by design — resolution
+    // against the snapshot's concrete audience look happens on the
+    // recipient's own chain, so a materialised look still gives the stage
+    // its role box and inherits everything the profile is silent on.
+    std::vector<OutputProfile> profiles;
 
     bool operator==(const ThemeSnapshot&) const = default;
 };

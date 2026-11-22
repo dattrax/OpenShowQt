@@ -1699,6 +1699,27 @@ bool Documents::validThemeSnapshot(const ThemeSnapshot& snapshot, std::string* e
             return false;
         }
     }
+    // Output profiles (milestone FO): the theme's own sentence, plus the
+    // unique (role, content) rule and the theme budget the service loader
+    // enforces, so a look the catalog stores is a look a service can hold.
+    if (snapshot.profiles.size() > kMaxThemeOutputProfiles) {
+        return failSnapshot("it carries more than " +
+                            std::to_string(kMaxThemeOutputProfiles) + " output profiles");
+    }
+    for (size_t i = 0; i < snapshot.profiles.size(); ++i) {
+        std::string detail;
+        if (!validOutputProfile(snapshot.profiles[i], &detail)) {
+            return failSnapshot(detail);
+        }
+        for (size_t earlier = 0; earlier < i; ++earlier) {
+            if (snapshot.profiles[earlier].addresses(snapshot.profiles[i].role,
+                                                     snapshot.profiles[i].content)) {
+                return failSnapshot("it names output profile " +
+                                    std::string(outputRoleName(snapshot.profiles[i].role)) +
+                                    "/'" + snapshot.profiles[i].content + "' twice");
+            }
+        }
+    }
     return true;
 }
 
@@ -1807,6 +1828,10 @@ Id Documents::ensureThemeFromSnapshot(const ThemeSnapshot& snapshot,
         !setThemeContexts(id, snapshot.contexts, error)) {
         return {};
     }
+    if (!snapshot.profiles.empty() &&
+        !setThemeOutputProfiles(id, snapshot.profiles, error)) {
+        return {};
+    }
     return id;
 }
 
@@ -1879,6 +1904,10 @@ bool Documents::themeSnapshotFor(const Id& themeId, ThemeSnapshot* out,
         resolved.transition = context.transition.value_or(snapshot.transition);
         snapshot.contexts.push_back(std::move(resolved));
     }
+    // Output profiles travel verbatim: they are the theme's authored
+    // destination looks, sparse by design, and resolving them against the
+    // captured audience base here would freeze the stage's own role box.
+    snapshot.profiles = source->profiles;
     if (!validThemeSnapshot(snapshot, error)) {
         return false;
     }

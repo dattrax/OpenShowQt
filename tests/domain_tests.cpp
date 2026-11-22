@@ -1164,6 +1164,10 @@ bool sameService(const Documents& a, const Documents& b) {
             // while quietly moving every wearing slide's words. Contexts
             // (task TF.1) follow the same rule, entry and field by field.
             xa->placement != xb->placement || xa->contexts != xb->contexts ||
+            // Output profiles (milestone FO) travel with the theme too: a
+            // stage or lower-third look that vanished on save would be
+            // silently replaced by the role default.
+            xa->profiles != xb->profiles ||
             // The TS.1 style block is theme state by the same argument:
             // a round trip that dropped the weight or turned a disabled
             // record back into silence would compare equal while the
@@ -2079,9 +2083,9 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         const std::string manifest = readFile(gradedDir / "service.json");
         check(manifest.find("\"backgroundGradient\"") == std::string::npos,
               "theme backgrounds are absent from saved files");
-        check(manifest.find("\"format\":15") != std::string::npos,
-              "the manifest says format 15 (the whole-item theme, beside the"
-              " text-layout pair, catalog song link, attribution and underline style)");
+        check(manifest.find("\"format\":16") != std::string::npos,
+              "the manifest says format 16 (output profiles, beside the whole-item"
+              " theme, text-layout pair, catalog song link, attribution and underline style)");
         check(manifest.find("\"transition\":{") != std::string::npos,
               "the root transition is written by name, not left to an absent key");
         check(openshow::domain::saveService(back, tempRoot / "v5-regraded", &error) &&
@@ -4026,6 +4030,183 @@ void exerciseTransitionStorage(const fs::path& tempRoot) {
     }
 }
 
+// Milestone FO (task FO.1b): a theme's stage/broadcast looks are authored
+// service state. They round-trip through format 16, older files stay exactly
+// as they drew, a pre-16 file naming the key is refused by era, and a
+// portable remembered look carries them too.
+void exerciseOutputProfileStorage(const fs::path& tempRoot) {
+    using openshow::domain::OutputProfile;
+    using openshow::domain::OutputRole;
+
+    Documents docs;
+    std::string error;
+    const Id theme = docs.createTheme("House", "#ffffff", "#000000", "", "DejaVu Sans", 72.0,
+                                      "center", kDefaultLineSpacing, &error);
+    const Id show = docs.createShow("Sunday", &error);
+    const Id slide = docs.appendSlide(show, &error);
+    check(docs.setShowDefaultTheme(show, theme, &error), "the profiled theme is the default");
+    check(docs.setSlideLines(show, slide, {"Holy, holy, holy"}, &error), "the slide has words");
+
+    OutputProfile stage;
+    stage.role = OutputRole::Stage;
+    stage.content = std::string("");
+    stage.fontSize = 132.0;
+    stage.allCaps = true;
+    stage.box = BoxRect{100.0, 80.0, 1720.0, 520.0};
+    openshow::domain::TextShadow shadow;
+    shadow.enabled = true;
+    shadow.opacity = 0.5;
+    shadow.offsetX = 4.0;
+    shadow.offsetY = 6.0;
+    shadow.blurSigma = 8.0;
+    stage.shadow = shadow;
+    check(docs.setThemeOutputProfile(theme, stage, &error), "the stage profile is authored");
+    OutputProfile broadcast;
+    broadcast.role = OutputRole::Broadcast;
+    broadcast.content = std::string("scripture");
+    broadcast.inset = 24.0;
+    broadcast.align = std::string("left");
+    broadcast.fitMode = std::string("fixed");
+    broadcast.minFontSize = 20.0;
+    check(docs.setThemeOutputProfile(theme, broadcast, &error),
+          "the broadcast scripture profile is authored");
+
+    const fs::path dir = tempRoot / "output-profiles";
+    check(openshow::domain::saveService(docs, dir, &error), "the profiled service saves");
+    const std::string manifest = readFile(dir / "service.json");
+    check(manifest.find("\"format\":16") != std::string::npos,
+          "the profiled service is written as format 16");
+    check(manifest.find("\"outputProfiles\":[") != std::string::npos,
+          "the profiles are written by name");
+    check(manifest.find("\"role\":\"broadcast\"") != std::string::npos,
+          "the broadcast role is written by name");
+
+    Documents reloaded;
+    check(openshow::domain::loadService(&reloaded, dir, &error),
+          "the profiled service reloads");
+    check(sameService(docs, reloaded), "the whole profiled service compares field by field");
+    const ResolvedAppearance staged = reloaded.appearanceForSlideOn(show, slide, OutputRole::Stage);
+    check(staged.placement->x == 100.0 && staged.fontSize == 132.0 && staged.allCaps &&
+              staged.shadow.enabled,
+          "the reloaded stage profile resolves with its box, type and effect");
+    check(sameService(reloaded, reloaded), "a reloaded service is stable across comparison");
+    check(openshow::domain::saveService(reloaded, tempRoot / "output-profiles-again", &error) &&
+              readFile(tempRoot / "output-profiles-again" / "service.json") == manifest,
+          "re-saving the profiled service writes byte-identical bytes");
+
+    // A theme with no profile writes no new key: the format-16 file for an
+    // untouched document is the format-15 file's shape plus the number.
+    {
+        Documents plain;
+        plain.createTheme("Plain", "#ffffff", "#000000", "", "", 40.0, "center",
+                          kDefaultLineSpacing, &error);
+        check(openshow::domain::saveService(plain, tempRoot / "plain-16", &error),
+              "a profile-free service saves");
+        check(readFile(tempRoot / "plain-16" / "service.json")
+                      .find("\"outputProfiles\"") == std::string::npos,
+              "a profile-free theme writes no outputProfiles key");
+    }
+
+    // Era: a format-15 file naming the key is another build's meaning.
+    {
+        std::string legacy = manifest;
+        check(replaceOnce(legacy, "\"format\":16", "\"format\":15"),
+              "the profiled manifest can be relabelled format 15");
+        const fs::path legacyDir = tempRoot / "output-profiles-legacy";
+        std::filesystem::create_directories(legacyDir);
+        check(writeFile(legacyDir / "service.json", legacy), "the relabelled file is written");
+        Documents refused;
+        error.clear();
+        check(!openshow::domain::loadService(&refused, legacyDir, &error) &&
+                  error.find("outputProfiles") != std::string::npos,
+              "a format-15 file naming outputProfiles is refused by name");
+    }
+
+    // Semantic refusals inside a profile, each leaving nothing loaded.
+    const auto mutateProfile = [&](const std::string& where,
+                                   const std::function<void(boost::json::object&)>& mutator) {
+        boost::json::value root = boost::json::parse(manifest);
+        for (boost::json::value& themeValue : root.at("themes").as_array()) {
+            if (themeValue.as_object().at("id").as_string() != theme) {
+                continue;
+            }
+            boost::json::array& profiles =
+                themeValue.as_object().at("outputProfiles").as_array();
+            mutator(profiles[0].as_object());
+        }
+        const fs::path badDir = tempRoot / where;
+        std::filesystem::create_directories(badDir);
+        writeFile(badDir / "service.json", boost::json::serialize(root));
+        Documents refused;
+        error.clear();
+        return !openshow::domain::loadService(&refused, badDir, &error);
+    };
+    check(mutateProfile("output-profiles-bad-field",
+                        [](boost::json::object& profile) { profile["lineCount"] = 3; }),
+          "an unknown profile field refuses the whole package");
+    check(mutateProfile("output-profiles-bad-role",
+                        [](boost::json::object& profile) { profile["role"] = "audience"; }),
+          "an audience-role profile refuses the whole package");
+    check(mutateProfile("output-profiles-bad-align",
+                        [](boost::json::object& profile) { profile["align"] = "justify"; }),
+          "an off-list alignment refuses the whole package");
+    check(mutateProfile("output-profiles-bad-weight",
+                        [](boost::json::object& profile) { profile["fontWeight"] = 42; }),
+          "an out-of-band weight refuses the whole package");
+    check(mutateProfile("output-profiles-bad-box",
+                        [](boost::json::object& profile) {
+                            profile["inset"] = 10.0;  // with the existing box
+                        }),
+          "a box and an inset together refuse the whole package");
+    {
+        boost::json::value root = boost::json::parse(manifest);
+        for (boost::json::value& themeValue : root.at("themes").as_array()) {
+            if (themeValue.as_object().at("id").as_string() != theme) {
+                continue;
+            }
+            boost::json::array& profiles =
+                themeValue.as_object().at("outputProfiles").as_array();
+            profiles.push_back(profiles[0]);
+        }
+        const fs::path badDir = tempRoot / "output-profiles-duplicate";
+        std::filesystem::create_directories(badDir);
+        writeFile(badDir / "service.json", boost::json::serialize(root));
+        Documents refused;
+        error.clear();
+        check(!openshow::domain::loadService(&refused, badDir, &error) &&
+                  error.find("twice") != std::string::npos,
+              "a duplicated (role, content) pair is refused by name");
+    }
+
+    // The portable remembered look carries the profiles too.
+    {
+        openshow::domain::ThemeSnapshot snapshot;
+        check(docs.themeSnapshotFor(theme, &snapshot, &error),
+              "the profiled theme captures as a remembered look");
+        check(snapshot.profiles == docs.findTheme(theme)->profiles,
+              "the remembered look carries the profiles verbatim");
+        const boost::json::value wire =
+            boost::json::value(openshow::domain::themeSnapshotToJson(snapshot));
+        openshow::domain::ThemeSnapshot parsed;
+        check(openshow::domain::themeSnapshotFromJson(wire, &parsed, &error),
+              "the remembered look with profiles round-trips through its codec");
+        check(parsed == snapshot, "the parsed remembered look compares equal");
+        Documents target;
+        const Id materialised = target.ensureThemeFromSnapshot(parsed, &error);
+        check(!materialised.empty() &&
+                  target.findTheme(materialised)->profiles == snapshot.profiles,
+              "materialising the remembered look keeps its output profiles");
+
+        boost::json::object broken = openshow::domain::themeSnapshotToJson(snapshot);
+        broken["profiles"].as_array()[0].as_object()["role"] = "audience";
+        openshow::domain::ThemeSnapshot refusedLook;
+        error.clear();
+        check(!openshow::domain::themeSnapshotFromJson(boost::json::value(broken), &refusedLook,
+                                                       &error),
+              "a remembered look naming the audience role is refused");
+    }
+}
+
 void exerciseForegroundThemeStorage(const fs::path& tempRoot) {
     Documents docs;
     std::string error;
@@ -4042,7 +4223,7 @@ void exerciseForegroundThemeStorage(const fs::path& tempRoot) {
     const auto dir = tempRoot / "foreground-themes";
     check(openshow::domain::saveService(docs, dir, &error), "save foreground themes");
     auto json = boost::json::parse(readFile(dir / "service.json"));
-    check(json.at("format").as_int64() == 15, "foreground theme files identify format 15");
+    check(json.at("format").as_int64() == 16, "foreground theme files identify format 16");
     for (auto& value : json.at("themes").as_array()) {
         check(!value.as_object().contains("backgroundColor") && !value.as_object().contains("backgroundGradient"),
               "new service files contain no theme background settings");
@@ -5619,13 +5800,13 @@ void exerciseWholeItemTheme(const fs::path& tempRoot) {
               reloaded.appearanceForSlide(show, first).backgroundColor == "#123456",
           "the assignment, item look and surviving backdrop round-trip");
     const std::string manifest = readFile(dir / "service.json");
-    check(manifest.find("\"format\":15") != std::string::npos,
-          "the service is written as format 15");
+    check(manifest.find("\"format\":16") != std::string::npos,
+          "the service is written as format 16");
 
     // An older format naming the new key is refused by name.
     {
         std::string legacy = manifest;
-        check(replaceOnce(legacy, "\"format\":15", "\"format\":14"),
+        check(replaceOnce(legacy, "\"format\":16", "\"format\":14"),
               "the saved manifest can be rewritten as format 14");
         const fs::path legacyDir = tempRoot / "whole-item-legacy";
         std::filesystem::create_directories(legacyDir);
@@ -5896,7 +6077,7 @@ void exerciseReflowSource(const fs::path& tempRoot) {
           "the manifest writes the source by name");
     {
         std::string legacyManifest = manifest;
-        check(replaceOnce(legacyManifest, "\"format\":15", "\"format\":14"),
+        check(replaceOnce(legacyManifest, "\"format\":16", "\"format\":14"),
               "the manifest can be rewritten as format 14");
         const fs::path legacyDir = tempRoot / "reflow-source-legacy";
         std::filesystem::create_directories(legacyDir);
@@ -6137,7 +6318,7 @@ void exerciseThumbnailCacheCodec(const fs::path& root) {
     const std::string withCache = readFile(service / "service.json");
     check(withCache.find("\"thumbnailCache\":{\"format\":1") != std::string::npos,
           "TC.3: the block names its own format");
-    check(withCache.find("\"format\":15") != std::string::npos,
+    check(withCache.find("\"format\":16") != std::string::npos,
           "TC.3: the service format does not move");
     {
         Documents loaded;
@@ -6317,6 +6498,7 @@ int main() {
     exerciseBoxStorage(tempRoot);
     exerciseTextStyleStorage(tempRoot);
     exerciseWholeItemTheme(tempRoot);
+    exerciseOutputProfileStorage(tempRoot);
     exerciseReflowSource(tempRoot);
     exerciseReflowEligibility();
     exerciseTransitionStorage(tempRoot);

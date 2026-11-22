@@ -88,8 +88,17 @@ namespace {
 // Format 15 (task PT.3) adds a show's explicit "appliedThemeId" — the
 // whole-item theme an operator applied from its row. Absent keeps the
 // legacy current → slide → show-default chain every earlier file used.
-constexpr unsigned long long kServiceFormat = 15;
+// Format 16 (milestone FO, task FO.1b) adds a theme's optional
+// "outputProfiles": sparse appearance overrides for the stage and broadcast
+// destinations, keyed by (role, content). The audience reads none of it, so
+// a 15-file loads with every theme carrying no profiles and drawing its
+// exact pixels; a "outputProfiles" key in a pre-16 file is refused by era,
+// never adopted as some other build's meaning.
+constexpr unsigned long long kServiceFormat = 16;
 constexpr unsigned long long kServiceFormatThemedBackgrounds = 11;
+// And 16 introduces output profiles. Named like every introducer so the day
+// 17 arrives the guard still says where the key got its meaning.
+constexpr unsigned long long kServiceFormatOutputProfiles = 16;
 // And 13 introduces a show's "audioAssetId" — the independent audio layer a
 // cue plays alongside its slides (media library). Named like every
 // introducer so the guards that place an earlier key keep naming the
@@ -1023,6 +1032,66 @@ boost::json::object textContextJson(const TextContext& context) {
     return out;
 }
 
+// A theme's output profile on the wire (milestone FO, task FO.1b). The
+// (role, content) pair always travels — it IS the entry — and every override
+// only when the profile speaks it, exactly like a text context. The key is
+// "box" here rather than "placement" because the profile is about a
+// destination's box, not a slide's lyric placement.
+boost::json::object outputProfileJson(const OutputProfile& profile) {
+    boost::json::object out;
+    out.emplace("role", outputRoleName(profile.role));
+    out.emplace("content", profile.content);
+    if (profile.textColor.has_value()) {
+        out.emplace("textColor", *profile.textColor);
+    }
+    if (profile.fontFamily.has_value()) {
+        out.emplace("fontFamily", *profile.fontFamily);
+    }
+    if (profile.fontSize.has_value()) {
+        out.emplace("fontSize", *profile.fontSize);
+    }
+    if (profile.lineSpacing.has_value()) {
+        out.emplace("lineSpacing", *profile.lineSpacing);
+    }
+    if (profile.align.has_value()) {
+        out.emplace("align", *profile.align);
+    }
+    if (profile.box.has_value()) {
+        out.emplace("box", boxRectJson(*profile.box));
+    }
+    if (profile.inset.has_value()) {
+        out.emplace("inset", *profile.inset);
+    }
+    if (profile.verticalAlign.has_value()) {
+        out.emplace("verticalAlign", *profile.verticalAlign);
+    }
+    if (profile.allCaps.has_value()) {
+        out.emplace("allCaps", *profile.allCaps);
+    }
+    if (profile.fontWeight.has_value()) {
+        out.emplace("fontWeight", *profile.fontWeight);
+    }
+    if (profile.fontStyle.has_value()) {
+        out.emplace("fontStyle", *profile.fontStyle);
+    }
+    if (profile.fontUnderline.has_value()) {
+        out.emplace("fontUnderline", *profile.fontUnderline);
+    }
+    if (profile.fitMode.has_value()) {
+        out.emplace("fitMode", *profile.fitMode);
+    }
+    if (profile.minFontSize.has_value()) {
+        out.emplace("minFontSize", *profile.minFontSize);
+    }
+    if (profile.stroke.has_value()) {
+        out.emplace("stroke", strokeJson(*profile.stroke));
+    }
+    if (profile.shadow.has_value()) {
+        out.emplace("shadow", shadowJson(*profile.shadow));
+    }
+    return out;
+}
+
 bool wantBoxRect(const boost::json::object& obj, const char* key, const std::string& owner,
                  std::optional<BoxRect>* out, std::string* error) {
     const boost::json::value* value = field(obj, key);
@@ -1434,6 +1503,17 @@ boost::json::value ServiceCodec::toJson(const Documents& documents,
                 contexts.push_back(textContextJson(context));
             }
             entry.emplace("contexts", std::move(contexts));
+        }
+        // Output profiles (milestone FO) share that discipline of silence:
+        // the key is present exactly when the theme styles a destination,
+        // and the audience never reads it. A theme with none saves exactly
+        // the bytes a format-15 file had.
+        if (!theme.profiles.empty()) {
+            boost::json::array profiles;
+            for (const OutputProfile& profile : theme.profiles) {
+                profiles.push_back(outputProfileJson(profile));
+            }
+            entry.emplace("outputProfiles", std::move(profiles));
         }
         // The theme's own transition (task TR.1) shares placement's
         // discipline of silence: the key is present exactly when this view
@@ -2478,6 +2558,127 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                             "' carries \"contexts\" in a format " +
                             std::to_string(format) + " file, where that key"
                             " does not exist");
+            return false;
+        }
+        // Output profiles (milestone FO) are a format-16 member with the same
+        // silence: absent is "this theme styles no destination", which is
+        // every theme before FO. A pre-16 file naming the key is refused by
+        // era, never read as another build's meaning. Inside an entry the
+        // vetting is the domain's own sentence, so a file cannot store what
+        // setThemeOutputProfile would refuse.
+        if (format >= kServiceFormatOutputProfiles) {
+            const boost::json::value* profilesValue = field(jsonTheme, "outputProfiles");
+            if (profilesValue != nullptr) {
+                if (!profilesValue->is_array()) {
+                    fail(error, "service.json: 'outputProfiles' must be an array");
+                    return false;
+                }
+                std::set<std::string> seenPairs;
+                for (const boost::json::value& element : profilesValue->as_array()) {
+                    if (!element.is_object()) {
+                        fail(error, "service.json: theme '" + theme.id +
+                                        "' holds a non-object output profile");
+                        return false;
+                    }
+                    const boost::json::object& jsonProfile = element.as_object();
+                    OutputProfile profile;
+                    const boost::json::value* roleValue = field(jsonProfile, "role");
+                    if (roleValue == nullptr || !roleValue->is_string() ||
+                        !outputRoleFromName(std::string(roleValue->as_string()),
+                                            &profile.role)) {
+                        fail(error, "service.json: theme '" + theme.id +
+                                        "' carries an output profile without a role this"
+                                        " build knows");
+                        return false;
+                    }
+                    const boost::json::value* contentValue = field(jsonProfile, "content");
+                    if (contentValue == nullptr || !contentValue->is_string()) {
+                        fail(error, "service.json: an output profile of theme '" + theme.id +
+                                        "' has no content name");
+                        return false;
+                    }
+                    profile.content = std::string(contentValue->as_string());
+                    for (const auto& member : jsonProfile) {
+                        const std::string_view key = member.key();
+                        if (key == "role" || key == "content" || key == "textColor" ||
+                            key == "fontFamily" || key == "fontSize" ||
+                            key == "lineSpacing" || key == "align" || key == "box" ||
+                            key == "inset" || key == "verticalAlign" ||
+                            key == "allCaps" || key == "fontWeight" ||
+                            key == "fontStyle" || key == "fontUnderline" ||
+                            key == "fitMode" || key == "minFontSize" ||
+                            key == "stroke" || key == "shadow") {
+                            continue;
+                        }
+                        fail(error, "service.json: output profile " +
+                                        std::string(outputRoleName(profile.role)) + "/'" +
+                                        profile.content + "' of theme '" + theme.id +
+                                        "' carries '" + std::string(key) +
+                                        "', and an output profile holds appearance and a box");
+                        return false;
+                    }
+                    if (!wantOptionalJsonString(jsonProfile, "textColor", &profile.textColor,
+                                                error) ||
+                        !wantOptionalJsonString(jsonProfile, "fontFamily",
+                                                &profile.fontFamily, error) ||
+                        !wantOptionalNumberField(jsonProfile, "fontSize", &profile.fontSize,
+                                                 error) ||
+                        !wantOptionalNumberField(jsonProfile, "lineSpacing",
+                                                 &profile.lineSpacing, error) ||
+                        !wantOptionalJsonString(jsonProfile, "align", &profile.align, error) ||
+                        !wantOptionalNumberField(jsonProfile, "inset", &profile.inset, error) ||
+                        !wantOptionalJsonString(jsonProfile, "verticalAlign",
+                                                &profile.verticalAlign, error) ||
+                        !wantOptionalBool(jsonProfile, "allCaps", &profile.allCaps, error) ||
+                        !wantOptionalInteger(jsonProfile, "fontWeight", &profile.fontWeight,
+                                             error) ||
+                        !wantOptionalJsonString(jsonProfile, "fontStyle", &profile.fontStyle,
+                                                error) ||
+                        !wantOptionalBool(jsonProfile, "fontUnderline",
+                                          &profile.fontUnderline, error) ||
+                        !wantOptionalJsonString(jsonProfile, "fitMode", &profile.fitMode,
+                                                error) ||
+                        !wantOptionalNumberField(jsonProfile, "minFontSize",
+                                                 &profile.minFontSize, error)) {
+                        return false;
+                    }
+                    const std::string owner = "output profile " +
+                                              std::string(outputRoleName(profile.role)) +
+                                              "/'" + profile.content + "' of theme '" +
+                                              theme.id + "'";
+                    if (!wantBoxRect(jsonProfile, "box", owner, &profile.box, error) ||
+                        !wantStroke(jsonProfile, "stroke", owner, &profile.stroke, error) ||
+                        !wantShadow(jsonProfile, "shadow", owner, &profile.shadow, error)) {
+                        return false;
+                    }
+                    std::string detail;
+                    if (!Documents::validOutputProfile(profile, &detail)) {
+                        fail(error, "service.json: theme '" + theme.id +
+                                        "' carries an output profile the renderer cannot"
+                                        " honour: " + detail);
+                        return false;
+                    }
+                    const std::string pair = std::string(outputRoleName(profile.role)) + "/" +
+                                             profile.content;
+                    if (!seenPairs.insert(pair).second) {
+                        fail(error, "service.json: theme '" + theme.id +
+                                        "' names output profile " + pair + " twice");
+                        return false;
+                    }
+                    theme.profiles.push_back(std::move(profile));
+                }
+                if (theme.profiles.size() > kMaxThemeOutputProfiles) {
+                    fail(error, "service.json: theme '" + theme.id +
+                                    "' carries more than " +
+                                    std::to_string(kMaxThemeOutputProfiles) +
+                                    " output profiles");
+                    return false;
+                }
+            }
+        } else if (jsonTheme.contains("outputProfiles")) {
+            fail(error, "service.json: theme '" + theme.id +
+                            "' carries \"outputProfiles\" in a format " +
+                            std::to_string(format) + " file, where that key does not exist");
             return false;
         }
         // The TS.1 style fields (task TS.1) are format-8 members and share
