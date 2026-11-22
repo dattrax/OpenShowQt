@@ -252,6 +252,59 @@ bool OutputSession::setLayerEnabled(std::string_view name, bool enabled,
     return true;
 }
 
+bool OutputSession::applyOutputRouting(const openshow::domain::OutputRouting& routing,
+                                       uint64_t* revisionOut, std::string* error) {
+    using openshow::domain::OutputTarget;
+    using openshow::domain::RoutingLayer;
+    using openshow::domain::routingLayerBit;
+    std::string why;
+    if (!openshow::domain::validOutputRouting(routing, &why)) {
+        if (error != nullptr) {
+            *error = why;
+        }
+        return false;
+    }
+    // A destination this worker cannot drive is refused by name rather than
+    // acknowledged and ignored: the operator's matrix must never claim that
+    // words reached a screen or a stream this build does not own.
+    for (const OutputTarget target : {OutputTarget::Stage, OutputTarget::Broadcast}) {
+        if (!routing.isEnabled(target)) {
+            continue;
+        }
+        if (error != nullptr) {
+            *error = target == OutputTarget::Stage
+                         ? "the stage HDMI destination is not available in this worker yet"
+                         : "the NDI sender is not available in this worker yet";
+        }
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(fMutex);
+    fRouting = routing;
+    // The audience column is this worker's own window: its mask applies at
+    // the next frame boundary through the store's ordinary toggle path, so
+    // the disable masks stay one implementation. `enabled` is the
+    // operator's session state; the audience window is always the app's
+    // output, and a disabled column here means "not routed to".
+    const uint32_t mask = routing.mask(OutputTarget::Audience);
+    uint64_t revision = 0;
+    fStore.setLayerBit(layerBit(LayerId::kBackground),
+                       (mask & routingLayerBit(RoutingLayer::Background)) != 0, &revision);
+    fStore.setLayerBit(layerBit(LayerId::kImages),
+                       (mask & routingLayerBit(RoutingLayer::Images)) != 0, &revision);
+    fStore.setLayerBit(layerBit(LayerId::kWords),
+                       (mask & routingLayerBit(RoutingLayer::Words)) != 0, &revision);
+    if (revisionOut != nullptr) {
+        *revisionOut = revision;
+    }
+    wakeRenderThread();
+    return true;
+}
+
+openshow::domain::OutputRouting OutputSession::outputRouting() const {
+    std::lock_guard<std::mutex> lock(fMutex);
+    return fRouting;
+}
+
 bool OutputSession::selectMonitor(int index, uint64_t* revisionOut) {
     // kAutoSecondDisplay is the --monitor option's encoding, never a
     // destination: open() resolves it into a panel before this seam exists, so

@@ -217,8 +217,15 @@ namespace openshow::protocol {
 // override. Nothing is stored, prepared or presented; a hello without the
 // capability keeps the source-text fallback rather than an approximate
 // caret from Qt's own metrics.
+//
+// Minor 22 (milestone FO, task FO.1d) adds `output.routing`: the whole
+// layer-by-destination matrix in one atomic request. Capability
+// `output.routing.v1` names a worker that accepts it. The matrix is machine
+// state, never service state, and a worker that does not know the method
+// keeps the audience-only path — a frontend never sends routing to a hello
+// without the capability.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 21;
+inline constexpr std::uint32_t kProtocolMinor = 22;
 
 // The capability that names a worker DRAWING the scene 4 style block.
 // Defined here so the frontend's pre-send gate and the worker's hello name
@@ -226,6 +233,12 @@ inline constexpr std::uint32_t kProtocolMinor = 21;
 // carries it, and protocol_tests pin both halves — the constant exists and
 // the hello list contains it.
 inline constexpr const char* kCapabilityTextStyle = "scene.text-style.v1";
+
+// Minor 22: the layer-routing matrix. One request carries every column's
+// enabled flag and layer mask; the worker applies the audience column at a
+// frame boundary and refuses a destination it cannot drive, naming it.
+inline constexpr const char* kMethodOutputRouting = "output.routing";
+inline constexpr const char* kCapabilityOutputRouting = "output.routing.v1";
 
 // The capability that names a worker MEASURING with the style block and
 // answering with visual bounds (minor 16). The gate is one-directional on

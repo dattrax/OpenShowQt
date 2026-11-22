@@ -238,6 +238,16 @@ public:
     Q_INVOKABLE void selectDisplay(qint64 index);
 
     Q_INVOKABLE void setLayerEnabled(const QString& name, bool enabled);
+    // Milestone FO: submit the whole layer-by-destination matrix (the JSON
+    // AppSettings stores). Gated on the worker's `output.routing.v1`
+    // capability; the worker's answer is kept in outputRoutingStatus —
+    // "accepted" or the refusal sentence — so the dialog can retain the
+    // last accepted matrix. Nothing is sent before the handshake.
+    Q_PROPERTY(bool outputRoutingCapable READ outputRoutingCapable NOTIFY stateChanged)
+    Q_PROPERTY(QString outputRoutingStatus READ outputRoutingStatus NOTIFY outputRoutingChanged)
+    Q_INVOKABLE void applyOutputRouting(const QString& json);
+    bool outputRoutingCapable() const { return fOutputRoutingCapable; }
+    QString outputRoutingStatus() const { return fOutputRoutingStatus; }
 
     // Scenes (task 2.4c): prepare a scene object (the JSON the frontend's
     // compiler emitted), present a prepared revision, or compile one of
@@ -533,6 +543,7 @@ signals:
     void stateChanged();
     void outputStatusChanged();
     void displaysChanged();
+    void outputRoutingChanged();
     void previewChanged();
     // One slide's picture arrived (task 6.16b). Keyed, so a list delegate
     // repaints its own row and not the thirty around it; previewChanged still
@@ -623,6 +634,8 @@ private:
     // or an answer that arrives after the session died, is nobody's list.
     bool fFontListCapable = false;
     bool fLiveCapable = false;
+    bool fOutputRoutingCapable = false;
+    QString fOutputRoutingStatus;
     QVariantList fLiveSources;
     bool fLiveScanning = false;
     // The scan the operator started (open/Rescan). Background refreshes do not

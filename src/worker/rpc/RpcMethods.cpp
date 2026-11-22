@@ -18,6 +18,7 @@
 
 #include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
+#include "openshow/domain/outputrouting.h"
 #include "openshow/scene/scene.h"
 
 #include "media/MediaProbe.h"
@@ -906,6 +907,35 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
         // The toggle lands on the next composed frame; revision tells the
         // frontend which status confirms it.
         proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                     {"revision", revision},
+                                                     {"pending", true}}),
+                           outbound);
+    } else if (name == proto::kMethodOutputRouting) {
+        // Milestone FO (task FO.1d): the whole layer-by-destination matrix
+        // in one request. Validation and the refusal of a destination this
+        // worker cannot drive are the domain's own sentences; a refusal
+        // changes nothing and names why, so the editor retains its last
+        // accepted matrix.
+        openshow::domain::OutputRouting routing;
+        std::string routingError;
+        if (!given.is_object() ||
+            !openshow::domain::outputRoutingFromJson(given, &routing, &routingError)) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "output.routing: " + routingError),
+                               outbound);
+            return;
+        }
+        uint64_t revision = 0;
+        if (!fSession.applyOutputRouting(routing, &revision, &routingError)) {
+            proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                         {"accepted", false},
+                                                         {"revision", revision},
+                                                         {"reason", routingError}}),
+                               outbound);
+            return;
+        }
+        proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                     {"accepted", true},
                                                      {"revision", revision},
                                                      {"pending", true}}),
                            outbound);

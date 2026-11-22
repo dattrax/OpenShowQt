@@ -56,6 +56,7 @@
 #include "include/core/SkSurface.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
 
+#include "openshow/domain/outputrouting.h"
 #include "openshow/scene/scene.h"
 
 #include "media/MediaProbe.h"
@@ -282,6 +283,18 @@ public:
     // false for unknown names; otherwise *revisionOut (when given) receives
     // the revision this change is included in.
     bool setLayerEnabled(std::string_view name, bool enabled, uint64_t* revisionOut);
+
+    // Milestone FO (task FO.1d): the whole layer-by-destination matrix in
+    // one atomic request. The audience column's mask lands through the same
+    // store toggle path as setLayerEnabled, at the next frame boundary.
+    // A destination this worker cannot drive (the stage window and the NDI
+    // sender are later leaves) is REFUSED naming itself; a disabled column
+    // is stored as the desired answer for the day it can be driven. Nothing
+    // is stored on refusal.
+    bool applyOutputRouting(const openshow::domain::OutputRouting& routing,
+                            uint64_t* revisionOut, std::string* error);
+    // The last accepted matrix (audience masks already applied).
+    openshow::domain::OutputRouting outputRouting() const;
 
     // The panels GLFW reported, refreshed on the render thread at open,
     // after each destination change and periodically after that (so a
@@ -807,6 +820,8 @@ private:
     // display snapshot is refreshed on the render thread too, so GLFW is only
     // ever queried there.
     SceneStore fStore;
+    // The last ACCEPTED layer matrix (milestone FO). Guarded by fMutex.
+    openshow::domain::OutputRouting fRouting;
     std::vector<DisplayInfo> fDisplays;
     Status fStatus;
 

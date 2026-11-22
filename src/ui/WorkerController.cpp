@@ -705,6 +705,7 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         bool fontListCapable = false;
         bool liveCapable = false;
         bool transitionOptionsCapable = false;
+        bool outputRoutingCapable = false;
         if (payload.contains("capabilities") && payload.at("capabilities").is_array()) {
             for (const auto& capability : payload.at("capabilities").as_array()) {
                 if (!capability.is_string()) {
@@ -773,6 +774,11 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                     // (task TS.4): the picker gets its list from here and
                     // nowhere else.
                     fontListCapable = true;
+                } else if (capability.as_string() == proto::kCapabilityOutputRouting) {
+                    // Minor 22: the worker takes the layer-by-destination
+                    // matrix (milestone FO). Without it the frontend keeps
+                    // the audience-only path and sends no routing.
+                    outputRoutingCapable = true;
                 } else if (capability.as_string() == proto::kCapabilityTransitionOptions) {
                     // The worker takes its fade LENGTHS from the durations a
                     // present carries (task TR.1). Its absence is the common
@@ -796,6 +802,10 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         // first status poll.
         emit stateChanged();
         fTransitionOptionsCapable = transitionOptionsCapable;
+        if (fOutputRoutingCapable != outputRoutingCapable) {
+            fOutputRoutingCapable = outputRoutingCapable;
+            emit outputRoutingChanged();
+        }
         fFontListCapable = fontListCapable;
         fFontListState = fontListCapable ? QStringLiteral("idle")
                                          : QStringLiteral("unsupported");
@@ -831,6 +841,25 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             pollStatus();
         });
         poll->start();
+        return;
+    }
+
+    if (pending.method == proto::kMethodOutputRouting) {
+        // The worker answers the whole matrix at once: accepted, or a
+        // refusal sentence naming the destination it cannot drive. The
+        // status stays readable after a refusal so the dialog retains its
+        // last accepted matrix.
+        const bool accepted = payload.contains("accepted") &&
+                              payload.at("accepted").as_bool();
+        if (accepted) {
+            fOutputRoutingStatus = QStringLiteral("accepted");
+        } else if (payload.contains("reason") && payload.at("reason").is_string()) {
+            fOutputRoutingStatus =
+                QString::fromStdString(std::string(payload.at("reason").as_string()));
+        } else {
+            fOutputRoutingStatus = QStringLiteral("refused by the worker");
+        }
+        emit outputRoutingChanged();
         return;
     }
 
@@ -1535,6 +1564,41 @@ void WorkerController::setLayerEnabled(const QString& name, bool enabled) {
     sendRequest("layer.setEnabled",
                 boost::json::object{{"layer", name.toStdString()},
                                     {"enabled", enabled}});
+}
+
+void WorkerController::applyOutputRouting(const QString& json) {
+    if (!fConnected || !fHandshakeDone) {
+        fOutputRoutingStatus = QStringLiteral("worker not connected");
+        emit outputRoutingChanged();
+        return;
+    }
+    if (!fOutputRoutingCapable) {
+        // The gate is one-directional: a worker that never named the
+        // capability is never sent the method, so it cannot answer with
+        // "method not found" after the operator pressed Apply.
+        fOutputRoutingStatus =
+            QStringLiteral("this worker does not accept output routing");
+        emit outputRoutingChanged();
+        return;
+    }
+    boost::json::value parsed;
+    try {
+        parsed = boost::json::parse(json.toStdString());
+    } catch (const std::exception& error) {
+        fOutputRoutingStatus =
+            QStringLiteral("output routing is not JSON: %1")
+                .arg(QString::fromUtf8(error.what()));
+        emit outputRoutingChanged();
+        return;
+    }
+    if (!parsed.is_object()) {
+        fOutputRoutingStatus = QStringLiteral("output routing must be an object");
+        emit outputRoutingChanged();
+        return;
+    }
+    fOutputRoutingStatus = QStringLiteral("pending");
+    emit outputRoutingChanged();
+    sendRequest(proto::kMethodOutputRouting, parsed.as_object());
 }
 
 // The authored scene is checked HERE, before it is sent (task 6.8a, review

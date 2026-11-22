@@ -77,6 +77,11 @@ Dialog {
     }
     function loadDraft() {
         layersDialog.draft = JSON.parse(appSettings.outputRoutingJson())
+        // The audience window is this application's own output and is
+        // already live; its column reads as on so Apply never blanks the
+        // operator's screen by accident. Stage/broadcast always start off.
+        if (layersDialog.draft.audience !== undefined)
+            layersDialog.draft.audience.enabled = true
         audienceMonitor.currentIndex = indexOfMonitor(appSettings.audienceMonitor)
         stageMonitor.currentIndex = indexOfMonitor(appSettings.stageMonitor)
         sourceField.text = appSettings.broadcastSource
@@ -96,8 +101,11 @@ Dialog {
         appSettings.audienceMonitor = monitorIndexAt(audienceMonitor.currentIndex, -1)
         appSettings.stageMonitor = monitorIndexAt(stageMonitor.currentIndex, -1)
         appSettings.broadcastSource = sourceField.text
-        if (appSettings.applyOutputRouting(JSON.stringify(layersDialog.draft)))
-            layersDialog.close()
+        const json = JSON.stringify(layersDialog.draft)
+        if (!appSettings.applyOutputRouting(json))
+            return  // the refusal stays visible; the last accepted matrix is kept
+        worker.applyOutputRouting(json)
+        layersDialog.close()
     }
 
     onOpened: loadDraft()
@@ -250,6 +258,17 @@ Dialog {
             text: "This build stores the matrix and the routes. The Stage HDMI window and the "
                   + "NDI sender are separate, physically verified leaves; until they are on, "
                   + "enabling a column is recorded but nothing leaves this machine."
+        }
+        Text {
+            objectName: "outputRoutingStatus"
+            width: parent.width
+            visible: worker.connected && worker.outputRoutingStatus !== ""
+                     && worker.outputRoutingStatus !== "accepted"
+                     && worker.outputRoutingStatus !== "pending"
+            wrapMode: Text.WordWrap
+            color: "#d9a441"
+            font.pixelSize: 11
+            text: "Worker: " + worker.outputRoutingStatus
         }
         Text {
             objectName: "outputLayersError"
