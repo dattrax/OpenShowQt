@@ -39,7 +39,8 @@ journeys. Headless build/tests and source guards are recorded below.
 Still open before the operator-delivery claim: FO.1e.2 scheduling evidence and
 a stage raster/pixel fixture; FO.5b.1 repeated-entry/song→Bible journey tests and
 superseded-completion tests (Go bundle, live lookahead and delete-keeps-current
-are delivered); FO.5b.2 scope beyond the delivered compositor;
+are delivered); FO.4b.stage keyboard/scale/reconnect journeys and FO.5b.2 scope
+beyond the delivered compositor;
 FO.5c.2 full UI/worker journeys; X11, unplug-under-load, mixed-refresh timing,
 10-minute comparison and 30-minute soak (FO.5c.3); NDI (FO.3/FO.4a) remains a
 separate path. Stage starts disabled after app/worker restart.

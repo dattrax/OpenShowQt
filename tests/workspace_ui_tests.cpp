@@ -174,15 +174,37 @@ static int exerciseOutputLayers(QQuickWindow* window,
             property string outputRoutingStatus: "accepted"
             property int currentMonitor: 1
             property var displays: [
-                {index: 0, name: "Operator", size: "1920x1080"},
-                {index: 1, name: "Audience", size: "1920x1080"},
-                {index: 2, name: "Third display", size: "1920x1080"}
+                {index: 0, name: "Operator", size: "1920x1080", identity: "op|0,0|1920x1080"},
+                {index: 1, name: "Audience", size: "1920x1080", identity: "aud|1920,0|1920x1080"},
+                {index: 2, name: "Third display", size: "1920x1080", identity: "third|3840,0|1920x1080"}
             ]
             property var layers: ({background: true, images: false, words: true})
             property string submitted: ""
             property int selected: -2
+            property bool stageCapable: true
+            property bool stageEnabled: false
+            property bool stageActive: false
+            property bool stageLost: false
+            property int stageMonitor: -1
+            property string stageMonitorName: ""
+            property string stageError: ""
+            property int stagePresented: 0
+            property int stageFrames: 0
+            property bool stageNext: false
+            property bool stageOverlap: false
+            property string stageRetainedBundleJson: ""
+            property int displaysGeneration: 1
+            property var stageConfig: ({})
             function applyOutputRouting(json) { submitted = json }
             function selectDisplay(index) { selected = index }
+            function configureStage(enabled, index, layers) {
+                stageConfig = {enabled: enabled, monitor: index, layers: layers}
+                stageEnabled = enabled
+            }
+            function presentCueWithStage(cueKey, scene, bundle) {}
+            function clearStageOutput() {}
+            function restoreStageOutput() {}
+            function refreshStageLookahead(bundle) {}
         }
     )", QUrl());
     std::unique_ptr<QObject> peer(peerType.create());
@@ -216,6 +238,42 @@ static int exerciseOutputLayers(QQuickWindow* window,
           "Apply sends the selected display to the worker as well as storing it");
     check(!peer->property("submitted").toString().isEmpty(),
           "Apply submits the layer matrix to the live worker");
+
+    // Stage delivery FO.4b.stage: on a capable worker the Stage column is
+    // activatable, its next-cue cell is legal, Notes stays unavailable, a
+    // saved identity survives the reopen, and Apply sends the whole stage
+    // configuration (enable + route + layers) rather than a saved checkbox.
+    settings.setStageMonitor(2);
+    settings.setStageMonitorIdentity("third|3840,0|1920x1080");
+    QMetaObject::invokeMethod(routedDialog.get(), "open");
+    QTest::qWait(250);
+    auto* stageEnable = routedContent ? find(routedContent, "outputColumnEnable-stage") : nullptr;
+    auto* stageCombo = routedContent ? find(routedContent, "outputMonitorStage") : nullptr;
+    auto* stageNextCell = routedContent ? find(routedContent, "outputCell-stage-next") : nullptr;
+    auto* stageNotesCell = routedContent ? find(routedContent, "outputCell-stage-notes") : nullptr;
+    check(stageEnable && stageEnable->isEnabled(),
+          "a stage-capable worker offers Stage activation");
+    check(stageNextCell && stageNextCell->isEnabled(),
+          "the next-cue cell is legal on the stage column");
+    check(stageNotesCell && !stageNotesCell->isEnabled(),
+          "speaker notes stay unavailable without a data source");
+    check(stageCombo && stageCombo->property("currentIndex").toInt() == 3,
+          "the saved stage identity reselects its attached display");
+    click(stageEnable);
+    check(stageEnable->property("checked").toBool(),
+          "the stage enable box edits the draft");
+    QMetaObject::invokeMethod(routedDialog.get(), "apply");
+    const QVariantMap stageConfig = peer->property("stageConfig").toMap();
+    check(stageConfig.value(QStringLiteral("enabled")).toBool() &&
+              stageConfig.value(QStringLiteral("monitor")).toInt() == 2,
+          "Apply sends the stage enablement and its display");
+    const QVariantList stageLayers = stageConfig.value(QStringLiteral("layers")).toList();
+    check(stageLayers.contains(QStringLiteral("words")) &&
+              stageLayers.contains(QStringLiteral("next")),
+          "Apply sends the stage column's own layer mask");
+    check(settings.stageMonitor() == 2 &&
+              settings.stageMonitorIdentity() == "third|3840,0|1920x1080",
+          "the stage route keeps both index and connection identity");
     return failed ? 1 : 0;
 }
 
