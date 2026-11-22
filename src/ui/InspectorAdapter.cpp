@@ -153,6 +153,38 @@ QVariantMap rectValue(const QVariantMap& rect) {
     return out;
 }
 
+// The write form of a profile row (milestone FO): the fields the record
+// SPEAKS, reassembled from its ...Set flags. Absent keys are silence, which
+// is exactly what applyThemeOutputProfile replaces — so this is the whole
+// record minus the field being edited, and one commit never drops another.
+QVariantMap profileFields(const QVariantMap& row) {
+    QVariantMap fields;
+    for (const char* key : {"textColor", "fontFamily", "fontSize", "lineSpacing", "align",
+                            "verticalAlign", "allCaps", "fontWeight", "fontStyle",
+                            "fontUnderline", "fitMode", "minFontSize"}) {
+        const QString name = QLatin1String(key);
+        if (row.value(name + QLatin1String("Set")).toBool()) {
+            fields.insert(name, row.value(name));
+        }
+    }
+    if (row.value(QStringLiteral("boxSet")).toBool()) {
+        const QVariantMap box = rectValue(row);
+        for (auto it = box.begin(); it != box.end(); ++it) {
+            fields.insert(it.key(), it.value());
+        }
+    }
+    if (row.value(QStringLiteral("insetSet")).toBool()) {
+        fields.insert(QStringLiteral("inset"), row.value(QStringLiteral("inset")));
+    }
+    if (row.value(QStringLiteral("strokeSet")).toBool()) {
+        fields.insert(QStringLiteral("stroke"), row.value(QStringLiteral("stroke")));
+    }
+    if (row.value(QStringLiteral("shadowSet")).toBool()) {
+        fields.insert(QStringLiteral("shadow"), row.value(QStringLiteral("shadow")));
+    }
+    return fields;
+}
+
 // The rectangle a commit takes: the four numbers, one unit. A shape this
 // cannot even read is refused before any verb runs; the DOMAIN's vetting
 // still decides what lands.
@@ -417,6 +449,70 @@ QVariantMap InspectorAdapter::fieldState(const QString& field) const {
             out.insert(QStringLiteral("reason"),
                        QStringLiteral("a text context cannot store %1 yet (TV.3)").arg(name));
             return out;
+        }
+        return nothing(QStringLiteral("'%1' is not an inspector field").arg(field));
+    }
+
+    if (kind == QLatin1String("profile")) {
+        const QString role = fTarget.value(QStringLiteral("role")).toString();
+        const QVariantMap row = fDocument->themeOutputProfile(id, role, view);
+        const QVariantMap sample = fDocument->themeSampleAppearance(id, view, role);
+        if (!sample.value(QStringLiteral("ok")).toBool()) {
+            return nothing(QStringLiteral("no theme '%1' or no destination '%2'")
+                               .arg(id, role));
+        }
+        const bool exists = row.value(QStringLiteral("set")).toBool();
+        const QString ownSource = QStringLiteral("this profile");
+        const QString inheritedSource = QStringLiteral("the theme");
+        if (name == QLatin1String("backgroundColor") ||
+            name == QLatin1String("backgroundGradient")) {
+            QVariantMap out = shape(QVariant(), QVariant(), false, QString(), false, false);
+            out.insert(QStringLiteral("reason"),
+                       QStringLiteral("an output profile styles text and its box; whether the "
+                                      "background routes here is the layer matrix's answer"));
+            return out;
+        }
+        if (name == QLatin1String("transition")) {
+            QVariantMap out = shape(QVariant(), QVariant(), false, QString(), false, false);
+            out.insert(QStringLiteral("reason"),
+                       QStringLiteral("movement belongs to the audience cue, not to a "
+                                      "destination profile"));
+            return out;
+        }
+        if (isBaseField(name)) {
+            const bool isSet = exists && row.value(name + QLatin1String("Set")).toBool();
+            return shape(sample.value(name), isSet ? row.value(name) : QVariant(), isSet,
+                         isSet ? ownSource : inheritedSource, true, isSet);
+        }
+        if (name == QLatin1String("placement")) {
+            const bool isSet = exists && row.value(QStringLiteral("boxSet")).toBool();
+            const bool insetSet = exists && row.value(QStringLiteral("insetSet")).toBool();
+            return shape(boxFromSample(sample), isSet ? rectValue(row) : QVariant(),
+                         isSet || insetSet,
+                         (isSet || insetSet) ? ownSource
+                                             : QStringLiteral("the role's default box"),
+                         true, isSet || insetSet);
+        }
+        if (isStyleLeaf(name) || name == QLatin1String("stroke") ||
+            name == QLatin1String("shadow")) {
+            const bool isSet = exists && row.value(name + QLatin1String("Set")).toBool();
+            return shape(sample.value(name, styleDefault(name)),
+                         isSet ? row.value(name) : QVariant(), isSet,
+                         isSet ? ownSource : inheritedSource, true, isSet);
+        }
+        if (isStrokeMember(name) || isShadowMember(name)) {
+            const QString record = name.startsWith(QLatin1String("stroke"))
+                                       ? QStringLiteral("stroke")
+                                       : QStringLiteral("shadow");
+            const bool isSet = exists && row.value(record + QLatin1String("Set")).toBool();
+            const QString member = name.at(record.size()).toLower() +
+                                   name.mid(record.size() + 1);
+            QVariant own;
+            if (isSet) {
+                own = row.value(record).toMap().value(member);
+            }
+            return shape(sample.value(record).toMap().value(member, effectDefault(name)),
+                         own, isSet, isSet ? ownSource : inheritedSource, true, false);
         }
         return nothing(QStringLiteral("'%1' is not an inspector field").arg(field));
     }
@@ -692,6 +788,60 @@ bool InspectorAdapter::commit(const QString& field, const QVariant& value) {
         return true;
     }
 
+    if (kind == QLatin1String("profile")) {
+        const QString role = fTarget.value(QStringLiteral("role")).toString();
+        const QVariantMap row = fDocument->themeOutputProfile(id, role, view);
+        if (name == QLatin1String("backgroundColor") || name == QLatin1String("backgroundGradient")) {
+            emit refused(field, QStringLiteral("the layer matrix owns backgrounds; a profile "
+                                               "styles text"));
+            return false;
+        }
+        if (name == QLatin1String("transition")) {
+            emit refused(field, QStringLiteral("movement belongs to the audience cue"));
+            return false;
+        }
+        QVariantMap fields = profileFields(row);
+        if (name == QLatin1String("placement")) {
+            double x = 0.0, y = 0.0, width = 0.0, height = 0.0;
+            if (!rectFrom(value, &x, &y, &width, &height)) {
+                emit refused(field, QStringLiteral("a box is four numbers, one unit"));
+                return false;
+            }
+            fields.insert(QStringLiteral("x"), x);
+            fields.insert(QStringLiteral("y"), y);
+            fields.insert(QStringLiteral("width"), width);
+            fields.insert(QStringLiteral("height"), height);
+            fields.remove(QStringLiteral("inset"));
+        } else if (isStrokeMember(name) || isShadowMember(name)) {
+            const QString record = name.startsWith(QLatin1String("stroke"))
+                                       ? QStringLiteral("stroke")
+                                       : QStringLiteral("shadow");
+            QVariantMap merged = fields.value(record).toMap();
+            if (merged.isEmpty()) {
+                // First member edit starts from what the destination draws.
+                merged = fDocument->themeSampleAppearance(id, view, role)
+                             .value(record)
+                             .toMap();
+            }
+            merged.insert(name.at(record.size()).toLower() + name.mid(record.size() + 1),
+                          value);
+            fields.insert(record, merged);
+        } else if (isBaseField(name) || isStyleLeaf(name) || name == QLatin1String("stroke") ||
+                   name == QLatin1String("shadow")) {
+            fields.insert(name, value);
+        } else {
+            emit refused(field, QStringLiteral("'%1' is not an inspector field").arg(field));
+            return false;
+        }
+        if (!fDocument->applyThemeOutputProfile(id, role, view, fields)) {
+            emit refused(field, QStringLiteral("the destination refused %1; the record still "
+                                               "answers as it did")
+                                    .arg(field));
+            return false;
+        }
+        return true;
+    }
+
     if (kind == QLatin1String("slide")) {
         if (name == QLatin1String("transition")) {
             emit refused(field, QStringLiteral("a slide never carries its own movement"));
@@ -867,6 +1017,50 @@ bool InspectorAdapter::reset(const QString& field) {
         return true;
     }
 
+    if (kind == QLatin1String("profile")) {
+        const QString role = fTarget.value(QStringLiteral("role")).toString();
+        const QVariantMap row = fDocument->themeOutputProfile(id, role, view);
+        if (!row.value(QStringLiteral("set")).toBool()) {
+            emit refused(field, QStringLiteral("theme '%1' carries no %2 profile")
+                                    .arg(id, role));
+            return false;
+        }
+        if (isStrokeMember(name) || isShadowMember(name)) {
+            emit refused(field, QStringLiteral("an effect inherits only whole — clear "
+                                               "'stroke' or 'shadow'"));
+            return false;
+        }
+        if (name == QLatin1String("transition")) {
+            emit refused(field, QStringLiteral("a profile never carried movement"));
+            return false;
+        }
+        QVariantMap fields = profileFields(row);
+        if (name == QLatin1String("placement")) {
+            for (const char* key : {"x", "y", "width", "height", "inset"}) {
+                fields.remove(QLatin1String(key));
+            }
+        } else if (name == QLatin1String("stroke") || name == QLatin1String("shadow")) {
+            fields.remove(name);
+        } else if (isBaseField(name) || isStyleLeaf(name)) {
+            if (!row.value(name + QLatin1String("Set")).toBool()) {
+                emit refused(field, QStringLiteral("this profile never stored %1").arg(field));
+                return false;
+            }
+            fields.remove(name);
+        } else {
+            emit refused(field, QStringLiteral("'%1' is not an inspector field").arg(field));
+            return false;
+        }
+        const bool ok = fields.isEmpty()
+                            ? fDocument->removeThemeOutputProfile(id, role, view)
+                            : fDocument->applyThemeOutputProfile(id, role, view, fields);
+        if (!ok) {
+            emit refused(field, QStringLiteral("the destination refused to let %1 go")
+                                    .arg(field));
+        }
+        return ok;
+    }
+
     if (kind == QLatin1String("slide")) {
         if (name == QLatin1String("transition")) {
             emit refused(field, QStringLiteral("a slide never carries its own movement"));
@@ -919,6 +1113,24 @@ QStringList InspectorAdapter::fields() const {
                 QStringLiteral("align"), QStringLiteral("lineSpacing"),
                 QStringLiteral("verticalAlign"), QStringLiteral("allCaps"),
                 QStringLiteral("placement"), QStringLiteral("transition")};
+    }
+    if (kind == QLatin1String("profile")) {
+        QStringList out;
+        for (const char* field : kBaseFields) {
+            out << QLatin1String(field);
+        }
+        out << QStringLiteral("placement");
+        for (const char* field : kStyleLeaves) {
+            out << QLatin1String(field);
+        }
+        out << QStringLiteral("stroke") << QStringLiteral("shadow");
+        for (const char* field : kStrokeMembers) {
+            out << QLatin1String(field);
+        }
+        for (const char* field : kShadowMembers) {
+            out << QLatin1String(field);
+        }
+        return out;
     }
     if (kind == QLatin1String("slide")) {
         return {QStringLiteral("textColor"), QStringLiteral("backgroundColor"),

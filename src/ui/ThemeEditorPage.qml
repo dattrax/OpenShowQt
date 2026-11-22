@@ -71,15 +71,56 @@ Item {
      * previews the look it would inherit.
      */
     property string selectedView: ""
+    // Milestone FO: WHICH DESTINATION the canvas and inspector show.
+    // "audience" is the theme's own look (the Songs/Bible pair above);
+    // "stage" and "broadcast" (the NDI tile) carry their own sparse
+    // profile, edited with the same shared controls. Browsing a destination
+    // never opens a display or starts a sender.
+    property string selectedRole: "audience"
+    // The content each destination tile shows beneath it. Independent per
+    // destination, so switching Stage to Bible never changes what NDI shows.
+    property string stageContent: ""
+    property string ndiContent: ""
+    // Whether the selected theme carries the selected destination's profile.
+    property bool destinationOn: false
+
+    function isDestination() {
+        return themeEditor.selectedRole !== "audience"
+    }
+    function destinationContent() {
+        return themeEditor.selectedRole === "stage" ? themeEditor.stageContent
+                                                    : themeEditor.ndiContent
+    }
     function selectView(view) {
-        if (view === themeEditor.selectedView)
+        themeEditor.selectDestination("audience", view)
+    }
+    function selectDestination(role, view) {
+        if (role === themeEditor.selectedRole && view === themeEditor.selectedView)
             return
-        // An unfinished gesture belongs to the view it started in: it is
-        // cancelled, not committed under the new view's handles.
+        // An unfinished gesture belongs to the destination it started in: it
+        // is cancelled, not committed under the new destination's handles.
         themeEditor.cancelGesture()
+        themeEditor.selectedRole = role
         themeEditor.selectedView = view
         themeEditor.syncInspector()
         themeEditor.askForSamplePicture()
+    }
+    // The role name the worker/controller verbs take; "" is never sent.
+    function selectedRoleName() {
+        return themeEditor.selectedRole
+    }
+    // The Songs/Bible selector beneath a destination tile. It is the
+    // destination's OWN content choice; only the selected destination's
+    // preview follows it immediately.
+    function setDestinationContent(role, view) {
+        if (role === "stage")
+            themeEditor.stageContent = view
+        else
+            themeEditor.ndiContent = view
+        if (themeEditor.selectedRole === role)
+            themeEditor.selectDestination(role, view)
+        else
+            themeEditor.askForSamplePicture()
     }
     // The compiled fixture's PRIMARY box and typography for the selected
     // theme AND view — the overlay's and the fields' single truth, so the
@@ -91,7 +132,8 @@ Item {
             return
         }
         themeEditor.viewLook = docs.themeSampleAppearance(themeEditor.selectedId,
-                                                          themeEditor.selectedView)
+                                                          themeEditor.selectedView,
+                                                          themeEditor.selectedRole)
     }
     // Re-pick the selection when the list moved under it — a delete, or
     // the first theme added to an empty service. Selection prefers the
@@ -118,6 +160,13 @@ Item {
         nameField.text = row !== null ? row.name : ""
         themeEditor.refreshViewLook()
         themeEditor.syncContext()
+        // Milestone FO: does this theme carry the selected destination's
+        // profile? Reset follows the record, re-read on every change.
+        themeEditor.destinationOn = themeEditor.selectedId !== ""
+                && themeEditor.isDestination()
+                && docs.themeOutputProfile(themeEditor.selectedId,
+                                           themeEditor.selectedRole,
+                                           themeEditor.destinationContent()).set === true
     }
     /* The style rows, the colours, the box fields, the effects and the
      * transition section now live in the shared inspector parts (task
@@ -459,7 +508,9 @@ Item {
                 h === Math.round(themeEditor.anchorH)) {
             return
         }
-        if (themeEditor.selectedView !== "") {
+        if (themeEditor.selectedRole !== "audience") {
+            profileAdapter.commit("box", {x: x, y: y, width: w, height: h})
+        } else if (themeEditor.selectedView !== "") {
             contextAdapter.commit("box", {x: x, y: y, width: w, height: h})
         } else {
             docs.setThemePlacement(id, x, y, w, h)
@@ -482,7 +533,8 @@ Item {
                 return
             }
             const json = docs.themeSampleSceneJson(themeEditor.selectedId,
-                                                   themeEditor.selectedView)
+                                                   themeEditor.selectedView,
+                                                   themeEditor.selectedRole)
             if (json !== "")
                 worker.requestSelectionPreview(json)
         }
@@ -498,8 +550,10 @@ Item {
      * because the batch describes the SELECTED theme, not the selected
      * view: whichever tile is up, both answers are wanted.
      */
-    function viewThumbKey(view) {
-        return "theme-view-" + (view === "" ? "songs" : "bible") + "-" + themeEditor.selectedId
+    function viewThumbKey(view, role) {
+        const destination = role === undefined ? "audience" : role
+        return "theme-view-" + destination + "-" +
+               (view === "" ? "songs" : "bible") + "-" + themeEditor.selectedId
     }
     // The ask follows the tile's picture (16:9 inside the 32..512 envelope
     // the wire accepts at the 640x360 slot this app streams at) exactly as
@@ -516,10 +570,16 @@ Item {
         if (themeEditor.selectedId === "")
             return []
         return [
-            {key: themeEditor.viewThumbKey(""),
-             scene: docs.themeSampleSceneJson(themeEditor.selectedId, "")},
-            {key: themeEditor.viewThumbKey("scripture"),
-             scene: docs.themeSampleSceneJson(themeEditor.selectedId, "scripture")}
+            {key: themeEditor.viewThumbKey("", "audience"),
+             scene: docs.themeSampleSceneJson(themeEditor.selectedId, "", "audience")},
+            {key: themeEditor.viewThumbKey("scripture", "audience"),
+             scene: docs.themeSampleSceneJson(themeEditor.selectedId, "scripture", "audience")},
+            {key: themeEditor.viewThumbKey(themeEditor.stageContent, "stage"),
+             scene: docs.themeSampleSceneJson(themeEditor.selectedId,
+                                              themeEditor.stageContent, "stage")},
+            {key: themeEditor.viewThumbKey(themeEditor.ndiContent, "broadcast"),
+             scene: docs.themeSampleSceneJson(themeEditor.selectedId,
+                                              themeEditor.ndiContent, "broadcast")}
         ]
     }
     property int viewThumbRequests: 0
@@ -867,9 +927,12 @@ Item {
     component ViewTile: Button {
         id: tileButton
         required property string view    // "" for Songs, "scripture" for Bible
+        property string tileRole: "audience"
         required property string label
         // The picture width the thumbnail ask follows (viewThumbPixels).
         readonly property real picWidth: Math.min(160, width - 8)
+        readonly property bool selected: themeEditor.selectedRole === tileButton.tileRole
+                                         && themeEditor.selectedView === tileButton.view
         flat: true
         padding: 4
         Accessible.name: tileButton.label
@@ -886,12 +949,13 @@ Item {
                 controller: worker
                 target: "thumbnail"
                 key: themeEditor.selectedId === ""
-                     ? "" : themeEditor.viewThumbKey(tileButton.view)
+                     ? "" : themeEditor.viewThumbKey(qtView(), tileButton.tileRole)
                 pixelsVisible: worker.thumbnailSupported
-                borderColor: themeEditor.selectedView === tileButton.view
-                             ? "#1685f8" : "#4a4a4a"
+                borderColor: tileButton.selected ? "#1685f8" : "#4a4a4a"
                 borderWidth: 1
-                placeholder: tileButton.view === "" ? "\u266a" : "\u271d"
+                placeholder: tileButton.tileRole === "stage" ? "\u25a4"
+                             : (tileButton.tileRole === "broadcast" ? "\u25ce"
+                                                                    : (tileButton.view === "" ? "\u266a" : "\u271d"))
                 placeholderVisible: !worker.thumbnailSupported
                 placeholderColor: "#888888"
                 placeholderPixelSize: 18
@@ -900,17 +964,25 @@ Item {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 text: tileButton.label
-                color: themeEditor.selectedView === tileButton.view
-                       ? "#8ec9f5" : "#cccccc"
+                color: tileButton.selected ? "#8ec9f5" : "#cccccc"
                 font.pixelSize: 12
-                font.bold: themeEditor.selectedView === tileButton.view
+                font.bold: tileButton.selected
             }
         }
         background: Rectangle {
             radius: 4
             color: tileButton.hovered ? "#2c2c2e" : "transparent"
         }
-        onClicked: themeEditor.selectView(tileButton.view)
+        // The key must describe this TILE's content, not the page's view:
+        // the Stage tile keeps showing its own Songs/Bible choice while the
+        // operator browses the Bible tile.
+        function qtView() {
+            if (tileButton.tileRole === "audience")
+                return tileButton.view
+            return tileButton.tileRole === "stage" ? themeEditor.stageContent
+                                                   : themeEditor.ndiContent
+        }
+        onClicked: themeEditor.selectDestination(tileButton.tileRole, qtView())
     }
 
     Item {
@@ -988,6 +1060,66 @@ Item {
                 width: parent.width
                 view: "scripture"
                 label: "Bible"
+            }
+            // Milestone FO: the two destination tiles. Each carries its own
+            // Songs/Bible content choice beneath it, and clicking the tile
+            // edits that destination's profile; the audience tiles above
+            // stay exactly what they were.
+            ViewTile {
+                id: stageTile
+                objectName: "themeViewStage"
+                width: parent.width
+                tileRole: "stage"
+                view: themeEditor.stageContent
+                label: "Stage"
+            }
+            Row {
+                objectName: "themeStageContent"
+                spacing: 4
+                Button {
+                    objectName: "themeStageSongs"
+                    text: "Songs"
+                    flat: true
+                    padding: 2
+                    highlighted: themeEditor.stageContent === ""
+                    onClicked: themeEditor.setDestinationContent("stage", "")
+                }
+                Button {
+                    objectName: "themeStageBible"
+                    text: "Bible"
+                    flat: true
+                    padding: 2
+                    highlighted: themeEditor.stageContent === "scripture"
+                    onClicked: themeEditor.setDestinationContent("stage", "scripture")
+                }
+            }
+            ViewTile {
+                id: ndiTile
+                objectName: "themeViewNdi"
+                width: parent.width
+                tileRole: "broadcast"
+                view: themeEditor.ndiContent
+                label: "NDI"
+            }
+            Row {
+                objectName: "themeNdiContent"
+                spacing: 4
+                Button {
+                    objectName: "themeNdiSongs"
+                    text: "Songs"
+                    flat: true
+                    padding: 2
+                    highlighted: themeEditor.ndiContent === ""
+                    onClicked: themeEditor.setDestinationContent("broadcast", "")
+                }
+                Button {
+                    objectName: "themeNdiBible"
+                    text: "Bible"
+                    flat: true
+                    padding: 2
+                    highlighted: themeEditor.ndiContent === "scripture"
+                    onClicked: themeEditor.setDestinationContent("broadcast", "scripture")
+                }
             }
         }
         ListView {
@@ -1320,6 +1452,17 @@ Item {
         document: docs
         target: ({kind: "context", id: themeEditor.selectedId, view: "scripture"})
     }
+    // Milestone FO: the destination rail. The same shared controls read and
+    // write the selected theme's sparse stage/broadcast profile for that
+    // destination's OWN content choice; an unauthored profile shows the
+    // inherited values with nothing stored.
+    InspectorAdapter {
+        id: profileAdapter
+        document: docs
+        target: ({kind: "profile", id: themeEditor.selectedId,
+                  role: themeEditor.selectedRole,
+                  view: themeEditor.destinationContent()})
+    }
     // The context-property worker, named once at the page root: inside an
     // instance body `worker: worker` would resolve to the instance's OWN
     // property (a self-binding that reads undefined), so the rails take
@@ -1344,8 +1487,11 @@ Item {
 
 
             Text {
-                text: themeEditor.selectedView === "" ? "SELECTED THEME — SONGS"
-                                                      : "SELECTED THEME — BIBLE"
+                text: themeEditor.selectedRole === "audience"
+                      ? (themeEditor.selectedView === "" ? "SELECTED THEME — SONGS"
+                                                         : "SELECTED THEME — BIBLE")
+                      : ((themeEditor.selectedRole === "stage" ? "STAGE — " : "NDI — ")
+                         + (themeEditor.selectedView === "" ? "SONGS" : "BIBLE"))
                 color: "#bbbbbb"
                 font.pixelSize: 11
                 font.bold: true
@@ -1354,7 +1500,8 @@ Item {
                 objectName: "themeEditorSongsSection"
                 width: parent.width
                 spacing: 8
-                visible: themeEditor.selectedView === ""
+                visible: themeEditor.selectedRole === "audience"
+                         && themeEditor.selectedView === ""
                 Text { text: "Name"; color: "#b0b0b0"; font.pixelSize: 11 }
                 PanelField {
                     id: nameField
@@ -1382,7 +1529,8 @@ Item {
                 objectName: "themeEditorBibleSection"
                 width: parent.width
                 spacing: 8
-                visible: themeEditor.selectedView === "scripture"
+                visible: themeEditor.selectedRole === "audience"
+                         && themeEditor.selectedView === "scripture"
                 Text { text: "Name"; color: "#b0b0b0"; font.pixelSize: 11 }
                 PanelField {
                     // The same record the Songs view edits — a theme's identity
@@ -1439,6 +1587,55 @@ Item {
                         text: ""
                     }
 
+                }
+            }
+
+            // Milestone FO: one destination's look (Stage or NDI). The
+            // shared controls read and write the selected theme's sparse
+            // profile for THAT destination and ITS Songs/Bible choice; an
+            // unauthored profile shows inherited values and stores nothing
+            // until the operator edits one. Names stay reachable here too.
+            Column {
+                objectName: "themeEditorDestinationSection"
+                width: parent.width
+                spacing: 8
+                visible: themeEditor.isDestination()
+                Text { text: "Name"; color: "#b0b0b0"; font.pixelSize: 11 }
+                PanelField {
+                    objectName: "themeEditorNameFieldDestination"
+                    width: parent.width
+                    onEditingFinished: themeEditor.applyField("name", text.trim())
+                    onVisibleChanged: if (visible) text = themeEditor.rowFor(
+                                              themeEditor.selectedId) !== null
+                                      ? themeEditor.rowFor(themeEditor.selectedId).name : ""
+                }
+                Text {
+                    objectName: "themeEditorDestinationHint"
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    color: "#8ec9f5"
+                    font.pixelSize: 11
+                    text: themeEditor.selectedRole === "stage"
+                          ? "Stage HDMI: its own box and type. Background and images "
+                            + "arrive only if the layer matrix sends them."
+                          : "NDI lower third: a transparent 1920×1080 frame. "
+                            + "Background and images arrive only if the layer matrix sends them."
+                }
+                PanelButton {
+                    objectName: "themeEditorDestinationReset"
+                    text: "Reset destination look"
+                    enabled: themeEditor.destinationOn
+                    onClicked: docs.removeThemeOutputProfile(themeEditor.selectedId,
+                                                             themeEditor.selectedRole,
+                                                             themeEditor.destinationContent())
+                }
+                AppearanceInspector {
+                    id: destinationInspector
+                    width: parent.width
+                    adapter: profileAdapter
+                    worker: themeEditor.workerApi
+                    overlayParent: themeEditor
+                    showBackground: false
                 }
             }
         }

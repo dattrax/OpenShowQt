@@ -24,6 +24,8 @@ namespace openshow::ui {
 //
 //   {kind: "theme",   id: <themeId>}                      the Songs look
 //   {kind: "context", id: <themeId>, view: "scripture"}   one Bible view
+//   {kind: "profile", id: <themeId>, role: "stage"|"broadcast", view: ""|"scripture"}
+//                                                         one destination's look
 //   {kind: "slide"}                                       the current slide
 //   {kind: "service"}                                     the movement floor
 //

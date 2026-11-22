@@ -756,6 +756,93 @@ void exerciseBoxMenuActions(const std::filesystem::path& root) {
           "save/reopen keeps the borrowed box and the reading size");
 }
 
+// Milestone FO: the Stage/NDI tile's inspector target. The same shared
+// controls drive a destination profile — its box, type and effects — without
+// ever writing the audience theme, and a reset leaves the role default.
+void exerciseProfileTarget(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong(QStringLiteral("Lower Third"));
+    docs.addSlide();
+    check(docs.createBlankTheme(QStringLiteral("House")), "a blank theme exists");
+    const QString id = themeRowNamed(docs, QStringLiteral("House"))
+                           .value(QStringLiteral("id"))
+                           .toString();
+    InspectorAdapter adapter;
+    adapter.setDocument(&docs);
+    QVariantMap target = fieldTarget(QStringLiteral("profile"), id);
+    target.insert(QStringLiteral("role"), QStringLiteral("broadcast"));
+    adapter.setTarget(target);
+    Refusals refusals;
+    watchRefusals(adapter, refusals);
+
+    check(adapter.fields().contains(QStringLiteral("fontSize")) &&
+              adapter.fields().contains(QStringLiteral("placement")) &&
+              adapter.fields().contains(QStringLiteral("stroke")),
+          "a destination profile exposes the shared style fields");
+    const QVariantMap box = adapter.fieldState(QStringLiteral("placement"));
+    check(box.value(QStringLiteral("editable")).toBool() &&
+              !box.value(QStringLiteral("isSet")).toBool() &&
+              box.value(QStringLiteral("value")).toMap().value(QStringLiteral("y")).toDouble() ==
+                  760.0 &&
+              box.value(QStringLiteral("source")).toString() ==
+                  QStringLiteral("the role's default box"),
+          "an unauthored column reports the lower-third default as inherited");
+    check(adapter.fieldState(QStringLiteral("backgroundColor"))
+              .value(QStringLiteral("editable"))
+              .toBool() == false,
+          "a profile cannot style the background; the matrix owns that layer");
+    check(adapter.fieldState(QStringLiteral("transition"))
+              .value(QStringLiteral("editable"))
+              .toBool() == false,
+          "a profile cannot carry movement");
+
+    check(adapter.commit(QStringLiteral("fontSize"), 56.0),
+          "the NDI tile commits a type size");
+    check(adapter.commit(QStringLiteral("placement"), QVariant(rect(60, 800, 1800, 220))),
+          "the NDI tile commits its own box");
+    const QVariantMap applied = docs.themeOutputProfile(id, QStringLiteral("broadcast"),
+                                                        QString());
+    check(applied.value(QStringLiteral("set")).toBool() &&
+              applied.value(QStringLiteral("fontSize")).toDouble() == 56.0 &&
+              !docs.themeOutputProfile(id, QStringLiteral("stage"), QString())
+                   .value(QStringLiteral("set"))
+                   .toBool(),
+          "the record lands on the broadcast column only");
+    const QVariantMap sample = docs.themeSampleAppearance(id, QString(), QStringLiteral("broadcast"));
+    check(sample.value(QStringLiteral("boxY")).toDouble() == 800.0 &&
+              sample.value(QStringLiteral("fontSize")).toDouble() == 56.0,
+          "the destination's own sample wears the committed box and type");
+
+    check(adapter.reset(QStringLiteral("fontSize")) &&
+              !docs.themeOutputProfile(id, QStringLiteral("broadcast"), QString())
+                   .value(QStringLiteral("fontSizeSet"))
+                   .toBool(),
+          "resetting a field lets the theme answer again");
+    check(docs.themeOutputProfile(id, QStringLiteral("broadcast"), QString())
+              .value(QStringLiteral("boxSet"))
+              .toBool(),
+          "resetting one field keeps the profile's other answers");
+    check(adapter.reset(QStringLiteral("placement")) &&
+              !docs.themeOutputProfile(id, QStringLiteral("broadcast"), QString())
+                   .value(QStringLiteral("set"))
+                   .toBool(),
+          "removing the last field removes the empty profile record");
+
+    // An effect member edit starts from what the destination draws.
+    check(adapter.commit(QStringLiteral("shadowOpacity"), 0.4),
+          "an effect member commits through the whole record");
+    const QVariantMap shadowRow = docs.themeOutputProfile(id, QStringLiteral("broadcast"),
+                                                          QString());
+    check(shadowRow.value(QStringLiteral("shadowSet")).toBool() &&
+              shadowRow.value(QStringLiteral("shadow"))
+                      .toMap()
+                      .value(QStringLiteral("opacity"))
+                      .toDouble() == 0.4,
+          "the effect record carries the committed member");
+    check(adapter.reset(QStringLiteral("shadow")), "the whole effect record is removable");
+    check(refusals.count == 0, "no profile commit was refused");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -772,6 +859,7 @@ int main(int argc, char* argv[]) {
     exerciseTextLayoutFields(tempRoot / "textlayout");
     exerciseBoxMenuActions(tempRoot / "boxmenu");
     exerciseInheritedTheme(tempRoot / "inheritance");
+    exerciseProfileTarget(tempRoot / "profile");
     std::filesystem::remove_all(tempRoot);
 
     if (gFailed) {

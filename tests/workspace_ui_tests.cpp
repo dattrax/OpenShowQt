@@ -4084,9 +4084,45 @@ int main(int argc, char** argv) {
             check(songsPainter
                       && songsPainter->property("target").toInt() == 2
                       && songsPainter->property("key").toString()
-                             == QStringLiteral("theme-view-songs-") + viewedId,
+                             == QStringLiteral("theme-view-audience-songs-") + viewedId,
                   "the view tiles paint their own keyed thumbnails, never borrowed frames");
         }
+        // Milestone FO: the Stage and NDI tiles browse their own destination
+        // without touching a record, and each keeps its own Songs/Bible
+        // content choice.
+        auto* viewStage = findNamed(window->contentItem(), "themeViewStage");
+        auto* viewNdi = findNamed(window->contentItem(), "themeViewNdi");
+        auto* stageSongs = findNamed(window->contentItem(), "themeStageSongs");
+        auto* stageBible = findNamed(window->contentItem(), "themeStageBible");
+        check(viewStage && viewNdi && stageSongs && stageBible,
+              "the editor offers Stage and NDI tiles, each with a Songs/Bible selector");
+        clickAt(viewStage, viewStage->width() / 2, viewStage->height() / 2);
+        QTest::qWait(80);
+        check(editorPage->property("selectedRole").toString() == QLatin1String("stage")
+                  && editorPage->property("selectedView").toString().isEmpty()
+                  && editorPage->property("selectedId").toString() == viewedId,
+              "the Stage tile selects the stage destination without changing the theme");
+        auto* destinationSection = findNamed(window->contentItem(), "themeEditorDestinationSection");
+        auto* destinationReset = findNamed(window->contentItem(), "themeEditorDestinationReset");
+        check(destinationSection && destinationSection->isVisible() && destinationReset
+                  && !destinationReset->isEnabled(),
+              "an unauthored destination exposes the inherited look with nothing to reset");
+        clickAt(stageBible, stageBible->width() / 2, stageBible->height() / 2);
+        QTest::qWait(80);
+        check(editorPage->property("selectedView").toString() == QLatin1String("scripture")
+                  && editorPage->property("stageContent").toString() == QLatin1String("scripture"),
+              "the stage selector switches that destination to the Bible content");
+        clickAt(viewNdi, viewNdi->width() / 2, viewNdi->height() / 2);
+        QTest::qWait(80);
+        check(editorPage->property("selectedRole").toString() == QLatin1String("broadcast")
+                  && editorPage->property("stageContent").toString() == QLatin1String("scripture")
+                  && editorPage->property("ndiContent").toString().isEmpty(),
+              "NDI is the broadcast destination and keeps its own content choice");
+        clickAt(viewSongs, viewSongs->width() / 2, viewSongs->height() / 2);
+        QTest::qWait(80);
+        check(editorPage->property("selectedRole").toString() == QLatin1String("audience"),
+              "the Songs tile returns to the audience look");
+
         clickAt(viewBible, viewBible->width() / 2, viewBible->height() / 2);
         QTest::qWait(80);
         check(editorPage->property("selectedView").toString() == QLatin1String("scripture")
@@ -4447,17 +4483,37 @@ int main(int argc, char** argv) {
         const QVariantList batch = batchAnswer.toList();
         const QVariantMap first = batch.value(0).toMap();
         const QVariantMap second = batch.value(1).toMap();
-        check(batch.size() == 2
+        const QVariantMap third = batch.value(2).toMap();
+        const QVariantMap fourth = batch.value(3).toMap();
+        check(batch.size() == 4
                   && first.value(QStringLiteral("key")).toString()
-                         == QStringLiteral("theme-view-songs-") + typedId
+                         == QStringLiteral("theme-view-audience-songs-") + typedId
                   && second.value(QStringLiteral("key")).toString()
-                         == QStringLiteral("theme-view-bible-") + typedId
+                         == QStringLiteral("theme-view-audience-bible-") + typedId
+                  && third.value(QStringLiteral("key")).toString()
+                         == QStringLiteral("theme-view-stage-")
+                                + (editorPage->property("stageContent").toString().isEmpty()
+                                       ? QStringLiteral("songs") : QStringLiteral("bible"))
+                                + QLatin1Char('-') + typedId
+                  && fourth.value(QStringLiteral("key")).toString()
+                         == QStringLiteral("theme-view-broadcast-")
+                                + (editorPage->property("ndiContent").toString().isEmpty()
+                                       ? QStringLiteral("songs") : QStringLiteral("bible"))
+                                + QLatin1Char('-') + typedId
                   && !first.value(QStringLiteral("scene")).toString().isEmpty()
                   && first.value(QStringLiteral("scene")).toString()
                          == docs.themeSampleSceneJson(typedId)
                   && second.value(QStringLiteral("scene")).toString()
-                         == docs.themeSampleSceneJson(typedId, QStringLiteral("scripture")),
-              "the tiles ask one batch: two keys naming the selection and each view's resolved sample");
+                         == docs.themeSampleSceneJson(typedId, QStringLiteral("scripture"))
+                  && third.value(QStringLiteral("scene")).toString()
+                         == docs.themeSampleSceneJson(typedId,
+                                                      editorPage->property("stageContent").toString(),
+                                                      QStringLiteral("stage"))
+                  && fourth.value(QStringLiteral("scene")).toString()
+                         == docs.themeSampleSceneJson(typedId,
+                                                      editorPage->property("ndiContent").toString(),
+                                                      QStringLiteral("broadcast")),
+              "the tiles ask one batch: audience songs/bible and one scene per destination");
         QVariant askPixels;
         QMetaObject::invokeMethod(editorPage, "viewThumbPixels",
                                   Q_RETURN_ARG(QVariant, askPixels));
