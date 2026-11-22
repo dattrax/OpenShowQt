@@ -39,6 +39,7 @@
 #include "openshow/domain/documents.h"
 #include "openshow/domain/storage.h"
 #include "openshow/scene/scene.h"
+#include "openshow/scene/stage.h"
 
 #include "CatalogController.h"
 #include "DocumentController.h"
@@ -4518,6 +4519,98 @@ void exerciseTextStyleFieldMerge(const std::filesystem::path& root) {
 // would (a copy of the live records: the edited Default floor in, whatever
 // the service happens to be wearing out). Browsing leaves no mark: no
 // context appears, no history entry opens, nothing dirties.
+void exerciseStageBundle(const std::filesystem::path& root) {
+    // Stage delivery FO.5b.1: one Go's retained bundle. The current cue is
+    // compiled on the Stage role, the next cue is the NEXT row's cue (not the
+    // editing cursor), and the overlay lands in the v1 next slot at 55%.
+    DocumentController docs(nullptr, root);
+    check(docs.createSong(QStringLiteral("Stage Song")), "the stage song exists");
+    check(docs.addSlide(), "the stage song gains a first slide");
+    docs.setSlideText(QStringLiteral("Current words\nsecond line"));
+    docs.flushText();
+    check(docs.addSlide(), "the stage song gains a second slide");
+    docs.setSlideText(QStringLiteral("Next words follow"));
+    docs.flushText();
+    docs.selectSlide(0);
+
+    const QVariantList rows = docs.slides();
+    check(rows.size() == 2, "the stage song has two slides");
+    if (rows.size() != 2) {
+        return;
+    }
+    const QString showId = docs.currentSongId();
+    const QString currentId = rows[0].toMap().value(QStringLiteral("id")).toString();
+    const QString nextId = rows[1].toMap().value(QStringLiteral("id")).toString();
+
+    const QString bundleText = docs.stageBundleJson(showId, currentId, showId, nextId);
+    check(!bundleText.isEmpty(), "the stage bundle compiles");
+    boost::json::value parsed;
+    try {
+        parsed = boost::json::parse(bundleText.toStdString());
+    } catch (const std::exception&) {
+        check(false, "the stage bundle is valid JSON");
+        return;
+    }
+    const boost::json::object& bundle = parsed.as_object();
+    check(bundle.contains("current") && bundle.at("current").is_object(),
+          "the bundle carries the current cue");
+    check(bundle.contains("next") && bundle.at("next").is_object(),
+          "the bundle carries the next cue's overlay");
+    check(bundle.contains("overlap") && bundle.at("overlap").is_bool() &&
+              !bundle.at("overlap").as_bool(),
+          "the default stage box does not overlap the next slot");
+
+    openshow::scene::Scene current;
+    openshow::scene::Scene next;
+    std::string sceneError;
+    if (bundle.contains("current")) {
+        check(openshow::scene::fromJson(bundle.at("current"), &current, &sceneError),
+              "the current cue is a valid scene payload");
+    }
+    if (bundle.contains("next")) {
+        check(openshow::scene::fromJson(bundle.at("next"), &next, &sceneError),
+              "the next overlay is a valid scene payload");
+    }
+    check(!current.items.empty(), "the current cue has a text item");
+    check(next.items.size() == 1, "the next overlay carries one text item");
+    if (!current.items.empty()) {
+        const openshow::scene::SceneItem& item = current.items.front();
+        check(item.x == 160.0 && item.y == 120.0 && item.width == 1600.0 &&
+                  item.height == 560.0,
+              "the current cue uses the stage profile's default box");
+    }
+    if (!next.items.empty()) {
+        const openshow::scene::SceneItem& item = next.items.front();
+        check(item.y == openshow::scene::kStageNextBoxY &&
+                  item.height == openshow::scene::kStageNextBoxHeight,
+              "the next cue sits in the separate next slot");
+        check(item.lines.size() == 1 && item.lines.front() == "Next words follow",
+              "the next cue's words travel unchanged");
+        if (!current.items.empty()) {
+            const double currentSize = current.items.front().fontSize;
+            if (currentSize > 0.0) {
+                check(item.fontSize > currentSize * 0.54 &&
+                          item.fontSize < currentSize * 0.56,
+                      "the next cue is scaled to 55% of the current style");
+            }
+        }
+    }
+
+    // The last cue has no next region, and a direct/browsed go is explicit
+    // about its own cue rather than guessing a neighbour.
+    const QString lastOnly = docs.stageBundleJson(showId, nextId, QString(), QString());
+    check(!lastOnly.isEmpty(), "a last-cue bundle still compiles its current cue");
+    try {
+        const boost::json::value lastParsed = boost::json::parse(lastOnly.toStdString());
+        check(!lastParsed.as_object().contains("next"),
+              "the last cue has an empty next region");
+    } catch (const std::exception&) {
+        check(false, "the last-cue bundle is valid JSON");
+    }
+    check(docs.stageBundleJson(QString(), currentId, showId, nextId).isEmpty(),
+          "a go without a show id has no stage bundle");
+}
+
 void exerciseThemeSampleViews(const std::filesystem::path& root) {
     DocumentController docs(nullptr, root);
     docs.createSong("Viewed");
@@ -5892,6 +5985,7 @@ int main(int argc, char* argv[]) {
     exerciseTransitionSurfaces(tempRoot / "transitionsurfaces");
     exerciseTextStyleFieldMerge(tempRoot / "stylefields");
     exerciseThemeSampleViews(tempRoot / "sampleviews");
+    exerciseStageBundle(tempRoot / "stagebundle");
     exerciseWholeItemThemeSurfaces(tempRoot / "wholeitem");
     exerciseRememberedLookAcrossServices(tempRoot / "remembered");
     exerciseReflowSourceSurfaces(tempRoot / "reflowsource");

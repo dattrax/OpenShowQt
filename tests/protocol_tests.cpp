@@ -217,7 +217,19 @@ void testHello() {
         // belongs in the hello (EW.3's text.editor.v1 made it 27), and
         // reading this fail means a name was added or dropped — which is
         // exactly the kind of change that should cost a looked-at line.
-        check(result.at("capabilities").as_array().size() == 28, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 29, "hello lists capabilities");
+        {  // Minor 23: the worker drives a second stage output window.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasStage = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() &&
+                           v.as_string() == openshow::protocol::kCapabilityStageOutput;
+                });
+            check(hasStage, "capabilities name stage.output.v1");
+            check(openshow::protocol::kMethodStageConfigure ==
+                      std::string("stage.configure"),
+                  "the stage configure method is spelled once");
+        }
         {  // Minor 22: the worker takes the layer-by-destination matrix.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasRouting = std::any_of(
@@ -248,7 +260,7 @@ void testHello() {
                   "the layout scene capability is spelled scene.text-layout.v1");
             check(proto::kCapabilityTextMeasureV3 == std::string("text.measure.v3"),
                   "the layout measure capability is spelled text.measure.v3");
-            check(proto::kProtocolMinor == 22, "the editor wire is protocol minor 22");
+            check(proto::kProtocolMinor == 23, "the stage wire is protocol minor 23");
             const auto& caps = result.at("capabilities").as_array();
             const bool hasLayout = std::any_of(
                 caps.begin(), caps.end(), [](const boost::json::value& v) {

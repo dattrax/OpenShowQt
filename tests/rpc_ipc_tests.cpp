@@ -451,8 +451,9 @@ void testServedSession() {
         // shrinking is a wire change, and it should cost a looked-at line.
         // Minor 19's media.show-audio.v1 made this 24; TL.3's
         // scene.text-layout.v1 and text.measure.v3 made it 26; EW.3's
-        // text.editor.v1 makes it 27.
-        check(result.as_object().at("capabilities").as_array().size() == 27,
+        // text.editor.v1 made it 27; minor 23's stage.output.v1 makes it 29
+        // (minor 22's output.routing.v1 was already counted).
+        check(result.as_object().at("capabilities").as_array().size() == 29,
               "hello lists worker capabilities");
     }
 

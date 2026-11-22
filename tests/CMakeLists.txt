@@ -10,6 +10,12 @@ add_executable(output_routing_tests output_routing_tests.cpp)
 target_link_libraries(output_routing_tests PRIVATE openshow::domain)
 add_test(NAME output_routing_tests COMMAND output_routing_tests)
 
+# Stage delivery (FO.5a.2/FO.5b.1): display identity/ordinals and the
+# current/next layout's pure rules. No display, GPU, worker or Qt.
+add_executable(stage_tests stage_tests.cpp)
+target_link_libraries(stage_tests PRIVATE openshow::scene openshow::worker_session)
+add_test(NAME stage_tests COMMAND stage_tests)
+
 # Task SL.1/SL.2: the shared catalog's model, revisions, history watermark
 # and its durable independent package. Qt-free, so both presets run it.
 add_executable(catalog_tests catalog_tests.cpp)
@@ -816,6 +822,16 @@ target_link_libraries(production_output_tests PRIVATE openshow::protocol)
 add_test(NAME production_output_tests
   COMMAND production_output_tests $<TARGET_FILE:openshow-worker>)
 set_tests_properties(production_output_tests PROPERTIES LABELS display TIMEOUT 90)
+
+# Stage delivery: the second worker-owned window over the real socket —
+# inventory identity/refusal, active-after-present, current+next bundle,
+# Clear All, target-local disable and route collisions in both directions.
+# Needs at least two attached displays; the test skips (77) otherwise.
+add_executable(stage_output_tests stage_output_tests.cpp)
+target_link_libraries(stage_output_tests PRIVATE openshow::protocol)
+add_test(NAME stage_output_tests
+  COMMAND stage_output_tests $<TARGET_FILE:openshow-worker>)
+set_tests_properties(stage_output_tests PROPERTIES LABELS display TIMEOUT 120)
 
 # Task 6.4 (review R4): output.status publishes only presented frames.
 # Injected fault knobs force the two windows R4 named — presents that
