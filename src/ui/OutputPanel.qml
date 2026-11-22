@@ -305,6 +305,17 @@ SidePanel {
                 width: toolsScroll.availableWidth
                 spacing: 12
 
+                // Milestone FO: the layer matrix lives under its own dialog
+                // (rows are layers, columns are destinations). Opening it
+                // changes no output; Apply stores the desired masks.
+                PanelButton {
+                    objectName: "outputLayersButton"
+                    width: parent.width
+                    text: "Output layers…"
+                    Accessible.name: "Configure output layers"
+                    onClicked: outputLayersDialog.open()
+                }
+
                 // ---------------- transport ----------------
                 // The on-air slide's video, played, seeked and looped as the
                 // worker confirms it. A video the presenter wants heard is
@@ -386,5 +397,9 @@ SidePanel {
 
             }
         }
+    }
+
+    OutputLayersDialog {
+        id: outputLayersDialog
     }
 }
